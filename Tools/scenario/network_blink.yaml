@@ -1,0 +1,24 @@
+# 网络抖动场景：模拟"看起来在线但卡顿 / 短暂掉线"
+# 用于测试 App 端的：
+# - 状态 ticker 在网络不稳时是否能识别掉线
+# - 告警规则会不会误报
+# - 重连后是否正常恢复播放
+
+scenario:
+  name: network_blink
+  duration: 120   # 总时长（秒）
+  steps:
+    - time: 0
+      action: start
+    - time: 30
+      action: drop           # 断开 3 秒
+      duration: 3
+    - time: 60
+      action: throttle       # 限速到 200 kbps，持续 5 秒
+      duration: 5
+      bitrate: 200
+    - time: 90
+      action: drop
+      duration: 8
+    - time: 120
+      action: stop

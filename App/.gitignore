@@ -1,0 +1,17 @@
+# Node
+node_modules/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Vite
+dist/
+
+# Tauri 自动生成
+src-tauri/gen/
+
+# 用户数据
+*.log
+.env
+.DS_Store

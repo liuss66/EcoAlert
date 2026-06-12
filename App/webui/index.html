@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EcoAlert · 视频监控</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📹</text></svg>" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- 登录页 -->
+  <section id="login-page" class="login-page">
+    <div class="login-bg"></div>
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="logo-circle">EA</div>
+        <h1>EcoAlert</h1>
+        <p class="muted">视频监控管理平台</p>
+      </div>
+      <form id="login-form" autocomplete="off">
+        <label class="field">
+          <span class="field-label">登录密码</span>
+          <div class="field-input">
+            <span class="field-icon">🔒</span>
+            <input type="password" id="login-password" placeholder="请输入登录密码" required />
+            <button type="button" class="toggle-eye" id="toggle-pw" aria-label="显示密码">👁</button>
+          </div>
+        </label>
+        <div class="login-error" id="login-error"></div>
+        <button type="submit" class="btn-primary" id="login-submit">
+          <span class="btn-text">登 录</span>
+        </button>
+        <p class="login-tip">默认密码 <code>admin123</code>，可在「视频源管理」页修改</p>
+      </form>
+    </div>
+    <div class="login-footer">© EcoAlert · 视频监控控制台</div>
+  </section>
+
+  <!-- 主页 -->
+  <section id="app-page" class="app-page hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="logo-circle small">EA</div>
+        <div>
+          <div class="brand-name">EcoAlert</div>
+          <div class="brand-sub">视频监控</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="live">
+          <span class="nav-icon">📺</span><span>实时监控</span>
+        </button>
+        <button class="nav-item" data-view="overview">
+          <span class="nav-icon">📊</span><span>监控总览</span>
+        </button>
+        <button class="nav-item" data-view="sources">
+          <span class="nav-icon">⚙️</span><span>视频源管理</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-icon">🔐</span><span>系统设置</span>
+        </button>
+        <button class="nav-item" data-view="console">
+          <span class="nav-icon">🖥️</span><span>系统日志</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="ws-status">
+          <span class="dot" id="ws-dot"></span>
+          <span id="ws-text">连接中…</span>
+        </div>
+        <button class="logout-btn" id="logout-btn">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="view-title">实时监控</h2>
+          <p class="muted" id="view-sub">查看所有视频源的实时画面</p>
+        </div>
+        <div class="topbar-right">
+          <div class="time" id="topbar-time">--:--:--</div>
+          <div class="user-chip">
+            <span class="avatar">A</span>
+            <span id="user-name">管理员</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- 实时监控 -->
+      <section class="view" id="view-live">
+        <div class="view-toolbar">
+          <div class="toolbar-left">
+            <button class="btn-secondary" id="btn-add-source-live">+ 添加视频源</button>
+            <button class="btn-ghost" id="btn-add-group">+ 新增分组</button>
+            <button class="btn-ghost" id="btn-refresh-status">刷新状态</button>
+          </div>
+          <div class="toolbar-right">
+            <span class="muted" id="live-count">0 路</span>
+          </div>
+        </div>
+        <div class="alarm-banner hidden" id="alarm-banner"></div>
+        <div class="video-grid" id="video-grid"></div>
+        <div class="empty-state" id="live-empty">
+          <div class="empty-illu">📹</div>
+          <h3>暂无视频源</h3>
+          <p class="muted">点击右上角"+ 添加视频源"开始配置你的第一个监控点</p>
+        </div>
+      </section>
+
+      <!-- 监控总览 -->
+      <section class="view hidden" id="view-overview">
+        <div class="alarm-banner hidden" id="ov-alarm-banner"></div>
+        <div class="stat-grid">
+          <div class="stat-card stat-blue">
+            <div class="stat-label">视频源总数</div>
+            <div class="stat-value" id="ov-total">0</div>
+            <div class="stat-foot">所有已配置的视频流</div>
+          </div>
+          <div class="stat-card stat-green">
+            <div class="stat-label">在线</div>
+            <div class="stat-value" id="ov-online">0</div>
+            <div class="stat-foot" id="ov-online-rate">—</div>
+          </div>
+          <div class="stat-card stat-amber">
+            <div class="stat-label">总码率</div>
+            <div class="stat-value" id="ov-bitrate">0 <small>kbps</small></div>
+            <div class="stat-foot">聚合下行流量</div>
+          </div>
+          <div class="stat-card stat-purple">
+            <div class="stat-label">当前有人</div>
+            <div class="stat-value" id="ov-person">0</div>
+            <div class="stat-foot">算法实时输出</div>
+          </div>
+          <div class="stat-card stat-red">
+            <div class="stat-label">报警中</div>
+            <div class="stat-value" id="ov-alarm">0</div>
+            <div class="stat-foot">无人 + 亮灯</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h3>各通道状态</h3>
+            <span class="muted" id="ov-updated">尚未刷新</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>名称</th><th>位置</th><th>在线</th>
+                  <th>人</th><th>灯</th><th>报警</th>
+                  <th>码率</th><th>帧率</th><th>观众</th><th>更新时间</th>
+                </tr>
+              </thead>
+              <tbody id="ov-tbody">
+                <tr><td colspan="10" class="muted center">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel" style="margin-top: 16px;">
+          <div class="panel-header">
+            <h3>最近状态变更</h3>
+            <span class="muted">人 / 灯 / 报警 每次变化都记一条</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr><th>时间</th><th>通道</th><th>人</th><th>灯</th><th>报警</th></tr>
+              </thead>
+              <tbody id="ov-history-tbody">
+                <tr><td colspan="5" class="muted center">暂无记录</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 视频源管理 -->
+      <section class="view hidden" id="view-sources">
+        <div class="view-toolbar">
+          <div class="toolbar-left">
+            <button class="btn-secondary" id="btn-add-source">+ 新增视频源</button>
+          </div>
+          <div class="toolbar-right">
+            <input type="text" class="input-search" id="src-search" placeholder="搜索名称或位置…" />
+          </div>
+        </div>
+        <div class="panel">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>名称</th><th>类型</th><th>地址</th>
+                  <th>位置</th><th>启用</th><th>创建时间</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="src-tbody">
+                <tr><td colspan="7" class="muted center">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 系统设置 -->
+      <section class="view hidden" id="view-settings">
+        <div class="panel" style="max-width: 560px;">
+          <div class="panel-header"><h3>修改登录密码</h3></div>
+          <form id="pw-form" style="padding: 20px;">
+            <label class="field">
+              <span class="field-label">当前密码</span>
+              <input type="password" id="pw-old" class="text-input" required />
+            </label>
+            <label class="field">
+              <span class="field-label">新密码（至少 6 位）</span>
+              <input type="password" id="pw-new" class="text-input" minlength="6" required />
+            </label>
+            <label class="field">
+              <span class="field-label">确认新密码</span>
+              <input type="password" id="pw-new2" class="text-input" minlength="6" required />
+            </label>
+            <div class="login-error" id="pw-error"></div>
+            <div class="login-error" id="pw-ok" style="color: var(--success);"></div>
+            <button type="submit" class="btn-primary" style="margin-top: 8px;">保存</button>
+          </form>
+        </div>
+        <div class="panel" style="max-width: 560px; margin-top: 16px;">
+          <div class="panel-header"><h3>数据存储位置</h3></div>
+          <div style="padding: 14px 20px;">
+            <p class="muted" style="margin: 0 0 8px;">视频源、密码等数据保存在以下目录：</p>
+            <code id="data-dir" style="display:block; padding:10px; background:var(--bg-soft); border-radius:6px; word-break: break-all;"></code>
+          </div>
+        </div>
+      </section>
+
+      <!-- 系统日志 -->
+      <section class="view hidden" id="view-console">
+        <div class="view-toolbar">
+          <div class="toolbar-left">
+            <button class="btn-ghost" id="btn-clear-log">清空</button>
+            <label class="check-inline"><input type="checkbox" id="auto-scroll" checked /> 自动滚动</label>
+          </div>
+          <div class="toolbar-right">
+            <span class="muted" id="log-count">0 条</span>
+          </div>
+        </div>
+        <div class="console-box" id="console-box"></div>
+      </section>
+    </main>
+  </section>
+
+  <!-- 添加/编辑视频源 弹窗 -->
+  <div class="modal-mask hidden" id="modal-mask">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">新增视频源</h3>
+        <button class="modal-close" id="modal-close">×</button>
+      </div>
+      <form id="source-form" class="modal-body">
+        <input type="hidden" id="src-id" />
+        <div class="form-grid">
+          <label class="field">
+            <span class="field-label">名称 *</span>
+            <input type="text" id="src-name" required maxlength="64" placeholder="例如：园区东门" />
+          </label>
+          <label class="field">
+            <span class="field-label">类型</span>
+            <select id="src-type">
+              <option value="hls">HLS (m3u8)</option>
+              <option value="mp4">MP4 直链</option>
+              <option value="webcam">摄像头 (getUserMedia)</option>
+              <option value="rtsp">RTSP（需后端转码）</option>
+            </select>
+          </label>
+          <label class="field full">
+            <span class="field-label">所属分组</span>
+            <select id="src-group"></select>
+          </label>
+          <label class="field full">
+            <span class="field-label">视频地址 *</span>
+            <input type="text" id="src-url" required maxlength="512" placeholder="https://…/index.m3u8  或 file://…/video.mp4" />
+          </label>
+          <label class="field full">
+            <span class="field-label">位置 / 备注</span>
+            <input type="text" id="src-location" maxlength="128" placeholder="例如：A 栋 3 楼走廊" />
+          </label>
+          <label class="field full check-inline">
+            <input type="checkbox" id="src-enabled" checked /> 启用该视频源
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-ghost" id="modal-cancel">取消</button>
+          <button type="submit" class="btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
