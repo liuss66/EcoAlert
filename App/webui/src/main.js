@@ -376,15 +376,49 @@ async function moveSourceToGroup(sourceId, groupId) {
   // 重新计算 order：插到该组末尾
   const siblings = sources.filter((x) => x.groupId === groupId && x.id !== sourceId);
   const newOrder = siblings.length > 0 ? Math.max(...siblings.map((x) => x.order)) + 1 : 0;
+  const oldGroupId = s.groupId;
   try {
     await updateSource(sourceId, { ...s, groupId, order: newOrder });
-    await loadSources();
-    renderLive();
+    // 更新内存数据（不再全量重载 + 重建 DOM）
+    s.groupId = groupId;
+    s.order = newOrder;
+
+    // —— 轻量 DOM 更新：只移动被拖的卡片，其他视频完全不动 ——
+    const card = document.querySelector(`.video-card[data-id="${sourceId}"]`);
+    const targetZone = document.querySelector(`[data-dropzone="${groupId}"]`);
+    if (card && targetZone) {
+      // 目标组若空，移除占位提示
+      targetZone.querySelectorAll('.drop-hint').forEach((h) => h.remove());
+      targetZone.appendChild(card);
+      card.dataset.groupId = groupId;
+    }
+    // 源组变空则补回提示
+    const oldZone = document.querySelector(`[data-dropzone="${oldGroupId}"]`);
+    if (oldZone && !oldZone.querySelectorAll('.video-card').length) {
+      const hint = document.createElement('div');
+      hint.className = 'drop-hint';
+      hint.textContent = '拖拽视频源到此处';
+      oldZone.appendChild(hint);
+    }
+    // 更新分组计数
+    refreshGroupCounts();
+
+    // 管理页表格是独立视图，全量刷也不影响视频
     renderSourcesTable();
     addLog('info', `已把「${s.name}」移到分组`);
   } catch (err) {
     addLog('error', `移动失败: ${err.message}`);
   }
+}
+
+/* 只刷新分组头部「N 路」数字，不重建任何 DOM */
+function refreshGroupCounts() {
+  $$('.group-section').forEach((section) => {
+    const gid = section.dataset.groupId;
+    const count = section.querySelectorAll('.video-card').length;
+    const label = section.querySelector('.group-count');
+    if (label) label.textContent = `${count} 路`;
+  });
 }
 
 /* -------------------- 分组操作 -------------------- */
