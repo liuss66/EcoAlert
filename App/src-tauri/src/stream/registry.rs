@@ -20,17 +20,21 @@ pub struct StreamRegistry {
 
 impl StreamRegistry {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { inner: Mutex::new(HashMap::new()) })
+        Arc::new(Self {
+            inner: Mutex::new(HashMap::new()),
+        })
     }
 
     /// 启动一条流：拉帧 → 推给 pipeline
     pub fn start(&self, spec: StreamSpec) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::channel::<FramePacket>(64);
+        let source_id = spec.source_id.clone();
         let handle = match spec.kind {
             crate::stream::StreamKind::Hls => {
                 let r = HlsReader::new(&spec.url);
+                let run_source_id = source_id.clone();
                 tokio::spawn(async move {
-                    let _ = r.run(spec.source_id.clone(), tx).await;
+                    let _ = r.run(run_source_id, tx).await;
                 })
             }
             crate::stream::StreamKind::Rtmp => {
@@ -50,7 +54,7 @@ impl StreamRegistry {
                 // TODO: 把帧丢给 pipeline
             }
         });
-        self.inner.lock().insert(spec.source_id, handle);
+        self.inner.lock().insert(source_id, handle);
         Ok(())
     }
 

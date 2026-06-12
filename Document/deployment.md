@@ -51,10 +51,10 @@ Tauri 模式会启动 Rust 后端，数据写入本机应用数据目录。
 ```bash
 cd Tools
 pip install -r requirements.txt
-python -m push_streamer.cli --config config.example.yaml
+python -m push_streamer.cli --video ../Video/sample_01_meeting.mp4 --loop
 ```
 
-然后在 App 中新增 HLS 源，例如：
+当前 `push_streamer` 仍是占位入口，只打印参数。ffmpeg 推流实现补完后，再在 App 中新增 HLS 源，例如：
 
 ```text
 http://127.0.0.1:8080/cam1/index.m3u8
@@ -241,4 +241,3 @@ ffmpeg -version
 - 通知测试发送成功。
 - 外部 VLM 默认关闭。
 - 文档版本和变更日志已更新。
-

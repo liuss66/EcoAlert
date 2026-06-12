@@ -1,8 +1,13 @@
 // 暴露给前端的 Tauri commands
+use crate::pipeline::{notifier, scheduler};
 use crate::state::{log_event, AppState};
-use crate::store::{records_by_source, SceneState, SourceGroup, StateRecord, VideoSource};
+use crate::store::{
+    records_by_source, AlarmRecord, AlgorithmConfig, ChannelRuntimeStatus, NotificationRecord,
+    NotificationTarget, NotificationTargetPayload, RoiConfig, SceneState, SecurityConfig,
+    SourceGroup, StateRecord, VideoSource,
+};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 fn require_login(state: &State<Arc<AppState>>) -> Result<(), String> {
     if !*state.logged_in.lock() {
@@ -111,7 +116,11 @@ pub fn create_source(
         sources.push(item.clone());
     }
     state.persist_sources().map_err(|e| e.to_string())?;
-    log_event(&app, "info", format!("新增视频源: {} ({})", item.name, item.url));
+    log_event(
+        &app,
+        "info",
+        format!("新增视频源: {} ({})", item.name, item.url),
+    );
     Ok(item)
 }
 
@@ -124,7 +133,10 @@ pub fn update_source(
 ) -> Result<VideoSource, String> {
     require_login(&state)?;
     let mut sources = state.sources.lock();
-    let idx = sources.iter().position(|s| s.id == id).ok_or("视频源不存在")?;
+    let idx = sources
+        .iter()
+        .position(|s| s.id == id)
+        .ok_or("视频源不存在")?;
     let cur = sources[idx].clone();
     let ty = if validate_type(&payload.source_type) {
         payload.source_type.clone()
@@ -163,7 +175,10 @@ pub fn delete_source(
     require_login(&state)?;
     let removed = {
         let mut sources = state.sources.lock();
-        let idx = sources.iter().position(|s| s.id == id).ok_or("视频源不存在")?;
+        let idx = sources
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or("视频源不存在")?;
         Some(sources.remove(idx))
     };
     if let Some(r) = removed {
@@ -309,7 +324,12 @@ pub fn report_scene_state(
     light: bool,
 ) -> Result<serde_json::Value, String> {
     require_login(&state)?;
-    let scene = SceneState { person, light, frame_seq: 0, confidence: 1.0 };
+    let scene = SceneState {
+        person,
+        light,
+        frame_seq: 0,
+        confidence: 1.0,
+    };
     let rec = StateRecord::from_change(&source_id, &scene);
     state.record_state_change(rec).map_err(|e| e.to_string())?;
     let _ = app.emit(
@@ -351,6 +371,415 @@ pub fn get_state_history(
     }))
 }
 
+#[tauri::command]
+pub fn get_channel_runtime_status(
+    state: State<Arc<AppState>>,
+    source_id: Option<String>,
+) -> Result<Vec<ChannelRuntimeStatus>, String> {
+    require_login(&state)?;
+    let mut snapshot = state.runtime_status_snapshot();
+    if let Some(id) = source_id {
+        snapshot.retain(|item| item.source_id == id);
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn list_alarms(
+    state: State<Arc<AppState>>,
+    status: Option<String>,
+    source_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<AlarmRecord>, String> {
+    require_login(&state)?;
+    let mut records: Vec<AlarmRecord> = state
+        .alarm_records
+        .lock()
+        .records
+        .iter()
+        .filter(|record| status.as_deref().map_or(true, |s| record.status == s))
+        .filter(|record| {
+            source_id
+                .as_deref()
+                .map_or(true, |id| record.source_id == id)
+        })
+        .cloned()
+        .collect();
+    records.reverse();
+    records.truncate(limit.unwrap_or(100));
+    Ok(records)
+}
+
+#[tauri::command]
+pub fn ack_alarm(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    alarm_id: String,
+    note: Option<String>,
+) -> Result<AlarmRecord, String> {
+    require_login(&state)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let updated = {
+        let mut file = state.alarm_records.lock();
+        let record = file
+            .records
+            .iter_mut()
+            .find(|record| record.id == alarm_id)
+            .ok_or("报警记录不存在")?;
+        record.status = "acknowledged".into();
+        record.acknowledged_at = Some(now);
+        record.acknowledged_by = Some("admin".into());
+        record.note = note;
+        record.clone()
+    };
+    state.persist_alarm_records().map_err(|e| e.to_string())?;
+    {
+        let mut runtime = state.runtime_status.lock();
+        if let Some(entry) = runtime.get_mut(&updated.source_id) {
+            entry.alarm_status = updated.status.clone();
+            entry.ts = now;
+        }
+    }
+    let _ = app.emit(
+        "ecoalert://alarm",
+        serde_json::json!({
+            "alarm_id": updated.id,
+            "source_id": updated.source_id,
+            "status": updated.status,
+            "event": "alarm_acknowledged",
+            "ts": now,
+        }),
+    );
+    log_event(&app, "info", "报警已确认");
+    Ok(updated)
+}
+
+#[tauri::command]
+pub fn resolve_alarm(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    alarm_id: String,
+    note: Option<String>,
+) -> Result<AlarmRecord, String> {
+    require_login(&state)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let updated = {
+        let mut file = state.alarm_records.lock();
+        let record = file
+            .records
+            .iter_mut()
+            .find(|record| record.id == alarm_id)
+            .ok_or("报警记录不存在")?;
+        record.status = "resolved".into();
+        record.resolved_at = Some(now);
+        if let Some(note) = note {
+            record.note = Some(note);
+        }
+        record.clone()
+    };
+    state.persist_alarm_records().map_err(|e| e.to_string())?;
+    {
+        let mut runtime = state.runtime_status.lock();
+        if let Some(entry) = runtime.get_mut(&updated.source_id) {
+            entry.alarm_status = updated.status.clone();
+            entry.ts = now;
+        }
+    }
+    let _ = app.emit(
+        "ecoalert://alarm",
+        serde_json::json!({
+            "alarm_id": updated.id,
+            "source_id": updated.source_id,
+            "status": updated.status,
+            "event": "alarm_resolved",
+            "ts": now,
+        }),
+    );
+    log_event(&app, "info", "报警已恢复");
+    Ok(updated)
+}
+
+/* -------------------- 配置：算法 / ROI / 通知 / 安全 -------------------- */
+
+#[tauri::command]
+pub fn get_algorithm_config(
+    state: State<Arc<AppState>>,
+    source_id: Option<String>,
+) -> Result<AlgorithmConfig, String> {
+    require_login(&state)?;
+    let cfg = state.algorithm_config.lock();
+    if let Some(id) = source_id {
+        Ok(cfg
+            .sources
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| cfg.global.clone()))
+    } else {
+        Ok(cfg.global.clone())
+    }
+}
+
+#[tauri::command]
+pub fn get_effective_algorithm_config(
+    state: State<Arc<AppState>>,
+    source_id: String,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    let source = {
+        let sources = state.sources.lock();
+        sources
+            .iter()
+            .find(|s| s.id == source_id)
+            .cloned()
+            .ok_or("视频源不存在")?
+    };
+    let cfg = state.algorithm_config.lock().clone();
+    let effective = scheduler::effective_algorithm_config(&source, &cfg);
+    Ok(serde_json::json!({
+        "config": effective.config,
+        "scope": effective.scope,
+    }))
+}
+
+#[tauri::command]
+pub fn update_algorithm_config(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    source_id: Option<String>,
+    payload: AlgorithmConfig,
+) -> Result<AlgorithmConfig, String> {
+    require_login(&state)?;
+    let mut saved = payload;
+    {
+        let mut cfg = state.algorithm_config.lock();
+        if let Some(id) = source_id {
+            saved.scope = "source".into();
+            saved.scope_id = Some(id.clone());
+            cfg.sources.insert(id, saved.clone());
+        } else {
+            saved.scope = "global".into();
+            saved.scope_id = None;
+            cfg.global = saved.clone();
+        }
+    }
+    state
+        .persist_algorithm_config()
+        .map_err(|e| e.to_string())?;
+    log_event(&app, "info", "算法配置已保存");
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn get_roi_config(state: State<Arc<AppState>>, source_id: String) -> Result<RoiConfig, String> {
+    require_login(&state)?;
+    let cfg = state.roi_config.lock();
+    Ok(cfg
+        .by_source
+        .get(&source_id)
+        .cloned()
+        .unwrap_or_else(|| RoiConfig::new(source_id)))
+}
+
+#[tauri::command]
+pub fn update_roi_config(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    source_id: String,
+    mut payload: RoiConfig,
+) -> Result<RoiConfig, String> {
+    require_login(&state)?;
+    payload.source_id = source_id.clone();
+    payload.updated_at = chrono::Utc::now().timestamp_millis();
+    {
+        let mut cfg = state.roi_config.lock();
+        cfg.by_source.insert(source_id, payload.clone());
+    }
+    state.persist_roi_config().map_err(|e| e.to_string())?;
+    log_event(&app, "info", "ROI 配置已保存");
+    Ok(payload)
+}
+
+#[tauri::command]
+pub fn list_notification_targets(
+    state: State<Arc<AppState>>,
+) -> Result<Vec<NotificationTarget>, String> {
+    require_login(&state)?;
+    Ok(state.notification_config.lock().targets.clone())
+}
+
+#[tauri::command]
+pub fn create_notification_target(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    payload: NotificationTargetPayload,
+) -> Result<NotificationTarget, String> {
+    require_login(&state)?;
+    if payload.name.trim().is_empty() || payload.url.trim().is_empty() {
+        return Err("通知名称和 URL 不能为空".into());
+    }
+    let target = NotificationTarget::new(payload);
+    {
+        let mut cfg = state.notification_config.lock();
+        cfg.targets.push(target.clone());
+    }
+    state
+        .persist_notification_config()
+        .map_err(|e| e.to_string())?;
+    log_event(&app, "info", format!("新增通知目标: {}", target.name));
+    Ok(target)
+}
+
+#[tauri::command]
+pub fn update_notification_target(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    id: String,
+    payload: NotificationTargetPayload,
+) -> Result<NotificationTarget, String> {
+    require_login(&state)?;
+    let updated = {
+        let mut cfg = state.notification_config.lock();
+        let idx = cfg
+            .targets
+            .iter()
+            .position(|x| x.id == id)
+            .ok_or("通知目标不存在")?;
+        let created_at = cfg.targets[idx].created_at;
+        let mut item = NotificationTarget::new(payload);
+        item.id = id;
+        item.created_at = created_at;
+        cfg.targets[idx] = item.clone();
+        item
+    };
+    state
+        .persist_notification_config()
+        .map_err(|e| e.to_string())?;
+    log_event(&app, "info", format!("更新通知目标: {}", updated.name));
+    Ok(updated)
+}
+
+#[tauri::command]
+pub fn delete_notification_target(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    {
+        let mut cfg = state.notification_config.lock();
+        let idx = cfg
+            .targets
+            .iter()
+            .position(|x| x.id == id)
+            .ok_or("通知目标不存在")?;
+        cfg.targets.remove(idx);
+    }
+    state
+        .persist_notification_config()
+        .map_err(|e| e.to_string())?;
+    log_event(&app, "info", "删除通知目标");
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub fn list_notification_history(
+    state: State<Arc<AppState>>,
+    source_id: Option<String>,
+    event: Option<String>,
+    ok: Option<bool>,
+    limit: Option<usize>,
+) -> Result<Vec<NotificationRecord>, String> {
+    require_login(&state)?;
+    let mut records: Vec<NotificationRecord> = state
+        .notification_history
+        .lock()
+        .records
+        .iter()
+        .filter(|record| {
+            source_id
+                .as_deref()
+                .map_or(true, |id| record.source_id.as_deref() == Some(id))
+        })
+        .filter(|record| event.as_deref().map_or(true, |ev| record.event == ev))
+        .filter(|record| ok.map_or(true, |expected| record.ok == expected))
+        .cloned()
+        .collect();
+    records.reverse();
+    records.truncate(limit.unwrap_or(100));
+    Ok(records)
+}
+
+#[tauri::command]
+pub async fn test_notification_target(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: Option<String>,
+    payload: Option<NotificationTargetPayload>,
+) -> Result<NotificationRecord, String> {
+    require_login(&state)?;
+    let target = if let Some(id) = id {
+        state
+            .notification_config
+            .lock()
+            .targets
+            .iter()
+            .find(|target| target.id == id)
+            .cloned()
+            .ok_or("通知目标不存在")?
+    } else {
+        notifier::target_from_payload(payload.ok_or("缺少通知目标配置")?)
+    };
+    Ok(notifier::send_test(app, state.inner().clone(), target).await)
+}
+
+#[tauri::command]
+pub async fn resend_notification(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    record_id: String,
+) -> Result<NotificationRecord, String> {
+    require_login(&state)?;
+    let original = state
+        .notification_history
+        .lock()
+        .records
+        .iter()
+        .find(|record| record.id == record_id)
+        .cloned()
+        .ok_or("通知历史不存在")?;
+    let target = state
+        .notification_config
+        .lock()
+        .targets
+        .iter()
+        .find(|target| target.id == original.target_id)
+        .cloned()
+        .ok_or("通知目标不存在")?;
+    Ok(notifier::resend_record(app, state.inner().clone(), target, original).await)
+}
+
+#[tauri::command]
+pub fn get_security_config(state: State<Arc<AppState>>) -> Result<SecurityConfig, String> {
+    require_login(&state)?;
+    Ok(state.security_config.lock().clone())
+}
+
+#[tauri::command]
+pub fn update_security_config(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    payload: SecurityConfig,
+) -> Result<SecurityConfig, String> {
+    require_login(&state)?;
+    {
+        let mut cfg = state.security_config.lock();
+        *cfg = payload.clone();
+    }
+    state.persist_security_config().map_err(|e| e.to_string())?;
+    log_event(&app, "info", "安全配置已保存");
+    Ok(payload)
+}
+
 /* -------------------- 其它 -------------------- */
 
 #[tauri::command]
@@ -364,7 +793,9 @@ pub fn change_password(
         return Err("新密码至少 6 位".into());
     }
     let ok = state.auth.lock().verify(&old_password);
-    if !ok { return Err("当前密码错误".into()); }
+    if !ok {
+        return Err("当前密码错误".into());
+    }
     state.auth.lock().change_password(&new_password);
     state.persist_auth().map_err(|e| e.to_string())?;
     log_event(&app, "info", "登录密码已修改");

@@ -98,17 +98,17 @@
 
 ---
 
-## 3. 待实现 Commands
+## 3. 配置 / 运行 Commands
 
-### 3.1 算法配置
+### 3.1 算法配置（后端骨架已实现）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
 | `get_algorithm_config` | `{ sourceId? }` | `AlgorithmConfig` |
 | `update_algorithm_config` | `{ sourceId?, payload }` | `AlgorithmConfig` |
-| `get_effective_algorithm_config` | `{ sourceId }` | `{ config, sources }` |
+| `get_effective_algorithm_config` | `{ sourceId }` | `{ config, scope }` |
 
-### 3.2 ROI
+### 3.2 ROI（配置读写已实现，测试待实现）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
@@ -116,7 +116,7 @@
 | `update_roi_config` | `{ sourceId, payload }` | `RoiConfig` |
 | `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, brightness, confidence }` |
 
-### 3.3 报警
+### 3.3 报警（生命周期骨架已实现，静默待实现）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
@@ -126,7 +126,7 @@
 | `resolve_alarm` | `{ alarmId, note? }` | `AlarmRecord` |
 | `mute_source` | `{ sourceId, untilTs, reason? }` | `{ ok }` |
 
-### 3.4 通知
+### 3.4 通知（发送 / 历史骨架已实现）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
@@ -134,8 +134,8 @@
 | `create_notification_target` | `{ payload }` | `NotificationTarget` |
 | `update_notification_target` | `{ id, payload }` | `NotificationTarget` |
 | `delete_notification_target` | `{ id }` | `{ ok }` |
-| `test_notification_target` | `{ id? 或 payload }` | `{ ok, status?, error? }` |
-| `list_notification_history` | `{ filter }` | `NotificationRecord[]` |
+| `test_notification_target` | `{ id?, payload? }` | `NotificationRecord` |
+| `list_notification_history` | `{ sourceId?, event?, ok?, limit? }` | `NotificationRecord[]` |
 | `resend_notification` | `{ recordId }` | `NotificationRecord` |
 
 ### 3.5 安全与配置
@@ -157,17 +157,17 @@
 | --- | --- | --- |
 | `ecoalert://event` | `{ level, text, ts }` | 不定 |
 | `ecoalert://status` | `ChannelStatus[]` | 3s |
+| `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 3s 或状态变化 |
 | `ecoalert://scene_state` | `{ source_id, person, light, ts }` | 变化时或心跳 |
+| `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化 |
+| `ecoalert://notification` | `{ record_id, target_id, event, ok, status, error, ts }` | 通知发送完成 |
+| `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度 |
 
 ### 4.2 待实现
 
 | Event | Payload | 触发 |
 | --- | --- | --- |
 | `ecoalert://sources` | `VideoSource[]` | 视频源变更 |
-| `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 运行状态变化或周期推送 |
-| `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化 |
-| `ecoalert://notification` | `{ target_id, event, ok, status, error, ts }` | 通知发送完成 |
-| `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度 |
 
 ---
 

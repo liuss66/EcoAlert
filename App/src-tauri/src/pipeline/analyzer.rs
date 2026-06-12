@@ -17,7 +17,10 @@ pub struct Analyzer {
 
 impl Analyzer {
     pub fn new() -> Self {
-        Self { window: VecDeque::with_capacity(128), window_size: 128 }
+        Self {
+            window: VecDeque::with_capacity(128),
+            window_size: 128,
+        }
     }
 
     pub fn feed(&mut self, det: Detection) {
@@ -38,5 +41,7 @@ impl Analyzer {
 }
 
 impl Default for Analyzer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

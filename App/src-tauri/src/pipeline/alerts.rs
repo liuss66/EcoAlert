@@ -16,18 +16,27 @@ pub struct AlertRule {
 
 impl AlertRule {
     pub fn new(cooldown_ms: u64) -> Self {
-        Self { last_fired: None, cooldown: Duration::from_millis(cooldown_ms) }
+        Self {
+            last_fired: None,
+            cooldown: Duration::from_millis(cooldown_ms),
+        }
     }
 
     /// 触发告警，遵守冷却时间
     pub fn fire(&mut self, det: &Detection) -> Option<(String, String)> {
         let now = Instant::now();
         if let Some(last) = self.last_fired {
-            if now.duration_since(last) < self.cooldown { return None; }
+            if now.duration_since(last) < self.cooldown {
+                return None;
+            }
         }
         self.last_fired = Some(now);
         Some((
-            if det.confidence > 0.9 { "info".into() } else { "warn".into() },
+            if det.confidence > 0.9 {
+                "info".into()
+            } else {
+                "warn".into()
+            },
             format!("检测到 {} (conf={:.2})", det.kind, det.confidence),
         ))
     }

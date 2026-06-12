@@ -63,7 +63,9 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     let mut diff = 0u8;
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;

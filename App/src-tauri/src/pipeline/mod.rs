@@ -17,6 +17,8 @@ pub mod alerts;
 pub mod analyzer;
 pub mod decoder;
 pub mod detector;
+pub mod notifier;
+pub mod scheduler;
 
 use crate::stream::FramePacket;
 
@@ -84,7 +86,12 @@ impl Pipeline {
         rx: mpsc::Receiver<FramePacket>,
         sink: mpsc::Sender<PipelineEvent>,
     ) -> Self {
-        Self { source_id, config, rx, sink }
+        Self {
+            source_id,
+            config,
+            rx,
+            sink,
+        }
     }
 
     /// 在自己的 tokio task 中跑

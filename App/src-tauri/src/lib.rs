@@ -6,7 +6,6 @@ mod state;
 mod store;
 mod stream;
 
-use std::sync::Arc;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -38,6 +37,24 @@ pub fn run() {
             commands::reorder,
             commands::report_scene_state,
             commands::get_state_history,
+            commands::get_channel_runtime_status,
+            commands::list_alarms,
+            commands::ack_alarm,
+            commands::resolve_alarm,
+            commands::get_algorithm_config,
+            commands::get_effective_algorithm_config,
+            commands::update_algorithm_config,
+            commands::get_roi_config,
+            commands::update_roi_config,
+            commands::list_notification_targets,
+            commands::create_notification_target,
+            commands::update_notification_target,
+            commands::delete_notification_target,
+            commands::list_notification_history,
+            commands::test_notification_target,
+            commands::resend_notification,
+            commands::get_security_config,
+            commands::update_security_config,
             commands::change_password,
             commands::get_data_dir,
         ])

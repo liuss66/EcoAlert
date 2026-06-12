@@ -2,7 +2,7 @@
 
 > 版本：v1.2  
 > 日期：2026-06-13  
-> 状态：实现中（前端 + Tauri 后端骨架完成，算法 / 通知 / 调度 / 报警闭环接入待定）
+> 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入，真实算法与配置 UI 待完善）
 
 ---
 
@@ -33,6 +33,20 @@
 - 不做复杂告警编排平台（仅提供本地通知配置、Webhook / HTTP 通知接口和必要冷却）
 - 不做模型训练平台（只接入和调度已训练 / 已部署模型）
 
+### 1.4 实施阶段
+
+为避免第一版范围过大，后续实现按阶段推进：
+
+| 阶段 | 范围 | 说明 |
+| --- | --- | --- |
+| MVP-1 | App 本体可用 | 登录、视频源 / 分组管理、MP4 / HLS 播放、mock 状态、状态历史、基础 UI |
+| MVP-2 | 配置与运行状态 | 字段命名统一、配置文件框架、`ChannelRuntimeStatus`、算法调度器骨架 |
+| MVP-3 | 报警闭环 | 报警状态机、确认 / 恢复、通知配置和通知历史骨架 |
+| MVP-4 | 简单算法 | ROI 灯光规则、轻量人员检测接口、VLM mock provider |
+| 后续 | 推流和真实模型 | ffmpeg 推流器、RTSP 转码、真实 ONNX / VLM 接入 |
+
+当前目录结构也按这个边界收敛：`App/` 是主产品，`Video/` 是平铺测试素材，`Tools/` 是后续辅助工具，不作为 MVP-1 的必要依赖。
+
 ---
 
 ## 2. 用户角色
@@ -57,7 +71,7 @@
 | F-LOGIN-5 | 登录页有密码可见切换 | ✅ |
 | F-LOGIN-6 | 登录后可在「系统设置」页修改密码 | ✅ |
 
-### 3.2 视频源管理
+### 3.2 视频管理
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
@@ -81,7 +95,7 @@
 | F-GRP-7 | 分组可重命名（点击铅笔图标，inline 编辑） | ✅ |
 | F-GRP-8 | 默认分组不可删除 | ✅ |
 | F-GRP-9 | 删除分组时，组内源自动回退到默认分组 | ✅ |
-| F-GRP-10 | 视频源管理页「新增视频源」modal 可选择所属分组 | ✅ |
+| F-GRP-10 | 视频管理页「新增视频源」modal 可选择所属分组 | ✅ |
 | F-GRP-11 | 首次启动自动创建「默认分组」 | ✅ |
 
 ### 3.4 实时监控
@@ -116,7 +130,7 @@
 | F-OV-3 | 「各通道状态」表：含在线 / 人 / 灯 / 报警 列 | ✅ |
 | F-OV-4 | 「最近状态变更」表：来自 `state_history.json` 最近 50 条 | ✅ |
 
-### 3.7 视频源管理（CRUD 表格视图）
+### 3.7 视频管理（CRUD 表格视图）
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
@@ -178,12 +192,12 @@
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-AIS-1 | 每路视频可独立启用 / 停用算法 | ⏳ 待实现 |
-| F-AIS-2 | 每路视频可配置算法启用时段，默认仅在下班后启用，例如 `18:30-08:30` | ⏳ 待实现 |
-| F-AIS-3 | 支持工作日 / 周末 / 节假日三类时段配置；第一版至少支持按星期配置 | ⏳ 待实现 |
-| F-AIS-4 | 简单模型高频执行，默认周期 5-15 秒，可按通道配置 | ⏳ 待实现 |
-| F-AIS-5 | VLM 低频执行，默认周期 2-10 分钟，可按通道配置 | ⏳ 待实现 |
-| F-AIS-6 | 当简单模型识别到“有人”时，当前周期不得调用 VLM | ⏳ 待实现 |
+| F-AIS-1 | 每路视频可独立启用 / 停用算法 | ⚠️ 全局启停已接入，通道级待实现 |
+| F-AIS-2 | 每路视频可配置算法启用时段，默认仅在下班后启用，例如 `18:30-08:30` | ⚠️ 全局时段 UI 已接入，通道级待实现 |
+| F-AIS-3 | 支持工作日 / 周末 / 节假日三类时段配置；第一版至少支持按星期配置 | ⚠️ 按星期配置已接入 |
+| F-AIS-4 | 简单模型高频执行，默认周期 5-15 秒，可按通道配置 | ⚠️ 全局周期 UI 已接入，真实任务节拍待细化 |
+| F-AIS-5 | VLM 低频执行，默认周期 2-10 分钟，可按通道配置 | ⚠️ 全局 VLM 配置 UI 已接入，真实 VLM provider 待实现 |
+| F-AIS-6 | 当简单模型识别到“有人”时，当前周期不得调用 VLM | ⚠️ 配置项已接入，真实 VLM 调度待实现 |
 | F-AIS-7 | 当简单模型识别为“无人 + 亮灯”但置信度不足、状态刚变化、或持续时间达到复核阈值时，允许调用 VLM 复核 | ⏳ 待实现 |
 | F-AIS-8 | VLM 主要用于修补简单模型漏检：确认是否有人、是否亮灯、是否存在遮挡 / 反光 / 日光干扰 | ⏳ 待实现 |
 | F-AIS-9 | 简单模型与 VLM 输出需要保留来源字段，便于排查是 simple 还是 vlm 给出的结论 | ⏳ 待实现 |
@@ -191,7 +205,7 @@
 | F-AIS-11 | 算法禁用时段内，不产生新报警、不调用模型；已存在报警可按配置自动恢复或保持展示 | ⏳ 待实现 |
 | F-AIS-12 | 提供算法调度日志：跳过原因、模型耗时、置信度、VLM 调用次数 | ⏳ 待实现 |
 | F-AIS-13 | 算法调度逻辑由独立 scheduler 模块负责，不放入 detector / analyzer | ⏳ 待实现 |
-| F-AIS-14 | 配置支持继承：系统默认 < 全局配置 < 分组配置 < 通道配置 | ⏳ 待实现 |
+| F-AIS-14 | 配置支持继承：系统默认 < 全局配置 < 分组配置 < 通道配置 | ⚠️ 后端有效配置已支持，UI 先支持全局配置 |
 | F-AIS-15 | UI 需要展示每项配置的来源层级，并支持恢复为继承值 | ⏳ 待实现 |
 
 #### 3.11.4 推荐判定流程
@@ -249,13 +263,13 @@ pub struct SceneState {
 | --- | --- | --- |
 | F-NOTIFY-1 | 系统设置新增「通知配置」页面或分区 | ⏳ 待实现 |
 | F-NOTIFY-2 | 支持全局启用 / 停用通知 | ⏳ 待实现 |
-| F-NOTIFY-3 | 支持 Webhook / HTTP POST 通知接口配置 | ⏳ 待实现 |
-| F-NOTIFY-4 | 通知配置包含：名称、URL、Method、Headers、Body 模板、超时、重试次数、启用状态 | ⏳ 待实现 |
-| F-NOTIFY-5 | 支持按事件类型选择通知：报警触发、报警恢复、视频离线、算法异常 | ⏳ 待实现 |
-| F-NOTIFY-6 | 支持通知冷却时间，默认同一通道同一报警 30 分钟内不重复通知 | ⏳ 待实现 |
-| F-NOTIFY-7 | 支持测试发送，前端展示响应状态码和错误信息 | ⏳ 待实现 |
-| F-NOTIFY-8 | 通知发送结果写入系统日志，失败不影响本地报警展示 | ⏳ 待实现 |
-| F-NOTIFY-9 | 通知 payload 需要包含 source、location、person、light、alarm、ts、confidence、state_source | ⏳ 待实现 |
+| F-NOTIFY-3 | 支持 Webhook / HTTP POST 通知接口配置 | ✅ 后端已实现 |
+| F-NOTIFY-4 | 通知配置包含：名称、URL、Method、Headers、Body 模板、超时、重试次数、启用状态 | ✅ 后端已实现 |
+| F-NOTIFY-5 | 支持按事件类型选择通知：报警触发、报警恢复、视频离线、算法异常 | ⚠️ 已支持事件过滤，当前自动触发报警类事件 |
+| F-NOTIFY-6 | 支持通知冷却时间，默认同一通道同一报警 30 分钟内不重复通知 | ✅ 后端已实现 |
+| F-NOTIFY-7 | 支持测试发送，前端展示响应状态码和错误信息 | ⚠️ 后端命令已实现，UI 待接入 |
+| F-NOTIFY-8 | 通知发送结果写入系统日志，失败不影响本地报警展示 | ✅ 后端已实现 |
+| F-NOTIFY-9 | 通知 payload 需要包含 source、location、person、light、alarm、ts、confidence、state_source | ✅ 后端已实现 |
 | F-NOTIFY-10 | 敏感字段如 token / secret 在 UI 中默认脱敏显示 | ⏳ 待实现 |
 
 通知 payload 默认格式：
@@ -307,9 +321,9 @@ resolved
 | --- | --- | --- |
 | F-ALM-1 | 报警状态包含 `normal / suspected / alarm_active / acknowledged / resolved` | ⏳ 待实现 |
 | F-ALM-2 | `suspected` 状态仅本地展示，不发送外部通知 | ⏳ 待实现 |
-| F-ALM-3 | `alarm_active` 首次进入时发送 `alarm_triggered` 通知 | ⏳ 待实现 |
-| F-ALM-4 | 管理员可确认报警，确认后进入 `acknowledged`，记录确认人、确认时间、备注 | ⏳ 待实现 |
-| F-ALM-5 | 已确认报警默认不重复发送触发通知，但仍可发送恢复通知 | ⏳ 待实现 |
+| F-ALM-3 | `alarm_active` 首次进入时发送 `alarm_triggered` 通知 | ✅ 后端已实现 |
+| F-ALM-4 | 管理员可确认报警，确认后进入 `acknowledged`，记录确认人、确认时间、备注 | ✅ 后端与总览 UI 已实现 |
+| F-ALM-5 | 已确认报警默认不重复发送触发通知，但仍可发送恢复通知 | ⚠️ 冷却已实现，确认态策略待细化 |
 | F-ALM-6 | 报警恢复条件可配置：灯关闭、有人出现、二者任一、二者同时满足 | ⏳ 待实现 |
 | F-ALM-7 | 报警恢复需满足连续稳定时间，默认 60 秒，避免状态抖动 | ⏳ 待实现 |
 | F-ALM-8 | 支持对单通道临时静默，静默期间不发送通知但继续记录状态 | ⏳ 待实现 |
@@ -348,10 +362,10 @@ resolved
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-NH-1 | 所有通知发送结果落库，包含目标、事件、请求时间、响应状态、错误原因 | ⏳ 待实现 |
-| F-NH-2 | 通知历史支持按时间、通道、事件类型、成功 / 失败筛选 | ⏳ 待实现 |
-| F-NH-3 | 失败通知支持手动重发 | ⏳ 待实现 |
-| F-NH-4 | 自动重试达到上限后记录为失败，不再无限重试 | ⏳ 待实现 |
+| F-NH-1 | 所有通知发送结果落库，包含目标、事件、请求时间、响应状态、错误原因 | ✅ 后端已实现 |
+| F-NH-2 | 通知历史支持按时间、通道、事件类型、成功 / 失败筛选 | ⚠️ 后端支持通道、事件类型、成功 / 失败、数量筛选 |
+| F-NH-3 | 失败通知支持手动重发 | ✅ 后端已实现 |
+| F-NH-4 | 自动重试达到上限后记录为失败，不再无限重试 | ⚠️ 单次发送失败记录已实现，自动重试队列待实现 |
 | F-NH-5 | 通知模板变量需要在 UI 中列出并提供示例预览 | ⏳ 待实现 |
 
 ### 3.17 隐私与安全（新增）
@@ -387,12 +401,12 @@ resolved
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
 | F-STAT-1 | `SceneState` 只表达算法看到的画面事实：人、灯、置信度、来源 | ⏳ 待实现 |
-| F-STAT-2 | `AlarmRecord` 只表达业务报警生命周期，不直接等同于 `SceneState.alarm` | ⏳ 待实现 |
-| F-STAT-3 | 通知只能由 `AlarmRecord` 状态变化触发，不直接由 `SceneState` 触发 | ⏳ 待实现 |
+| F-STAT-2 | `AlarmRecord` 只表达业务报警生命周期，不直接等同于 `SceneState.alarm` | ✅ 骨架已实现 |
+| F-STAT-3 | 通知只能由 `AlarmRecord` 状态变化触发，不直接由 `SceneState` 触发 | ✅ 骨架已实现 |
 | F-STAT-4 | 视频源需要独立 `online_status`：`online / offline / degraded` | ⏳ 待实现 |
 | F-STAT-5 | 算法需要独立 `algorithm_status`：`idle / running / disabled / error` | ⏳ 待实现 |
 | F-STAT-6 | 每路视频记录 `last_frame_at`、`last_algorithm_at`、`last_error` | ⏳ 待实现 |
-| F-STAT-7 | UI 同时展示视频在线状态、算法状态和报警状态 | ⏳ 待实现 |
+| F-STAT-7 | UI 同时展示视频在线状态、算法状态和报警状态 | ⚠️ 报警记录 UI 已接入，运行状态细节展示待增强 |
 
 ---
 
@@ -645,8 +659,8 @@ pub struct ChannelRuntimeStatus {
 | `create_notification_target` | `payload` | `NotificationTarget` | ✓ |
 | `update_notification_target` | `id, payload` | `NotificationTarget` | ✓ |
 | `delete_notification_target` | `id` | `{ ok }` | ✓ |
-| `test_notification_target` | `id? 或 payload` | `{ ok, status?, error? }` | ✓ |
-| `list_notification_history` | `filter` | `NotificationRecord[]` | ✓ |
+| `test_notification_target` | `id? 或 payload` | `NotificationRecord` | ✓ |
+| `list_notification_history` | `source_id?, event?, ok?, limit?` | `NotificationRecord[]` | ✓ |
 | `resend_notification` | `record_id` | `NotificationRecord` | ✓ |
 | `get_security_config` | — | `SecurityConfig` | ✓ |
 | `update_security_config` | `payload` | `SecurityConfig` | ✓ |
@@ -700,22 +714,34 @@ pub struct ChannelRuntimeStatus {
 ## 7. 数据流
 
 ```
-[Tools 推流器]  ──HLS/RTMP──►  stream/  (HlsReader / RtmpServer)
-                                    │  FramePacket
-                                    ▼
-                            pipeline/  (decoder → detector → analyzer → alerts)
-                                    │  SceneState
-                                    ▼
-                            state.rs  (record_state_change + app.emit)
-                                    │                    │
-                                    ▼                    ▼
-                            state_history.json   ecoalert://scene_state
-                                                         │
-                                                         ▼
-                                                    webui (stateStates Map)
-                                                         │
-                                                         ▼
-                                                    图标 / 报警 banner / 状态历史
+当前开发期：
+
+Video/*.mp4 或 HLS URL
+        │
+        ▼
+webui 播放预览 + Tauri mock 状态
+        │
+        ▼
+图标 / 报警 banner / 状态历史
+
+目标生产链路：
+
+Video / Camera / RTSP / HLS
+        │
+        ▼
+stream/  (HLS / RTMP / RTSP 转码)
+        │  FramePacket
+        ▼
+pipeline/  (scheduler → decoder → detector → analyzer → alerts)
+        │  SceneState / AlarmRecord
+        ▼
+state.rs  (record_state_change + app.emit)
+        │                    │
+        ▼                    ▼
+state_history.json    ecoalert://scene_state / ecoalert://alarm
+                             │
+                             ▼
+                           webui
 ```
 
 ---
@@ -765,7 +791,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 - **Node.js 18+**
 - **Rust 1.77+**（仅 Tauri 模式）
 - **WebView2**（Windows 10+ / 11 自带）
-- **ffmpeg**（Tools 推流器依赖）
+- **ffmpeg**（后续推流器 / RTSP 转码依赖）
 
 ---
 
@@ -814,7 +840,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 中 | 日志持久化 | 当前系统日志主要是前端内存态，重启后不可查；建议后端落盘并支持查询 |
 | 中 | 配置 schema 与迁移 | 新增算法 / 通知配置后，需要版本号、默认值和旧配置迁移 |
 | 中 | 测试补齐 | 至少补 Tauri command 单测、配置读写单测、通知模板渲染单测、算法调度规则单测 |
-| 低 | 大文件治理 | `video.zip` 体积较大，不建议长期放在主仓；可改为外部下载或 Git LFS |
+| 低 | 大文件治理 | `Video/*.mp4` 体积较大，不建议提交到主仓；可改为外部下载或 Git LFS |
 
 ## 11. 未来工作
 
@@ -827,7 +853,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 高 | 通知接口与通知配置页面 |
 | 高 | 通知历史、失败重发和通知模板变量预览 |
 | 高 | RTSP → HLS 转码服务（`stream/rtmp.rs`） |
-| 中 | Tools 推流器补完 ffmpeg 进程管理 |
+| 中 | Tools 推流器补完 ffmpeg 进程管理；当前仅保留 CLI 占位 |
 | 中 | 状态历史按时间段筛选 / 导出 |
 | 中 | 隐私安全配置：外部 VLM、截图保存、密钥存储、打码 |
 | 中 | 配置导入导出、dry-run、schema 迁移 |

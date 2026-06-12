@@ -14,11 +14,147 @@ const MOCK_KEY = 'ecoalert_mock_sources';
 const MOCK_GROUPS_KEY = 'ecoalert_mock_groups';
 const MOCK_HISTORY_KEY = 'ecoalert_mock_history';
 const MOCK_PW_KEY = 'ecoalert_mock_pw';
+const MOCK_NTF_KEY = 'ecoalert_mock_notify_targets';
+const MOCK_NTF_HISTORY_KEY = 'ecoalert_mock_notify_history';
+
+function normalizeSource(s) {
+  if (!s) return s;
+  return {
+    ...s,
+    type: s.type ?? s.source_type,
+    groupId: s.groupId ?? s.group_id ?? 'grp-default',
+    createdAt: s.createdAt ?? s.created_at,
+  };
+}
+
+function normalizeGroup(g) {
+  if (!g) return g;
+  return {
+    ...g,
+    createdAt: g.createdAt ?? g.created_at,
+  };
+}
+
+function normalizeStateRecord(r) {
+  if (!r) return r;
+  return {
+    ...r,
+    sourceId: r.sourceId ?? r.source_id,
+  };
+}
+
+function normalizeSceneState(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    sourceId: payload.sourceId ?? payload.source_id,
+  };
+}
+
+function normalizeRuntimeStatus(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    sourceId: payload.sourceId ?? payload.source_id,
+    onlineStatus: payload.onlineStatus ?? payload.online_status,
+    algorithmStatus: payload.algorithmStatus ?? payload.algorithm_status,
+    alarmStatus: payload.alarmStatus ?? payload.alarm_status,
+    lastFrameAt: payload.lastFrameAt ?? payload.last_frame_at,
+    lastAlgorithmAt: payload.lastAlgorithmAt ?? payload.last_algorithm_at,
+    lastError: payload.lastError ?? payload.last_error,
+    effectiveAlgorithmConfigScope: payload.effectiveAlgorithmConfigScope ?? payload.effective_algorithm_config_scope,
+  };
+}
+
+function normalizeAlgorithmSchedule(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    sourceId: payload.sourceId ?? payload.source_id,
+    latencyMs: payload.latencyMs ?? payload.latency_ms,
+  };
+}
+
+function normalizeAlarmRecord(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    sourceId: payload.sourceId ?? payload.source_id,
+    firstSeenAt: payload.firstSeenAt ?? payload.first_seen_at,
+    triggeredAt: payload.triggeredAt ?? payload.triggered_at,
+    acknowledgedAt: payload.acknowledgedAt ?? payload.acknowledged_at,
+    resolvedAt: payload.resolvedAt ?? payload.resolved_at,
+    acknowledgedBy: payload.acknowledgedBy ?? payload.acknowledged_by,
+    lastStateId: payload.lastStateId ?? payload.last_state_id,
+  };
+}
+
+function normalizeAlarmEvent(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    alarmId: payload.alarmId ?? payload.alarm_id,
+    sourceId: payload.sourceId ?? payload.source_id,
+  };
+}
+
+function normalizeNotificationRecord(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    targetId: payload.targetId ?? payload.target_id,
+    targetName: payload.targetName ?? payload.target_name,
+    sourceId: payload.sourceId ?? payload.source_id,
+    alarmId: payload.alarmId ?? payload.alarm_id,
+    statusCode: payload.statusCode ?? payload.status_code,
+    requestAt: payload.requestAt ?? payload.request_at,
+    latencyMs: payload.latencyMs ?? payload.latency_ms,
+    retryCount: payload.retryCount ?? payload.retry_count,
+    requestBody: payload.requestBody ?? payload.request_body,
+  };
+}
+
+function normalizeNotificationEvent(payload) {
+  if (!payload) return payload;
+  return {
+    ...payload,
+    recordId: payload.recordId ?? payload.record_id,
+    targetId: payload.targetId ?? payload.target_id,
+  };
+}
+
+function toSourcePayload(payload) {
+  return {
+    name: payload.name,
+    url: payload.url,
+    type: payload.type ?? payload.sourceType ?? payload.source_type,
+    location: payload.location ?? '',
+    enabled: !!payload.enabled,
+    group_id: payload.groupId ?? payload.group_id ?? 'grp-default',
+    order: payload.order ?? 0,
+  };
+}
+
+function toOrderItems(items) {
+  return (items || []).map((it) => ({
+    id: it.id,
+    order: it.order,
+    group_id: it.groupId ?? it.group_id,
+  }));
+}
 
 function mockLoad() {
-  // 浏览器预览模式：永远返回最新默认数据（4 组 12 路）。
-  // 用户的修改不会被持久化（mock 模式本身就是为了看 UI）。
-  return mockDefaultSources();
+  // 浏览器预览模式：优先读 localStorage（保留用户修改），否则返回默认数据
+  try {
+    const raw = localStorage.getItem(MOCK_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length > 0) return arr;
+    }
+  } catch (_) {}
+  const defaults = mockDefaultSources();
+  mockSave(defaults);
+  return defaults;
 }
 
 function mockDefaultSources() {
@@ -45,12 +181,21 @@ function mockSave(arr) {
   localStorage.setItem(MOCK_KEY, JSON.stringify(arr));
 }
 function mockLoadGroups() {
-  return [
+  try {
+    const raw = localStorage.getItem(MOCK_GROUPS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length > 0) return arr;
+    }
+  } catch (_) {}
+  const defaults = [
     { id: 'grp-default', name: '默认分组',   order: 0, collapsed: false, createdAt: Date.now() },
     { id: 'grp-a',       name: 'A 栋办公',   order: 1, collapsed: false, createdAt: Date.now() },
     { id: 'grp-b',       name: 'B 栋车间',   order: 2, collapsed: false, createdAt: Date.now() },
     { id: 'grp-c',       name: '园区周界',   order: 3, collapsed: false, createdAt: Date.now() },
   ];
+  mockSaveGroups(defaults);
+  return defaults;
 }
 function mockSaveGroups(arr) {
   localStorage.setItem(MOCK_GROUPS_KEY, JSON.stringify(arr));
@@ -75,6 +220,85 @@ function mockGetPw() {
 }
 function mockSetPw(p) {
   localStorage.setItem(MOCK_PW_KEY, p);
+}
+
+/* ---------- 通知目标 mock（持久化到 localStorage，预置一个企业内部通知） ---------- */
+function mockLoadNtf() {
+  try {
+    const raw = localStorage.getItem(MOCK_NTF_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      // 旧 cache 是空数组 / 不含预置 id → 重置为默认
+      if (Array.isArray(arr) && arr.length === 0) {
+        // fall through to default
+      } else if (Array.isArray(arr) && arr.some((x) => x && x.id === 'ntf-default-hirain')) {
+        return arr;
+      } else if (Array.isArray(arr)) {
+        // 已有用户自定义的目标，保留，但确保预置目标也存在
+        const hasDefault = arr.some((x) => x && x.id === 'ntf-default-hirain');
+        if (!hasDefault) {
+          arr.unshift(buildDefaultNtfTarget());
+          mockSaveNtf(arr);
+        }
+        return arr;
+      }
+    }
+  } catch (_) {}
+  // 预置默认通知：适配自企业内推
+  return [buildDefaultNtfTarget()];
+}
+
+function buildDefaultNtfTarget() {
+  return {
+    id: 'ntf-default-hirain',
+    name: '企业内部通知（适配示例）',
+    enabled: true,
+    url: 'https://biz.hirain.com/synergy/notice/545B6B5FEF17',
+    method: 'POST',
+    headers: [
+      { name: 'Content-Type', value: 'application/json' },
+      { name: 'Cookie', value: 'JSESSIONID=1D6DEE38ECAC44223748CE0B062F8CC0' },
+    ],
+    eventTypes: ['alarm_triggered', 'alarm_resolved'],
+    cooldownSec: 1800,
+    timeoutSec: 10,
+    retryCount: 2,
+    bodyTemplate: JSON.stringify({
+      touser: 'ai_challenge',
+      msgtype: 'text',
+      agentcode: 'ai_challenge',
+      text: { content: '{{rendered_text}}' },
+      subject: '{{subject}}',
+      from: '{{from}}',
+    }, null, 2),
+    textTemplates: {
+      alarm_triggered:
+        '[告警] 通道「{{source_name}}」在 {{location}} 触发告警：无人 + 亮灯<br>请及时处理。',
+      alarm_resolved:
+        '[已恢复] 通道「{{source_name}}」在 {{location}} 状态已恢复正常<br>告警持续 {{duration}}',
+      test: '【EcoAlert 测试】这是一条来自 EcoAlert 的测试通知，时间 {{ts}}',
+    },
+    subjectTemplates: {
+      alarm_triggered: '告警：{{source_name}}',
+      alarm_resolved: '已恢复：{{source_name}}',
+      test: 'EcoAlert 测试通知',
+    },
+    fromName: 'EcoAlert 监控系统',
+    createdAt: Date.now(),
+  };
+}
+function mockSaveNtf(arr) {
+  localStorage.setItem(MOCK_NTF_KEY, JSON.stringify(arr));
+}
+function mockLoadNtfHistory() {
+  try {
+    const raw = localStorage.getItem(MOCK_NTF_HISTORY_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return [];
+}
+function mockSaveNtfHistory(arr) {
+  localStorage.setItem(MOCK_NTF_HISTORY_KEY, JSON.stringify(arr));
 }
 
 /* ---------- 命令封装 ---------- */
@@ -103,17 +327,17 @@ export async function checkAuth() {
 }
 
 export async function listSources() {
-  if (isTauri) return invoke('list_sources');
+  if (isTauri) return (await invoke('list_sources')).map(normalizeSource);
   return mockLoad();
 }
 
 export async function listGroups() {
-  if (isTauri) return invoke('list_groups');
+  if (isTauri) return (await invoke('list_groups')).map(normalizeGroup);
   return mockLoadGroups();
 }
 
 export async function createGroup(payload) {
-  if (isTauri) return invoke('create_group', { payload });
+  if (isTauri) return normalizeGroup(await invoke('create_group', { payload }));
   const all = mockLoadGroups();
   const item = {
     id: 'grp-' + Math.random().toString(36).slice(2, 10),
@@ -126,7 +350,7 @@ export async function createGroup(payload) {
 }
 
 export async function updateGroup(id, payload) {
-  if (isTauri) return invoke('update_group', { id, payload });
+  if (isTauri) return normalizeGroup(await invoke('update_group', { id, payload }));
   const all = mockLoadGroups();
   const idx = all.findIndex((g) => g.id === id);
   if (idx < 0) throw new Error('分组不存在');
@@ -147,7 +371,7 @@ export async function deleteGroup(id) {
 }
 
 export async function reorder(items) {
-  if (isTauri) return invoke('reorder', { items });
+  if (isTauri) return invoke('reorder', { items: toOrderItems(items) });
   const all = mockLoad();
   for (const it of items) {
     const s = all.find((x) => x.id === it.id);
@@ -161,7 +385,7 @@ export async function reorder(items) {
 }
 
 export async function createSource(payload) {
-  if (isTauri) return invoke('create_source', { payload });
+  if (isTauri) return normalizeSource(await invoke('create_source', { payload: toSourcePayload(payload) }));
   const all = mockLoad();
   const item = {
     id: 'src-' + Math.random().toString(36).slice(2, 10),
@@ -175,7 +399,7 @@ export async function createSource(payload) {
 }
 
 export async function updateSource(id, payload) {
-  if (isTauri) return invoke('update_source', { id, payload });
+  if (isTauri) return normalizeSource(await invoke('update_source', { id, payload: toSourcePayload(payload) }));
   const all = mockLoad();
   const idx = all.findIndex((s) => s.id === id);
   if (idx < 0) throw new Error('视频源不存在');
@@ -198,9 +422,199 @@ export async function reportSceneState(sourceId, person, light) {
 }
 
 export async function getStateHistory(sourceId, limit) {
-  if (isTauri) return invoke('get_state_history', { sourceId: sourceId ?? null, limit: limit ?? 100 });
+  if (isTauri) {
+    const res = await invoke('get_state_history', { sourceId: sourceId ?? null, limit: limit ?? 100 });
+    const records = (res.records || []).map(normalizeStateRecord);
+    const bySource = {};
+    for (const [id, list] of Object.entries(res.bySource || res.by_source || {})) {
+      bySource[id] = (list || []).map(normalizeStateRecord);
+    }
+    return { ...res, records, bySource };
+  }
   // mock 模式从 localStorage 读
   return mockLoadHistory(sourceId, limit);
+}
+
+export async function getChannelRuntimeStatus(sourceId = null) {
+  if (isTauri) {
+    const list = await invoke('get_channel_runtime_status', { sourceId });
+    return (list || []).map(normalizeRuntimeStatus);
+  }
+  const now = Date.now();
+  return mockLoad()
+    .filter((s) => !sourceId || s.id === sourceId)
+    .map((s) => ({
+      sourceId: s.id,
+      onlineStatus: s.enabled ? 'online' : 'offline',
+      algorithmStatus: s.enabled ? 'idle' : 'disabled',
+      alarmStatus: 'normal',
+      lastFrameAt: s.enabled ? now : null,
+      lastAlgorithmAt: null,
+      lastError: null,
+      effectiveAlgorithmConfigScope: 'global',
+      ts: now,
+    }));
+}
+
+export async function listAlarms({ status = null, sourceId = null, limit = 100 } = {}) {
+  if (isTauri) {
+    const list = await invoke('list_alarms', { status, sourceId, limit });
+    return (list || []).map(normalizeAlarmRecord);
+  }
+  return [];
+}
+
+export async function ackAlarm(alarmId, note = null) {
+  if (isTauri) return normalizeAlarmRecord(await invoke('ack_alarm', { alarmId, note }));
+  return { id: alarmId, status: 'acknowledged', acknowledgedAt: Date.now(), note };
+}
+
+export async function resolveAlarm(alarmId, note = null) {
+  if (isTauri) return normalizeAlarmRecord(await invoke('resolve_alarm', { alarmId, note }));
+  return { id: alarmId, status: 'resolved', resolvedAt: Date.now(), note };
+}
+
+export async function getAlgorithmConfig(sourceId = null) {
+  if (isTauri) return invoke('get_algorithm_config', { sourceId });
+  return {
+    enabled: true,
+    scope: sourceId ? 'source' : 'global',
+    scopeId: sourceId,
+    activeWindows: [{ weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' }],
+    exceptionWindows: [],
+    simpleIntervalSec: 10,
+    vlmIntervalSec: 300,
+    vlmEnabled: false,
+    vlmSkipWhenPerson: true,
+    personThreshold: 0.65,
+    lightThreshold: 0.7,
+    alarmHoldSec: 300,
+    alarmRecoverSec: 60,
+    recoverPolicy: 'either',
+    vlmHourlyLimit: 12,
+    roiVersion: null,
+  };
+}
+
+export async function updateAlgorithmConfig(sourceId, payload) {
+  if (isTauri) return invoke('update_algorithm_config', { sourceId: sourceId ?? null, payload });
+  return { ...payload, scope: sourceId ? 'source' : 'global', scopeId: sourceId ?? null };
+}
+
+export async function getEffectiveAlgorithmConfig(sourceId) {
+  if (isTauri) return invoke('get_effective_algorithm_config', { sourceId });
+  return { config: await getAlgorithmConfig(sourceId), scope: sourceId ? 'source' : 'global' };
+}
+
+export async function getRoiConfig(sourceId) {
+  if (isTauri) return invoke('get_roi_config', { sourceId });
+  return {
+    sourceId,
+    version: 'mock-roi',
+    lightRois: [],
+    excludeRois: [],
+    personRois: [],
+    lightOnThreshold: 0.7,
+    lightOffThreshold: 0.45,
+    updatedAt: Date.now(),
+  };
+}
+
+export async function updateRoiConfig(sourceId, payload) {
+  if (isTauri) return invoke('update_roi_config', { sourceId, payload });
+  return { ...payload, sourceId, updatedAt: Date.now() };
+}
+
+export async function listNotificationTargets() {
+  if (isTauri) return invoke('list_notification_targets');
+  return mockLoadNtf();
+}
+
+export async function createNotificationTarget(payload) {
+  if (isTauri) return invoke('create_notification_target', { payload });
+  const all = mockLoadNtf();
+  const item = { id: 'ntf-' + Math.random().toString(36).slice(2, 10), createdAt: Date.now(), ...payload };
+  all.push(item);
+  mockSaveNtf(all);
+  return item;
+}
+
+export async function updateNotificationTarget(id, payload) {
+  if (isTauri) return invoke('update_notification_target', { id, payload });
+  const all = mockLoadNtf();
+  const idx = all.findIndex((x) => x.id === id);
+  if (idx < 0) throw new Error('通知目标不存在');
+  all[idx] = { ...all[idx], ...payload };
+  mockSaveNtf(all);
+  return all[idx];
+}
+
+export async function deleteNotificationTarget(id) {
+  if (isTauri) return invoke('delete_notification_target', { id });
+  const all = mockLoadNtf().filter((x) => x.id !== id);
+  mockSaveNtf(all);
+  return { ok: true };
+}
+
+export async function listNotificationHistory({ sourceId = null, event = null, ok = null, limit = 100 } = {}) {
+  if (isTauri) {
+    const list = await invoke('list_notification_history', { sourceId, event, ok, limit });
+    return (list || []).map(normalizeNotificationRecord);
+  }
+  let arr = mockLoadNtfHistory();
+  if (sourceId) arr = arr.filter((r) => r.sourceId === sourceId);
+  if (event) arr = arr.filter((r) => r.event === event);
+  if (ok !== null && ok !== undefined) arr = arr.filter((r) => !!r.ok === !!ok);
+  return arr.slice(-limit).reverse();
+}
+
+export async function testNotificationTarget({ id = null, payload = null } = {}) {
+  if (isTauri) {
+    return normalizeNotificationRecord(await invoke('test_notification_target', { id, payload }));
+  }
+  // 浏览器 mock：记录一次测试发送，返回成功
+  const rec = {
+    id: 'nhr-' + Math.random().toString(36).slice(2, 10),
+    targetId: id ?? 'mock-target',
+    targetName: payload?.name ?? 'Mock',
+    event: 'test',
+    sourceId: null,
+    sourceName: null,
+    location: null,
+    ok: true,
+    statusCode: 200,
+    requestAt: Date.now(),
+    durationMs: 42,
+    retryCount: 0,
+    previewBody: payload?.bodyTemplate || '',
+  };
+  const arr = mockLoadNtfHistory();
+  arr.push(rec);
+  if (arr.length > 500) arr.splice(0, arr.length - 500);
+  mockSaveNtfHistory(arr);
+  return rec;
+}
+
+export async function resendNotification(recordId) {
+  if (isTauri) return normalizeNotificationRecord(await invoke('resend_notification', { recordId }));
+  return { id: recordId, ok: true, statusCode: 200, requestAt: Date.now() };
+}
+
+export async function getSecurityConfig() {
+  if (isTauri) return invoke('get_security_config');
+  return {
+    schemaVersion: 1,
+    externalVlmEnabled: false,
+    saveVlmSnapshots: false,
+    snapshotRetentionDays: 7,
+    includeImageInNotification: false,
+    blurPersonBeforeExternalSend: true,
+  };
+}
+
+export async function updateSecurityConfig(payload) {
+  if (isTauri) return invoke('update_security_config', { payload });
+  return payload;
 }
 
 export async function changePassword(oldPw, newPw) {
@@ -249,13 +663,36 @@ export async function onStatus(handler) {
   }, 3000);
   return () => clearInterval(timer);
 }
+export async function onRuntimeStatus(handler) {
+  if (isTauri) {
+    return listen('ecoalert://runtime_status', (e) => {
+      handler((e.payload || []).map(normalizeRuntimeStatus));
+    });
+  }
+  const timer = setInterval(async () => {
+    handler(await getChannelRuntimeStatus());
+  }, 3000);
+  return () => clearInterval(timer);
+}
+export async function onAlgorithmSchedule(handler) {
+  if (isTauri) return listen('ecoalert://algorithm_schedule', (e) => handler(normalizeAlgorithmSchedule(e.payload)));
+  return () => {};
+}
+export async function onAlarm(handler) {
+  if (isTauri) return listen('ecoalert://alarm', (e) => handler(normalizeAlarmEvent(e.payload)));
+  return () => {};
+}
+export async function onNotification(handler) {
+  if (isTauri) return listen('ecoalert://notification', (e) => handler(normalizeNotificationEvent(e.payload)));
+  return () => {};
+}
 export async function onSources(handler) {
   if (isTauri) return listen('ecoalert://sources', (e) => handler(e.payload));
   // 浏览器 mock 不再单独推 sources（手动 reload）
   return () => {};
 }
 export async function onSceneState(handler) {
-  if (isTauri) return listen('ecoalert://scene_state', (e) => handler(e.payload));
+  if (isTauri) return listen('ecoalert://scene_state', (e) => handler(normalizeSceneState(e.payload)));
   // 浏览器 mock：每 4s 给每个源推一次状态（与 Rust 端节奏一致）
   const seedMap = new Map();
   const timer = setInterval(() => {

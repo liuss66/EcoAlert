@@ -4,6 +4,7 @@
 //! 真实实现：rtsp-rs / rtmp crate 监听端口。
 
 use crate::stream::FramePacket;
+use std::future;
 use tokio::sync::mpsc;
 
 pub struct RtmpServer {
@@ -11,11 +12,13 @@ pub struct RtmpServer {
 }
 
 impl RtmpServer {
-    pub fn new(bind: impl Into<String>) -> Self { Self { bind: bind.into() } }
+    pub fn new(bind: impl Into<String>) -> Self {
+        Self { bind: bind.into() }
+    }
 
     pub async fn run(self, _tx: mpsc::Sender<FramePacket>) -> anyhow::Result<()> {
         // TODO: 监听 RTMP 端口
-        futures::future::pending::<()>().await;
+        future::pending::<()>().await;
         Ok(())
     }
 }

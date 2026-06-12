@@ -12,17 +12,17 @@ defaults:
 
 cameras:
   - name: cam1
-    source: ../Video/samples/indoor/indoor_720p_30s_meeting_hardware.mp4
+    source: ../Video/sample_01_meeting.mp4
     protocol: hls
     location: "会议室 1"
     bitrate: 1500         # 模拟码率（kbps）
   - name: cam2
-    source: ../Video/samples/indoor/indoor_720p_30s_meeting_chassis_mid.mp4
+    source: ../Video/sample_02_meeting.mp4
     protocol: hls
     location: "会议室 2"
     bitrate: 2000
   - name: cam3
-    source: ../Video/samples/motion/motion_720p_30s_test_case02.mp4
+    source: ../Video/sample_03_motion.mp4
     protocol: rtmp
     location: "测试通道"
     bitrate: 1000

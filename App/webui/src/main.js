@@ -1,7 +1,7 @@
 /* ===========================================================
    EcoAlert 前端主逻辑（Tauri 版）
    - 登录 / 鉴权
-   - 视图切换：实时监控 / 监控总览 / 视频源管理 / 系统设置 / 日志
+   - 视图切换：实时监控 / 监控总览 / 视频管理 / 系统设置 / 日志
    - 视频播放（HLS / MP4 / 摄像头）
    - 事件订阅（替代 WebSocket）
    =========================================================== */
@@ -11,8 +11,12 @@ import {
   listSources, listGroups, createGroup, updateGroup, deleteGroup, reorder,
   createSource, updateSource, deleteSource,
   reportSceneState, getStateHistory,
+  listAlarms, ackAlarm, resolveAlarm,
+  getAlgorithmConfig, updateAlgorithmConfig,
+  listNotificationTargets, createNotificationTarget, deleteNotificationTarget,
+  listNotificationHistory, testNotificationTarget, resendNotification,
   changePassword, getDataDir,
-  onEvent, onStatus, onSources, onSceneState, isTauriEnv,
+  onEvent, onStatus, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
 } from './api.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -93,8 +97,82 @@ const enterApp = async () => {
   await subscribeEvents();
   // 设置页数据
   try { $('#data-dir').textContent = await getDataDir(); } catch (_) {}
+  await renderSettings();
+  setupSettingsEnhancements();
+  setupSettingsTabs();
   if (!isTauriEnv) addLog('warn', '当前在浏览器预览模式（未连接 Tauri 后端）');
 };
+
+/* -------------------- 设置页增强：chip / slider 同步 -------------------- */
+function setupSettingsEnhancements() {
+  // 1) 星期 chip 切换 → 同步到隐藏 input（main.js 仍读 #algo-weekdays）
+  const chipBox = $('#algo-weekday-chips');
+  const hidden = $('#algo-weekdays');
+  if (chipBox && hidden && !chipBox.dataset.bound) {
+    chipBox.dataset.bound = '1';
+    const refresh = () => {
+      const active = $$('.weekday-chip.active', chipBox).map((c) => c.dataset.wd);
+      hidden.value = active.join(',');
+      // 触发 input 事件，让外部能 watch
+      hidden.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    chipBox.addEventListener('click', (e) => {
+      const btn = e.target.closest('.weekday-chip');
+      if (!btn) return;
+      btn.classList.toggle('active');
+      refresh();
+    });
+    // 全局辅助：fillAlgorithmForm 写完 hidden 后，外部可手动调 syncChipsFromHidden()
+    syncChipsFromHidden = () => {
+      const set = new Set(String(hidden.value || '').split(',').map((s) => s.trim()).filter(Boolean));
+      $$('.weekday-chip', chipBox).forEach((c) => {
+        c.classList.toggle('active', set.has(c.dataset.wd));
+      });
+    };
+  }
+
+  // 2) 阈值 slider 同步显示数字
+  const syncSlider = (sliderId, labelId) => {
+    const s = $(sliderId);
+    const l = $(labelId);
+    if (!s || !l || s.dataset.bound) return;
+    s.dataset.bound = '1';
+    const fmt = (v) => (Math.round(Number(v) * 100) / 100).toFixed(2);
+    const update = () => (l.textContent = fmt(s.value));
+    s.addEventListener('input', update);
+    update();
+  };
+  syncSlider('#algo-person-threshold', '#algo-person-threshold-val');
+  syncSlider('#algo-light-threshold', '#algo-light-threshold-val');
+}
+
+let syncChipsFromHidden = () => {};
+
+/* -------------------- 设置页 Tab 切换 -------------------- */
+function setupSettingsTabs() {
+  const tabs = $$('#settings-tabs .settings-tab');
+  if (tabs.length === 0) return;
+  const panels = tabs
+    .map((t) => document.getElementById(t.dataset.target))
+    .filter(Boolean);
+  const show = (targetId) => {
+    tabs.forEach((t) => t.classList.toggle('active', t.dataset.target === targetId));
+    panels.forEach((p) => p.classList.toggle('hidden', p.id !== targetId));
+    // 切 tab 时把页面滚到顶，避免停留在上一个 panel 的中间
+    const main = document.querySelector('.main');
+    if (main) main.scrollTo?.({ top: 0, behavior: 'smooth' });
+    window.scrollTo?.({ top: 0, behavior: 'smooth' });
+  };
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', (e) => {
+      e.preventDefault();
+      show(tab.dataset.target);
+    });
+  });
+  // 初始化：默认显示第一个 tab 对应 panel
+  const initial = tabs.find((t) => t.classList.contains('active')) || tabs[0];
+  show(initial.dataset.target);
+}
 
 /* -------------------- 时钟 -------------------- */
 let clockTimer = null;
@@ -110,8 +188,9 @@ const startClock = () => {
 const VIEW_META = {
   live: { title: '实时监控', sub: '查看所有视频源的实时画面' },
   overview: { title: '监控总览', sub: '全局统计与各通道状态' },
-  sources: { title: '视频源管理', sub: '新增 / 编辑 / 删除视频流' },
+  sources: { title: '视频管理', sub: '新增 / 编辑 / 删除视频流' },
   settings: { title: '系统设置', sub: '修改登录密码 / 查看数据目录' },
+  'notify-history': { title: '通知历史', sub: '每次通知发送的记录与结果' },
   console: { title: '系统日志', sub: '服务端与客户端事件流' },
 };
 const switchView = (name) => {
@@ -121,6 +200,8 @@ const switchView = (name) => {
   $('#view-title').textContent = VIEW_META[name].title;
   $('#view-sub').textContent = VIEW_META[name].sub;
   if (name === 'overview') renderOverview();
+  if (name === 'settings') renderSettings();
+  if (name === 'notify-history') renderNotificationHistory();
 };
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
 
@@ -128,6 +209,10 @@ $$('.nav-item').forEach((b) => b.addEventListener('click', () => switchView(b.da
 let sources = [];
 let groups = [];
 let stats = [];
+let alarms = [];
+let algorithmConfig = null;
+let notificationTargets = [];
+let notificationHistory = [];
 /** 实时状态：sourceId -> { person, light, alarm, ts } */
 let sceneStates = new Map();
 
@@ -229,10 +314,22 @@ const renderLive = () => {
 let dragSourceId = null;
 function bindDragAndDrop() {
   // 视频卡：可拖
-  $$('.video-card[draggable]').forEach((card) => {
+  $$('.video-card[draggable="true"]').forEach((card) => {
+    // 阻止 video 元素自己被拖
+    card.querySelectorAll('video').forEach((v) => {
+      v.setAttribute('draggable', 'false');
+    });
     card.addEventListener('dragstart', (e) => {
+      // 排除从按钮等交互控件触发的拖拽（让 click 正常生效）
+      if (e.target.closest('button, input, select, textarea, a[href]')) {
+        e.preventDefault();
+        return;
+      }
       dragSourceId = card.dataset.id;
       card.classList.add('dragging');
+      // 标记来源分组
+      const srcSection = card.closest('.group-section');
+      if (srcSection) srcSection.classList.add('drag-source');
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', card.dataset.id);
     });
@@ -252,13 +349,19 @@ function bindDragAndDrop() {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       zone.classList.add('drag-active');
+      const section = zone.closest('.group-section');
+      if (section) section.classList.add('drag-over');
     });
     zone.addEventListener('dragleave', () => {
       zone.classList.remove('drag-active');
+      const section = zone.closest('.group-section');
+      if (section) section.classList.remove('drag-over');
     });
     zone.addEventListener('drop', async (e) => {
       e.preventDefault();
       zone.classList.remove('drag-active');
+      const section = zone.closest('.group-section');
+      if (section) section.classList.remove('drag-over');
       const id = e.dataTransfer.getData('text/plain') || dragSourceId;
       const targetGroupId = zone.dataset.dropzone;
       if (!id) return;
@@ -516,7 +619,7 @@ $('#btn-refresh-status').addEventListener('click', async () => {
   renderSourcesTable();
 });
 
-/* -------------------- 视频源管理 -------------------- */
+/* -------------------- 视频管理 -------------------- */
 const renderSourcesTable = () => {
   const tb = $('#src-tbody');
   const q = ($('#src-search')?.value || '').trim().toLowerCase();
@@ -617,6 +720,8 @@ const renderOverview = async () => {
     }).join('');
   }
 
+  await renderAlarmRecords();
+
   // 状态历史（最近 50 条）
   const histTb = $('#ov-history-tbody');
   try {
@@ -640,6 +745,76 @@ const renderOverview = async () => {
     histTb.innerHTML = `<tr><td colspan="5" class="muted center">加载失败: ${escapeHtml(e.message)}</td></tr>`;
   }
 };
+
+const alarmStatusText = (status) => ({
+  suspected: '疑似',
+  alarm_active: '报警中',
+  acknowledged: '已确认',
+  resolved: '已恢复',
+}[status] || status || '-');
+
+const renderAlarmRecords = async () => {
+  const tb = $('#ov-alarm-tbody');
+  try {
+    alarms = await listAlarms({ limit: 50 });
+  } catch (err) {
+    tb.innerHTML = `<tr><td colspan="7" class="muted center">加载失败: ${escapeHtml(err.message || err)}</td></tr>`;
+    return;
+  }
+  if (!alarms.length) {
+    tb.innerHTML = '<tr><td colspan="7" class="muted center">暂无报警记录</td></tr>';
+    return;
+  }
+  const byId = new Map(sources.map((s) => [s.id, s.name]));
+  tb.innerHTML = alarms.map((alarm) => {
+    const canAck = alarm.status === 'alarm_active' || alarm.status === 'suspected';
+    const canResolve = alarm.status !== 'resolved';
+    const statusClass = alarm.status === 'resolved' ? 'muted' : 'status-pill';
+    const statusStyle = alarm.status === 'resolved' ? '' : 'style="background:#fee2e2;color:#991b1b;"';
+    return `
+      <tr>
+        <td>${fmtDate(alarm.triggeredAt || alarm.firstSeenAt)}</td>
+        <td>${escapeHtml(byId.get(alarm.sourceId) || alarm.sourceId)}</td>
+        <td><span class="${statusClass}" ${statusStyle}>${escapeHtml(alarmStatusText(alarm.status))}</span></td>
+        <td>${alarm.acknowledgedAt ? fmtDate(alarm.acknowledgedAt) : '-'}</td>
+        <td>${alarm.resolvedAt ? fmtDate(alarm.resolvedAt) : '-'}</td>
+        <td>${escapeHtml(alarm.note || '')}</td>
+        <td>
+          ${canAck ? `<button class="btn-ghost" data-ack-alarm="${alarm.id}">确认</button>` : ''}
+          ${canResolve ? `<button class="btn-ghost" data-resolve-alarm="${alarm.id}">恢复</button>` : '-'}
+        </td>
+      </tr>
+    `;
+  }).join('');
+  $$('[data-ack-alarm]', tb).forEach((btn) => {
+    btn.addEventListener('click', () => acknowledgeAlarmRecord(btn.dataset.ackAlarm));
+  });
+  $$('[data-resolve-alarm]', tb).forEach((btn) => {
+    btn.addEventListener('click', () => resolveAlarmRecord(btn.dataset.resolveAlarm));
+  });
+};
+
+const acknowledgeAlarmRecord = async (id) => {
+  try {
+    await ackAlarm(id, '前端确认');
+    addLog('info', '报警已确认');
+    await renderOverview();
+  } catch (err) {
+    alert(err.message || '确认报警失败');
+  }
+};
+
+const resolveAlarmRecord = async (id) => {
+  try {
+    await resolveAlarm(id, '前端手动恢复');
+    addLog('info', '报警已恢复');
+    await renderOverview();
+  } catch (err) {
+    alert(err.message || '恢复报警失败');
+  }
+};
+
+$('#btn-refresh-alarms')?.addEventListener('click', renderAlarmRecords);
 
 /* -------------------- 模态框 / 增删改 -------------------- */
 const modal = $('#modal-mask');
@@ -734,6 +909,275 @@ $('#pw-form').addEventListener('submit', async (e) => {
   }
 });
 
+/* -------------------- 算法配置 -------------------- */
+const toInt = (value, fallback, min = 0) => {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, n);
+};
+
+const toFloat = (value, fallback, min = 0, max = 1) => {
+  const n = Number.parseFloat(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+};
+
+const parseWeekdays = (value) => {
+  const items = String(value)
+    .split(',')
+    .map((item) => Number.parseInt(item.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 7);
+  return [...new Set(items)].sort((a, b) => a - b);
+};
+
+const normalizeTimeText = (value, fallback) => {
+  const text = String(value || '').trim();
+  return /^\d{2}:\d{2}$/.test(text) ? text : fallback;
+};
+
+const fillAlgorithmForm = (cfg) => {
+  const win = (cfg.activeWindows || [])[0] || { weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' };
+  $('#algo-enabled').checked = !!cfg.enabled;
+  $('#algo-weekdays').value = (win.weekdays || [1, 2, 3, 4, 5]).join(',');
+  $('#algo-start').value = win.start || '18:30';
+  $('#algo-end').value = win.end || '08:30';
+  $('#algo-simple-interval').value = cfg.simpleIntervalSec ?? 10;
+  $('#algo-vlm-interval').value = cfg.vlmIntervalSec ?? 300;
+  $('#algo-person-threshold').value = cfg.personThreshold ?? 0.65;
+  $('#algo-light-threshold').value = cfg.lightThreshold ?? 0.70;
+  $('#algo-hold-sec').value = cfg.alarmHoldSec ?? 300;
+  $('#algo-recover-sec').value = cfg.alarmRecoverSec ?? 60;
+  $('#algo-recover-policy').value = cfg.recoverPolicy || 'either';
+  $('#algo-vlm-limit').value = cfg.vlmHourlyLimit ?? 12;
+  $('#algo-vlm-enabled').checked = !!cfg.vlmEnabled;
+  $('#algo-vlm-skip-person').checked = cfg.vlmSkipWhenPerson !== false;
+  $('#algo-scope').textContent = cfg.scope === 'source' ? '通道配置' : '全局配置';
+  // 同步 chip 选中态 + 刷新 slider 数字显示
+  syncChipsFromHidden();
+  $('#algo-person-threshold')?.dispatchEvent(new Event('input'));
+  $('#algo-light-threshold')?.dispatchEvent(new Event('input'));
+};
+
+const algorithmPayloadFromForm = () => {
+  const weekdays = parseWeekdays($('#algo-weekdays').value);
+  return {
+    ...(algorithmConfig || {}),
+    enabled: $('#algo-enabled').checked,
+    scope: 'global',
+    scopeId: null,
+    activeWindows: [{
+      weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
+      start: normalizeTimeText($('#algo-start').value, '18:30'),
+      end: normalizeTimeText($('#algo-end').value, '08:30'),
+      timezone: 'Local',
+    }],
+    exceptionWindows: algorithmConfig?.exceptionWindows || [],
+    simpleIntervalSec: toInt($('#algo-simple-interval').value, 10, 1),
+    vlmIntervalSec: toInt($('#algo-vlm-interval').value, 300, 30),
+    vlmEnabled: $('#algo-vlm-enabled').checked,
+    vlmSkipWhenPerson: $('#algo-vlm-skip-person').checked,
+    personThreshold: toFloat($('#algo-person-threshold').value, 0.65),
+    lightThreshold: toFloat($('#algo-light-threshold').value, 0.70),
+    alarmHoldSec: toInt($('#algo-hold-sec').value, 300, 0),
+    alarmRecoverSec: toInt($('#algo-recover-sec').value, 60, 0),
+    recoverPolicy: $('#algo-recover-policy').value,
+    vlmHourlyLimit: toInt($('#algo-vlm-limit').value, 12, 0),
+    roiVersion: algorithmConfig?.roiVersion ?? null,
+  };
+};
+
+const renderAlgorithmSettings = async () => {
+  try {
+    algorithmConfig = await getAlgorithmConfig();
+    fillAlgorithmForm(algorithmConfig);
+  } catch (err) {
+    addLog('warn', `算法配置加载失败: ${err.message || err}`);
+  }
+};
+
+const renderSettings = async () => {
+  await renderAlgorithmSettings();
+  await renderNotificationSettings();
+};
+
+$('#algorithm-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const payload = algorithmPayloadFromForm();
+    algorithmConfig = await updateAlgorithmConfig(null, payload);
+    fillAlgorithmForm(algorithmConfig);
+    addLog('info', '算法配置已保存');
+  } catch (err) {
+    alert(err.message || '保存算法配置失败');
+  }
+});
+
+$('#btn-reload-algorithm').addEventListener('click', renderAlgorithmSettings);
+
+/* -------------------- 通知配置 -------------------- */
+const notifyPayloadFromForm = () => {
+  const eventType = $('#ntf-event').value;
+  const cooldown = Number.parseInt($('#ntf-cooldown').value, 10);
+  return {
+    name: $('#ntf-name').value.trim(),
+    enabled: $('#ntf-enabled').checked,
+    url: $('#ntf-url').value.trim(),
+    method: $('#ntf-method').value,
+    headers: [{ name: 'Content-Type', value: 'application/json' }],
+    bodyTemplate: $('#ntf-body').value.trim() || '{"event":"{{event}}","source":"{{source_name}}","location":"{{location}}"}',
+    timeoutSec: 10,
+    retryCount: 2,
+    eventTypes: eventType ? [eventType] : [],
+    cooldownSec: Number.isFinite(cooldown) && cooldown > 0 ? cooldown : 1800,
+  };
+};
+
+const clearNotifyForm = () => {
+  $('#ntf-name').value = '';
+  $('#ntf-url').value = '';
+  $('#ntf-method').value = 'POST';
+  $('#ntf-event').value = 'alarm_triggered';
+  $('#ntf-cooldown').value = '1800';
+  $('#ntf-body').value = '';
+  $('#ntf-enabled').checked = true;
+};
+
+const renderNotificationSettings = async () => {
+  try {
+    notificationTargets = await listNotificationTargets();
+    notificationHistory = await listNotificationHistory({ limit: 50 });
+  } catch (err) {
+    addLog('warn', `通知配置加载失败: ${err.message || err}`);
+  }
+  renderNotificationTargets();
+  renderNotificationHistory();
+};
+
+const renderNotificationTargets = () => {
+  const tbody = $('#ntf-target-tbody');
+  if (!notificationTargets.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted center">暂无通知目标</td></tr>';
+    return;
+  }
+  tbody.innerHTML = notificationTargets.map((target) => {
+    const events = (target.eventTypes || []).length ? target.eventTypes.join(', ') : '全部';
+    return `
+      <tr>
+        <td>${escapeHtml(target.name)}</td>
+        <td>${escapeHtml(events)}</td>
+        <td>${target.cooldownSec || target.cooldown_sec || 0}s</td>
+        <td>${target.enabled ? '是' : '否'}</td>
+        <td title="${escapeHtml(target.url)}">${escapeHtml(target.url).slice(0, 64)}</td>
+        <td>
+          <button class="btn-ghost" data-test-ntf="${target.id}">测试</button>
+          <button class="btn-ghost btn-danger" data-del-ntf="${target.id}">删除</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+  $$('[data-test-ntf]', tbody).forEach((btn) => {
+    btn.addEventListener('click', () => testSavedNotification(btn.dataset.testNtf));
+  });
+  $$('[data-del-ntf]', tbody).forEach((btn) => {
+    btn.addEventListener('click', () => removeNotificationTarget(btn.dataset.delNtf));
+  });
+};
+
+const renderNotificationHistory = () => {
+  const tbody = $('#ntf-history-tbody');
+  $('#ntf-history-count').textContent = `${notificationHistory.length} 条`;
+  if (!notificationHistory.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted center">暂无通知历史</td></tr>';
+    return;
+  }
+  tbody.innerHTML = notificationHistory.map((record) => {
+    const source = record.sourceId ? (sources.find((item) => item.id === record.sourceId)?.name || record.sourceId) : '-';
+    const result = record.ok ? `成功 ${record.statusCode || ''}` : `失败 ${escapeHtml(record.error || '')}`;
+    return `
+      <tr>
+        <td>${fmtDate(record.requestAt)}</td>
+        <td>${escapeHtml(record.targetName || record.targetId || '-')}</td>
+        <td>${escapeHtml(record.event)}</td>
+        <td>${escapeHtml(source)}</td>
+        <td>${result}</td>
+        <td>${record.latencyMs ?? '-'}ms</td>
+        <td>${record.ok ? '-' : `<button class="btn-ghost" data-resend-ntf="${record.id}">重发</button>`}</td>
+      </tr>
+    `;
+  }).join('');
+  $$('[data-resend-ntf]', tbody).forEach((btn) => {
+    btn.addEventListener('click', () => resendNotificationRecord(btn.dataset.resendNtf));
+  });
+};
+
+$('#notify-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const payload = notifyPayloadFromForm();
+    if (!payload.name || !payload.url) {
+      alert('通知名称和 URL 不能为空');
+      return;
+    }
+    await createNotificationTarget(payload);
+    clearNotifyForm();
+    await renderNotificationSettings();
+    addLog('info', '通知目标已保存');
+  } catch (err) {
+    alert(err.message || '保存通知目标失败');
+  }
+});
+
+$('#btn-refresh-notify').addEventListener('click', renderNotificationSettings);
+$('#btn-refresh-ntf-history')?.addEventListener('click', renderNotificationHistory);
+
+$('#btn-test-notify-form').addEventListener('click', async () => {
+  try {
+    const payload = notifyPayloadFromForm();
+    if (!payload.name || !payload.url) {
+      alert('通知名称和 URL 不能为空');
+      return;
+    }
+    const record = await testNotificationTarget({ payload });
+    await renderNotificationSettings();
+    addLog(record.ok ? 'info' : 'warn', `通知测试${record.ok ? '成功' : '失败'}: ${record.targetName || payload.name}`);
+  } catch (err) {
+    alert(err.message || '测试通知失败');
+  }
+});
+
+const testSavedNotification = async (id) => {
+  try {
+    const record = await testNotificationTarget({ id });
+    await renderNotificationSettings();
+    addLog(record.ok ? 'info' : 'warn', `通知测试${record.ok ? '成功' : '失败'}: ${record.targetName || id}`);
+  } catch (err) {
+    alert(err.message || '测试通知失败');
+  }
+};
+
+const removeNotificationTarget = async (id) => {
+  const target = notificationTargets.find((item) => item.id === id);
+  if (!target) return;
+  if (!confirm(`确定要删除通知目标「${target.name}」吗？`)) return;
+  try {
+    await deleteNotificationTarget(id);
+    await renderNotificationSettings();
+    addLog('warn', `已删除通知目标: ${target.name}`);
+  } catch (err) {
+    alert(err.message || '删除通知目标失败');
+  }
+};
+
+const resendNotificationRecord = async (id) => {
+  try {
+    const record = await resendNotification(id);
+    await renderNotificationSettings();
+    addLog(record.ok ? 'info' : 'warn', `通知重发${record.ok ? '成功' : '失败'}: ${record.targetName || id}`);
+  } catch (err) {
+    alert(err.message || '通知重发失败');
+  }
+};
+
 /* -------------------- 系统日志 -------------------- */
 const logs = [];
 const addLog = (level, text) => {
@@ -771,6 +1215,18 @@ const subscribeEvents = async () => {
   await onSceneState((payload) => {
     updateLiveState(payload);
     if (!$('#view-overview').classList.contains('hidden')) renderOverview();
+  });
+  await onAlarm(async (payload) => {
+    addLog('warn', `报警事件: ${payload.event || payload.status || '-'}`);
+    if (!$('#view-overview').classList.contains('hidden')) {
+      await renderOverview();
+    }
+  });
+  await onNotification(async (payload) => {
+    addLog(payload.ok ? 'info' : 'warn', `通知${payload.ok ? '成功' : '失败'}: ${payload.event || '-'}`);
+    if (!$('#view-settings').classList.contains('hidden')) {
+      await renderNotificationSettings();
+    }
   });
   await onSources(async () => {
     await loadSources();

@@ -9,9 +9,9 @@ use crate::pipeline::PipelineConfig;
 
 #[derive(Debug, Clone)]
 pub struct Detection {
-    pub kind: String,         // "motion" | "person" | "vehicle" | ...
-    pub confidence: f32,      // 0..1
-    pub bbox: [f32; 4],       // [x, y, w, h] 归一化坐标
+    pub kind: String,    // "motion" | "person" | "vehicle" | ...
+    pub confidence: f32, // 0..1
+    pub bbox: [f32; 4],  // [x, y, w, h] 归一化坐标
     pub ts: i64,
 }
 
@@ -24,7 +24,11 @@ pub struct Detector {
 
 impl Detector {
     pub fn new(config: PipelineConfig) -> Self {
-        Self { config, prev: None, frame_counter: 0 }
+        Self {
+            config,
+            prev: None,
+            frame_counter: 0,
+        }
     }
 
     pub fn detect(&mut self, frame: &DecodedFrame) -> Vec<Detection> {
@@ -40,8 +44,11 @@ impl Detector {
         if self.config.motion_detection {
             if let Some(prev) = &self.prev {
                 if frame.data.len() == prev.len() {
-                    let diff: u64 = frame.data.iter().zip(prev.iter())
-                        .map(|(a, b)| ((*a as i16 - *b as i16).abs() as u64))
+                    let diff: u64 = frame
+                        .data
+                        .iter()
+                        .zip(prev.iter())
+                        .map(|(a, b)| (*a as i16 - *b as i16).abs() as u64)
                         .sum();
                     let avg = diff / (frame.data.len().max(1) as u64);
                     if avg > 12 {

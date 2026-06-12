@@ -2,9 +2,9 @@
 # 同时模拟 4 路不同类型视频，验证 App 并发解码 / 状态聚合 / 告警去重
 
 cameras:
-  - { name: cam1, video: ../Video/samples/indoor/indoor_720p_30s_meeting_hardware.mp4,     bitrate: 1500, loss: 0.0 }
-  - { name: cam2, video: ../Video/samples/indoor/indoor_720p_30s_meeting_chassis_mid.mp4,  bitrate: 2000, loss: 0.0 }
-  - { name: cam3, video: ../Video/samples/motion/motion_720p_30s_test_case02.mp4,          bitrate: 1000, loss: 0.02 }  # 2% 丢包
-  - { name: cam4, video: ../Video/samples/motion/motion_720p_30s_test_case03_mid.mp4,      bitrate: 1000, loss: 0.10 }  # 10% 丢包（压力测试）
+  - { name: cam1, video: ../Video/sample_01_meeting.mp4, bitrate: 1500, loss: 0.0 }
+  - { name: cam2, video: ../Video/sample_02_meeting.mp4, bitrate: 2000, loss: 0.0 }
+  - { name: cam3, video: ../Video/sample_03_motion.mp4,  bitrate: 1000, loss: 0.02 }  # 2% 丢包
+  - { name: cam4, video: ../Video/sample_04_motion.mp4,  bitrate: 1000, loss: 0.10 }  # 10% 丢包（压力测试）
 
 duration: 300
