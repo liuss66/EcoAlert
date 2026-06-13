@@ -54,10 +54,17 @@ pip install -r requirements.txt
 python -m push_streamer.cli --video ../Video/sample_01_meeting.mp4 --loop
 ```
 
-当前 `push_streamer` 仍是占位入口，只打印参数。ffmpeg 推流实现补完后，再在 App 中新增 HLS 源，例如：
+`push_streamer` 已支持 ffmpeg 循环推流和 HLS 分片。App 联调优先使用固定映射配置启动：
+
+```bash
+cd Tools
+python -m push_streamer.cli --config config.example.yaml
+```
+
+然后在 App 中使用 HLS 源，例如：
 
 ```text
-http://127.0.0.1:8080/cam1/index.m3u8
+http://127.0.0.1:8080/cam-1/index.m3u8
 ```
 
 ---

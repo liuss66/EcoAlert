@@ -729,6 +729,150 @@ textarea.text-input {
   font-size: 11px;
   font-weight: 600;
 }
+
+.roi-editor {
+  display: grid;
+  grid-template-columns: minmax(260px, 420px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+.roi-preview {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255,255,255,.08) 1px, transparent 1px),
+    linear-gradient(135deg, #0f172a, #334155);
+  background-size: 10% 10%, 10% 10%, 100% 100%;
+}
+.roi-preview::after {
+  content: "16:9 画面预览";
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  color: rgba(255,255,255,.72);
+  font-size: 12px;
+}
+.roi-box {
+  position: absolute;
+  border: 2px solid #facc15;
+  background: rgba(250,204,21,.18);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 0 18px rgba(250,204,21,.25);
+  min-width: 8px;
+  min-height: 8px;
+  cursor: move;
+  touch-action: none;
+}
+.roi-resize-handle {
+  position: absolute;
+  right: -7px;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #111827;
+  background: #facc15;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.roi-fields {
+  min-width: 0;
+}
+.badge-channel {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+/* ---- 通知模式切换 ---- */
+.ntf-mode-switch {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: var(--bg-soft);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.mode-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.mode-radio input { accent-color: var(--primary); }
+.verify-result {
+  font-size: 12px;
+  margin-left: 8px;
+}
+.verify-result.ok { color: #16a34a; }
+.verify-result.err { color: #dc2626; }
+
+/* ---- OAuth 扫码弹窗 ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.modal-overlay.hidden { display: none; }
+.modal-card {
+  background: #fff;
+  border-radius: 16px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { font-size: 16px; font-weight: 600; }
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1;
+}
+.modal-body { padding: 20px; text-align: center; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.qr-container {
+  width: 220px;
+  height: 220px;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+}
+.qr-container img { max-width: 100%; max-height: 100%; }
+.qr-loading { color: var(--muted); font-size: 13px; }
+.oauth-status {
+  font-size: 13px;
+  color: var(--muted);
+}
+.oauth-status.success { color: #16a34a; font-weight: 600; }
 .btn-refresh-notify {
   background: transparent;
   border: 1px solid var(--border-strong);
@@ -1185,4 +1329,5 @@ textarea.text-input {
   .ws-status span:not(.dot), .logout-btn { display: none; }
   .nav-item { justify-content: center; }
   .form-grid { grid-template-columns: 1fr; }
+  .roi-editor { grid-template-columns: 1fr; }
 }

@@ -11,11 +11,17 @@ const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 
 const MOCK_PASSWORD = 'admin123';
 const MOCK_KEY = 'ecoalert_mock_sources';
+const MOCK_SOURCE_VERSION_KEY = 'ecoalert_mock_sources_version';
+const MOCK_SOURCE_VERSION = 'local-video-v2';
 const MOCK_GROUPS_KEY = 'ecoalert_mock_groups';
+const MOCK_GROUP_VERSION_KEY = 'ecoalert_mock_groups_version';
+const MOCK_GROUP_VERSION = 'local-video-v2';
 const MOCK_HISTORY_KEY = 'ecoalert_mock_history';
 const MOCK_PW_KEY = 'ecoalert_mock_pw';
 const MOCK_NTF_KEY = 'ecoalert_mock_notify_targets';
 const MOCK_NTF_HISTORY_KEY = 'ecoalert_mock_notify_history';
+const MOCK_ROI_KEY = 'ecoalert_mock_roi_config';
+const MOCK_ALGO_KEY = 'ecoalert_mock_algorithm_config';
 
 function normalizeSource(s) {
   if (!s) return s;
@@ -147,58 +153,56 @@ function mockLoad() {
   // 浏览器预览模式：优先读 localStorage（保留用户修改），否则返回默认数据
   try {
     const raw = localStorage.getItem(MOCK_KEY);
-    if (raw) {
+    const version = localStorage.getItem(MOCK_SOURCE_VERSION_KEY);
+    if (raw && version === MOCK_SOURCE_VERSION) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.length > 0) return arr;
     }
-  } catch (_) {}
+  } catch (e) { console.warn('[mock] mockLoad 解析失败:', e); }
   const defaults = mockDefaultSources();
   mockSave(defaults);
   return defaults;
 }
 
 function mockDefaultSources() {
+  // 本地 HLS 推流地址（与 Tools/push_streamer 统一命名 cam-1 ~ cam-8）
+  // 启动推流器后生效：python -m push_streamer.cli --auto-scan
+  const HLS = (n) => `http://127.0.0.1:8080/cam-${n}/index.m3u8`;
   return [
-    // —— A 栋办公 ——
-    { id: 'cam-a1', name: '大堂入口',     url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'A 栋 1F',     enabled: true, groupId: 'grp-a',  order: 0, createdAt: Date.now() - 80000000 },
-    { id: 'cam-a2', name: '前台接待区',   url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'A 栋 1F',     enabled: true, groupId: 'grp-a',  order: 1, createdAt: Date.now() - 80000000 },
-    { id: 'cam-a3', name: '电梯厅',       url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'A 栋 1F',     enabled: true, groupId: 'grp-a',  order: 2, createdAt: Date.now() - 80000000 },
-    { id: 'cam-a4', name: '茶水间',       url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'A 栋 2F',     enabled: true, groupId: 'grp-a',  order: 3, createdAt: Date.now() - 80000000 },
-    // —— B 栋车间 ——
-    { id: 'cam-b1', name: '生产线 1',     url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'B 栋 车间',   enabled: true, groupId: 'grp-b',  order: 0, createdAt: Date.now() - 70000000 },
-    { id: 'cam-b2', name: '生产线 2',     url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'B 栋 车间',   enabled: true, groupId: 'grp-b',  order: 1, createdAt: Date.now() - 70000000 },
-    { id: 'cam-b3', name: '原材料仓库',   url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: 'B 栋 仓库',   enabled: true, groupId: 'grp-b',  order: 2, createdAt: Date.now() - 70000000 },
-    // —— 园区周界 ——
-    { id: 'cam-c1', name: '园区东门',     url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: '园区 周界',   enabled: true, groupId: 'grp-c',  order: 0, createdAt: Date.now() - 60000000 },
-    { id: 'cam-c2', name: '园区西门',     url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: '园区 周界',   enabled: true, groupId: 'grp-c',  order: 1, createdAt: Date.now() - 60000000 },
-    { id: 'cam-c3', name: '停车场',       url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: '园区 停车',   enabled: true, groupId: 'grp-c',  order: 2, createdAt: Date.now() - 60000000 },
-    // —— 重点机房（默认分组放 1 路作为对照）——
-    { id: 'cam-d1', name: '核心机房',     url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: '核心 机房',   enabled: true, groupId: 'grp-default', order: 0, createdAt: Date.now() - 50000000 },
-    { id: 'cam-d2', name: 'UPS 配电室',   url: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8', type: 'hls', location: '核心 机房',   enabled: false, groupId: 'grp-default', order: 1, createdAt: Date.now() - 50000000 },
+    { id: 'cam-domain-0424',  name: '4·24 域控', url: HLS(1), type: 'hls', location: 'Video/4·24域控.mp4', enabled: true, groupId: 'grp-domain',  order: 0, createdAt: Date.now() - 80000000 },
+    { id: 'cam-domain-0527',  name: '5·27 域控', url: HLS(5), type: 'hls', location: 'Video/5·27域控.mp4', enabled: true, groupId: 'grp-domain',  order: 1, createdAt: Date.now() - 70000000 },
+    { id: 'cam-domain-0528',  name: '5·28 域控', url: HLS(6), type: 'hls', location: 'Video/5·28域控.mp4', enabled: true, groupId: 'grp-domain',  order: 2, createdAt: Date.now() - 70000000 },
+    { id: 'cam-domain-0507',  name: '5·7 域控',  url: HLS(7), type: 'hls', location: 'Video/5·7域控.mp4',  enabled: true, groupId: 'grp-domain',  order: 3, createdAt: Date.now() - 60000000 },
+    { id: 'cam-chassis-0424', name: '4·24 底盘', url: HLS(2), type: 'hls', location: 'Video/4·24底盘.mp4', enabled: true, groupId: 'grp-chassis', order: 0, createdAt: Date.now() - 80000000 },
+    { id: 'cam-chassis-0515', name: '5·15 底盘', url: HLS(4), type: 'hls', location: 'Video/5·15底盘.mp4', enabled: true, groupId: 'grp-chassis', order: 1, createdAt: Date.now() - 80000000 },
+    { id: 'cam-chassis-0507', name: '5·7 底盘',  url: HLS(8), type: 'hls', location: 'Video/5·7底盘.mp4',  enabled: true, groupId: 'grp-chassis', order: 2, createdAt: Date.now() - 50000000 },
+    { id: 'cam-hardware-0514', name: '5·14 硬件', url: HLS(3), type: 'hls', location: 'Video/5·14硬件.mp4', enabled: true, groupId: 'grp-hardware', order: 0, createdAt: Date.now() - 80000000 },
   ];
 }
 function mockSave(arr) {
   localStorage.setItem(MOCK_KEY, JSON.stringify(arr));
+  localStorage.setItem(MOCK_SOURCE_VERSION_KEY, MOCK_SOURCE_VERSION);
 }
 function mockLoadGroups() {
   try {
     const raw = localStorage.getItem(MOCK_GROUPS_KEY);
-    if (raw) {
+    const version = localStorage.getItem(MOCK_GROUP_VERSION_KEY);
+    if (raw && version === MOCK_GROUP_VERSION) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.length > 0) return arr;
     }
-  } catch (_) {}
+  } catch (e) { console.warn('[mock] mockLoadGroups 解析失败:', e); }
   const defaults = [
-    { id: 'grp-default', name: '默认分组',   order: 0, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-a',       name: 'A 栋办公',   order: 1, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-b',       name: 'B 栋车间',   order: 2, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-c',       name: '园区周界',   order: 3, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-domain',   name: '域控测试视频', order: 0, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-chassis',  name: '底盘测试视频', order: 1, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-hardware', name: '硬件测试视频', order: 2, collapsed: false, createdAt: Date.now() },
   ];
   mockSaveGroups(defaults);
   return defaults;
 }
 function mockSaveGroups(arr) {
   localStorage.setItem(MOCK_GROUPS_KEY, JSON.stringify(arr));
+  localStorage.setItem(MOCK_GROUP_VERSION_KEY, MOCK_GROUP_VERSION);
 }
 function mockLoadHistory(sourceId, limit) {
   try {
@@ -243,7 +247,7 @@ function mockLoadNtf() {
         return arr;
       }
     }
-  } catch (_) {}
+  } catch (e) { console.warn('[mock] mockLoadNtf 解析失败:', e); }
   // 预置默认通知：适配自企业内推
   return [buildDefaultNtfTarget()];
 }
@@ -294,7 +298,7 @@ function mockLoadNtfHistory() {
   try {
     const raw = localStorage.getItem(MOCK_NTF_HISTORY_KEY);
     if (raw) return JSON.parse(raw);
-  } catch (_) {}
+  } catch (e) { console.warn('[mock] mockLoadNtfHistory 解析失败:', e); }
   return [];
 }
 function mockSaveNtfHistory(arr) {
@@ -476,10 +480,10 @@ export async function resolveAlarm(alarmId, note = null) {
 
 export async function getAlgorithmConfig(sourceId = null) {
   if (isTauri) return invoke('get_algorithm_config', { sourceId });
-  return {
+  const defaults = {
     enabled: true,
-    scope: sourceId ? 'source' : 'global',
-    scopeId: sourceId,
+    scope: 'global',
+    scopeId: null,
     activeWindows: [{ weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' }],
     exceptionWindows: [],
     simpleIntervalSec: 10,
@@ -494,20 +498,50 @@ export async function getAlgorithmConfig(sourceId = null) {
     vlmHourlyLimit: 12,
     roiVersion: null,
   };
+  try {
+    const raw = localStorage.getItem(MOCK_ALGO_KEY);
+    const file = raw ? JSON.parse(raw) : {};
+    if (sourceId && file.sources?.[sourceId]) return file.sources[sourceId];
+    return file.global || defaults;
+  } catch (_) {
+    return defaults;
+  }
 }
 
 export async function updateAlgorithmConfig(sourceId, payload) {
   if (isTauri) return invoke('update_algorithm_config', { sourceId: sourceId ?? null, payload });
-  return { ...payload, scope: sourceId ? 'source' : 'global', scopeId: sourceId ?? null };
+  const saved = { ...payload, scope: sourceId ? 'source' : 'global', scopeId: sourceId ?? null };
+  const raw = localStorage.getItem(MOCK_ALGO_KEY);
+  const file = raw ? JSON.parse(raw) : { sources: {} };
+  file.sources = file.sources || {};
+  if (sourceId) file.sources[sourceId] = saved;
+  else file.global = saved;
+  localStorage.setItem(MOCK_ALGO_KEY, JSON.stringify(file));
+  return saved;
 }
 
 export async function getEffectiveAlgorithmConfig(sourceId) {
   if (isTauri) return invoke('get_effective_algorithm_config', { sourceId });
-  return { config: await getAlgorithmConfig(sourceId), scope: sourceId ? 'source' : 'global' };
+  const config = await getAlgorithmConfig(sourceId);
+  return { config, scope: config.scope || 'global' };
+}
+
+export async function deleteAlgorithmConfig(sourceId) {
+  if (isTauri) return invoke('delete_algorithm_config', { sourceId });
+  const raw = localStorage.getItem(MOCK_ALGO_KEY);
+  const file = raw ? JSON.parse(raw) : { sources: {} };
+  if (file.sources) delete file.sources[sourceId];
+  localStorage.setItem(MOCK_ALGO_KEY, JSON.stringify(file));
+  return { ok: true };
 }
 
 export async function getRoiConfig(sourceId) {
   if (isTauri) return invoke('get_roi_config', { sourceId });
+  try {
+    const raw = localStorage.getItem(MOCK_ROI_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    if (all[sourceId]) return all[sourceId];
+  } catch (e) { console.warn('[mock] ROI 配置读取失败:', e); }
   return {
     sourceId,
     version: 'mock-roi',
@@ -522,7 +556,34 @@ export async function getRoiConfig(sourceId) {
 
 export async function updateRoiConfig(sourceId, payload) {
   if (isTauri) return invoke('update_roi_config', { sourceId, payload });
-  return { ...payload, sourceId, updatedAt: Date.now() };
+  const saved = { ...payload, sourceId, updatedAt: Date.now() };
+  try {
+    const raw = localStorage.getItem(MOCK_ROI_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    all[sourceId] = saved;
+    localStorage.setItem(MOCK_ROI_KEY, JSON.stringify(all));
+  } catch (e) { console.warn('[mock] ROI 配置写入失败:', e); }
+  return saved;
+}
+
+export async function testRoiConfig(sourceId, payload = null) {
+  if (isTauri) return invoke('test_roi_config', { sourceId, payload });
+  const roi = (payload?.lightRois || [])[0] || { x: 0.2, y: 0.2, w: 0.5, h: 0.5 };
+  const cx = roi.x + roi.w / 2;
+  const cy = roi.y + roi.h / 2;
+  const hitsBrightPatch = cx >= 0.3 && cx <= 0.7 && cy >= 0.27 && cy <= 0.73;
+  const brightness = hitsBrightPatch ? 230 : 28;
+  const light = brightness / 255 >= (payload?.lightOnThreshold ?? 0.7);
+  return {
+    ok: true,
+    light,
+    person: false,
+    brightness,
+    motionScore: 0,
+    confidence: light ? 0.9 : 0.7,
+    processMs: 0.1,
+    version: payload?.version || 'mock-roi',
+  };
 }
 
 export async function listNotificationTargets() {
@@ -630,6 +691,28 @@ export async function getDataDir() {
   return '(浏览器预览模式 - 数据保存在 localStorage)';
 }
 
+/* ---------- OAuth / 凭证验证 ---------- */
+export async function startOAuthBinding(channelType, appId, appSecret) {
+  if (!isTauri) {
+    return { sessionId: 'mock-session', port: 12345, authUrl: 'https://mock', qrData: 'https://mock' };
+  }
+  return invoke('start_oauth_binding', { channelType, appId, appSecret });
+}
+
+export async function checkOAuthStatus(sessionId, appId, appSecret) {
+  if (!isTauri) {
+    return { status: 'pending' };
+  }
+  return invoke('check_oauth_status', { sessionId, appId, appSecret });
+}
+
+export async function verifyChannelCredentials(channelType, appId, appSecret) {
+  if (!isTauri) {
+    return { ok: true, message: '凭证验证通过（模拟）' };
+  }
+  return invoke('verify_channel_credentials', { channelType, appId, appSecret });
+}
+
 /* ---------- 事件订阅 ---------- */
 // 后端会推送事件：event(日志) / status(码率) / sources(源变更) / scene_state(算法)
 export async function onEvent(handler) {
@@ -721,7 +804,7 @@ export async function onSceneState(handler) {
           arr.push(rec);
           if (arr.length > 5000) arr.splice(0, arr.length - 5000);
           localStorage.setItem(MOCK_HISTORY_KEY, JSON.stringify(arr));
-        } catch (_) {}
+        } catch (e) { console.warn('[mock] 状态历史写入失败:', e); }
         cur.person = person;
         cur.light = light;
         seedMap.set(s.id, cur);

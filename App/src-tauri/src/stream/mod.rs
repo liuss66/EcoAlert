@@ -6,6 +6,8 @@
 //! 跟前端的关系：前端只配置 `url`（HLS / RTMP / 本地文件），
 //! 具体的拉流协议由本模块决定。
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 pub mod hls;

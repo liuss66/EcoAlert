@@ -1,8 +1,8 @@
 # EcoAlert 接口契约
 
-> 版本：v1.0  
+> 版本：v1.1  
 > 日期：2026-06-13  
-> 范围：Tauri commands、Tauri events、通知 Webhook payload
+> 范围：Tauri commands、Tauri events、通知 Payload
 
 ---
 
@@ -41,12 +41,12 @@
 
 ```json
 {
-  "name": "A栋办公室",
-  "url": "http://127.0.0.1:8080/cam1/index.m3u8",
+  "name": "4·24 域控",
+  "url": "http://127.0.0.1:8080/cam-1/index.m3u8",
   "type": "hls",
-  "location": "A栋 2F",
+  "location": "Video/4·24域控.mp4",
   "enabled": true,
-  "groupId": "grp-default",
+  "groupId": "grp-domain",
   "order": 0
 }
 ```
@@ -67,7 +67,7 @@
 
 ```json
 {
-  "name": "A栋办公",
+  "name": "域控测试视频",
   "order": 1,
   "collapsed": false
 }
@@ -106,6 +106,7 @@
 | --- | --- | --- |
 | `get_algorithm_config` | `{ sourceId? }` | `AlgorithmConfig` |
 | `update_algorithm_config` | `{ sourceId?, payload }` | `AlgorithmConfig` |
+| `delete_algorithm_config` | `{ sourceId }` | `{ ok }` |
 | `get_effective_algorithm_config` | `{ sourceId }` | `{ config, scope }` |
 
 ### 3.2 ROI（配置读写已实现，测试待实现）
@@ -114,7 +115,7 @@
 | --- | --- | --- |
 | `get_roi_config` | `{ sourceId }` | `RoiConfig` |
 | `update_roi_config` | `{ sourceId, payload }` | `RoiConfig` |
-| `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, brightness, confidence }` |
+| `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, person, brightness, motionScore, confidence, processMs, version }` |
 
 ### 3.3 报警（生命周期骨架已实现，静默待实现）
 
@@ -124,9 +125,8 @@
 | `get_channel_runtime_status` | `{ sourceId? }` | `ChannelRuntimeStatus[]` |
 | `ack_alarm` | `{ alarmId, note? }` | `AlarmRecord` |
 | `resolve_alarm` | `{ alarmId, note? }` | `AlarmRecord` |
-| `mute_source` | `{ sourceId, untilTs, reason? }` | `{ ok }` |
 
-### 3.4 通知（发送 / 历史骨架已实现）
+### 3.4 通知（发送 / 历史 / 渠道绑定已实现骨架）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
@@ -137,13 +137,31 @@
 | `test_notification_target` | `{ id?, payload? }` | `NotificationRecord` |
 | `list_notification_history` | `{ sourceId?, event?, ok?, limit? }` | `NotificationRecord[]` |
 | `resend_notification` | `{ recordId }` | `NotificationRecord` |
+| `verify_channel_credentials` | `{ channelType, appId, appSecret }` | `{ ok, message }` |
+| `start_oauth_binding` | `{ channelType, appId, appSecret }` | `{ sessionId, port, authUrl, qrData }` |
+| `check_oauth_status` | `{ sessionId, appId, appSecret }` | `{ status }` 或 `{ status, accessToken, chats }` |
 
-### 3.5 安全与配置
+说明：
+
+- `channelType = webhook`：普通 Webhook / HTTP POST 模式，使用 `url`、`method`、`headers`、`bodyTemplate`。
+- `channelType = feishu | wechat_work | qqbot`：平台 API 凭证模式，使用 `appId`、`appSecret` 等字段自动获取并缓存 access token。
+- `start_oauth_binding` / `check_oauth_status` 当前仅支持飞书扫码授权；企业微信和 QQ 当前使用凭证验证。
+- 平台 API 模式内置默认文本 payload；填写 `bodyTemplate` 时仍按模板变量替换。
+
+### 3.5 安全
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
 | `get_security_config` | `{}` | `SecurityConfig` |
 | `update_security_config` | `{ payload }` | `SecurityConfig` |
+
+### 3.6 待实现 Commands
+
+以下接口仍是需求目标，当前未在 `tauri::generate_handler!` 注册。
+
+| Command | 参数 | 返回 |
+| --- | --- | --- |
+| `mute_source` | `{ sourceId, untilTs, reason? }` | `{ ok }` |
 | `export_config` | `{ includeSecrets }` | `String 或文件路径` |
 | `import_config` | `{ payload, dryRun }` | `{ ok, diff, warnings }` |
 
@@ -178,12 +196,12 @@
 ```json
 {
   "id": "src-xxx",
-  "name": "A栋办公室",
-  "url": "http://127.0.0.1:8080/cam1/index.m3u8",
+  "name": "4·24 域控",
+  "url": "http://127.0.0.1:8080/cam-1/index.m3u8",
   "type": "hls",
-  "location": "A栋 2F",
+  "location": "Video/4·24域控.mp4",
   "enabled": true,
-  "groupId": "grp-default",
+  "groupId": "grp-domain",
   "order": 0,
   "createdAt": 1781270400000
 }
@@ -234,6 +252,7 @@
   "id": "ntf-xxx",
   "name": "企业微信机器人",
   "enabled": true,
+  "channelType": "webhook",
   "url": "https://example.com/webhook",
   "method": "POST",
   "headers": [
@@ -244,7 +263,45 @@
   "retryCount": 2,
   "eventTypes": ["alarm_triggered", "alarm_resolved"],
   "cooldownSec": 1800,
-  "createdAt": 1781270400000
+  "createdAt": 1781270400000,
+  "appId": "",
+  "appSecret": "",
+  "agentId": "",
+  "chatId": "",
+  "accessToken": "",
+  "tokenExpiresAt": 0
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+| --- | --- |
+| `channelType` | `webhook`、`feishu`、`wechat_work`、`qqbot`；空值默认按 `webhook` 处理 |
+| `appId` | 飞书 App ID、企业微信 CorpID、QQ AppID |
+| `appSecret` | 飞书 App Secret、企业微信 Secret、QQ ClientSecret |
+| `agentId` | 企业微信应用 AgentID，仅 `wechat_work` API 模式需要 |
+| `chatId` | 飞书 `chat_id`、企业微信 `touser`、QQ `group_openid` |
+| `accessToken` / `tokenExpiresAt` | 后端内部缓存字段，token 即将过期时自动刷新 |
+
+API 凭证模式示例：
+
+```json
+{
+  "name": "飞书群通知",
+  "enabled": true,
+  "channelType": "feishu",
+  "url": "",
+  "method": "POST",
+  "headers": [],
+  "bodyTemplate": "",
+  "timeoutSec": 10,
+  "retryCount": 2,
+  "eventTypes": ["alarm_triggered", "alarm_resolved"],
+  "cooldownSec": 1800,
+  "appId": "cli_xxx",
+  "appSecret": "secret_xxx",
+  "chatId": "oc_xxx"
 }
 ```
 
@@ -303,16 +360,16 @@ system < global < group < source
 
 ---
 
-## 6. 通知 Webhook Payload
+## 6. 通知 Payload
 
-默认 payload：
+报警事件默认结构化 payload：
 
 ```json
 {
   "event": "alarm_triggered",
   "source_id": "src-xxx",
-  "source_name": "A栋办公室",
-  "location": "A栋 2F",
+  "source_name": "4·24 域控",
+  "location": "Video/4·24域控.mp4",
   "person": false,
   "light": true,
   "alarm": true,
@@ -345,6 +402,8 @@ system < global < group < source
 - 未知变量渲染为空字符串。
 - Header 中的敏感值不写入日志。
 - 测试发送可展示最终 payload，但敏感字段必须脱敏。
+- Webhook 模式默认按渠道生成文本消息：飞书 `msg_type=text`、企业微信 `msgtype=text`、QQ `msg_type=0`；未识别渠道发送结构化 JSON。
+- API 凭证模式默认调用平台官方发送接口，并在通知目标中缓存 access token。
 
 ---
 
