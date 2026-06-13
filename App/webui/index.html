@@ -226,11 +226,8 @@
       <!-- 系统设置 -->
       <section class="view hidden" id="view-settings">
         <nav class="settings-tabs" id="settings-tabs">
-          <a href="#sec-account" class="settings-tab" data-target="sec-account">账号与安全</a>
-          <a href="#sec-storage" class="settings-tab" data-target="sec-storage">数据存储</a>
-          <a href="#sec-developer" class="settings-tab" data-target="sec-developer">开发设置</a>
-          <a href="#sec-algo" class="settings-tab" data-target="sec-algo">算法配置</a>
-          <a href="#sec-roi" class="settings-tab" data-target="sec-roi">ROI 标定</a>
+          <a href="#sec-account" class="settings-tab" data-targets="sec-account,sec-storage">基础设置</a>
+          <a href="#sec-algo" class="settings-tab" data-targets="sec-algo,sec-roi">检测配置</a>
           <a href="#sec-notify" class="settings-tab" data-target="sec-notify">通知配置</a>
         </nav>
         <div class="settings-grid">
@@ -273,26 +270,17 @@
             <div class="settings-form">
               <p class="muted hint">视频源、密码、状态历史都保存在这个目录：</p>
               <code id="data-dir" class="data-path"></code>
-            </div>
-          </div>
 
-          <!-- 开发设置 -->
-          <div class="panel settings-developer" id="sec-developer">
-            <div class="panel-header">
-              <h3>开发设置</h3>
-              <span class="panel-sub">调试和诊断</span>
-            </div>
-            <form id="developer-form" class="settings-form">
-              <label class="check-row">
-                <input type="checkbox" id="developer-mode" />
-                <span class="check-text">开发者模式</span>
-                <span class="check-hint">忽略算法生效时段，并在视频卡片显示检测读数</span>
-              </label>
-              <div class="form-actions">
-                <button type="submit" class="btn-primary">保存开发设置</button>
+              <div class="form-section">
+                <div class="form-section-title">调试</div>
+                <label class="check-row">
+                  <input type="checkbox" id="developer-mode" />
+                  <span class="check-text">开发者模式</span>
+                  <span class="check-hint">忽略算法生效时段，并在视频卡片显示检测读数</span>
+                </label>
+                <div class="form-msg success" id="developer-ok"></div>
               </div>
-              <div class="form-msg success" id="developer-ok"></div>
-            </form>
+            </div>
           </div>
 
           <!-- 算法配置 -->

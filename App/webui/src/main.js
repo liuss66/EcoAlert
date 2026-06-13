@@ -249,12 +249,20 @@ function setupRoiPreviewDrag() {
 function setupSettingsTabs() {
   const tabs = $$('#settings-tabs .settings-tab');
   if (tabs.length === 0) return;
-  const panels = tabs
-    .map((t) => document.getElementById(t.dataset.target))
+
+  const getTabTargets = (tab) => (tab.dataset.targets || tab.dataset.target || '')
+    .split(',')
+    .map((id) => id.trim())
     .filter(Boolean);
-  const show = (targetId) => {
-    tabs.forEach((t) => t.classList.toggle('active', t.dataset.target === targetId));
-    panels.forEach((p) => p.classList.toggle('hidden', p.id !== targetId));
+  const panelIds = new Set();
+  tabs.forEach((tab) => getTabTargets(tab).forEach((id) => panelIds.add(id)));
+  const panels = [...panelIds]
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+  const show = (tab) => {
+    const visibleIds = new Set(getTabTargets(tab));
+    tabs.forEach((t) => t.classList.toggle('active', t === tab));
+    panels.forEach((p) => p.classList.toggle('hidden', !visibleIds.has(p.id)));
     // 切 tab 时把页面滚到顶，避免停留在上一个 panel 的中间
     const main = document.querySelector('.main');
     if (main) main.scrollTo?.({ top: 0, behavior: 'smooth' });
@@ -263,12 +271,12 @@ function setupSettingsTabs() {
   tabs.forEach((tab) => {
     tab.addEventListener('click', (e) => {
       e.preventDefault();
-      show(tab.dataset.target);
+      show(tab);
     });
   });
   // 初始化：默认显示第一个 tab 对应 panel
   const initial = tabs.find((t) => t.classList.contains('active')) || tabs[0];
-  show(initial.dataset.target);
+  show(initial);
 }
 
 /* -------------------- 时钟 -------------------- */
@@ -1286,23 +1294,23 @@ const renderDeveloperSettings = async () => {
   }
 };
 
-$('#developer-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
+$('#developer-mode')?.addEventListener('change', async (e) => {
   try {
     const cfg = await getAlgorithmConfig(null);
     const payload = {
       ...cfg,
-      developerMode: !!$('#developer-mode')?.checked,
+      developerMode: !!e.target.checked,
       scope: 'global',
       scopeId: null,
     };
     const saved = await updateAlgorithmConfig(null, payload);
     developerMode = !!(saved.developerMode ?? saved.developer_mode);
-    $('#developer-mode').checked = developerMode;
-    $('#developer-ok').textContent = '开发设置已保存';
+    e.target.checked = developerMode;
+    $('#developer-ok').textContent = '开发者模式已保存';
     renderLive();
     addLog('info', developerMode ? '开发者模式已开启' : '开发者模式已关闭');
   } catch (err) {
+    e.target.checked = developerMode;
     alert(err.message || '保存开发设置失败');
   }
 });
