@@ -1185,7 +1185,6 @@ const normalizeTimeText = (value, fallback) => {
 const fillAlgorithmForm = (cfg) => {
   const win = (cfg.activeWindows || [])[0] || { weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' };
   $('#algo-enabled').checked = !!cfg.enabled;
-  $('#algo-developer-mode').checked = !!(cfg.developerMode ?? cfg.developer_mode);
   $('#algo-weekdays').value = (win.weekdays || [1, 2, 3, 4, 5]).join(',');
   $('#algo-start').value = win.start || '18:30';
   $('#algo-end').value = win.end || '08:30';
@@ -1234,7 +1233,6 @@ const algorithmPayloadFromForm = () => {
   return {
     ...(algorithmConfig || {}),
     enabled: $('#algo-enabled').checked,
-    developerMode: $('#algo-developer-mode').checked,
     scope: sourceId ? 'source' : 'global',
     scopeId: sourceId,
     activeWindows: [{
@@ -1263,10 +1261,6 @@ const renderAlgorithmSettings = async () => {
     populateAlgorithmSourceOptions();
     const sourceId = getSelectedAlgorithmSourceId();
     algorithmConfig = await getAlgorithmConfig(sourceId);
-    if (!sourceId) {
-      developerMode = !!(algorithmConfig.developerMode ?? algorithmConfig.developer_mode);
-      applyStateIcons();
-    }
     fillAlgorithmForm(algorithmConfig);
   } catch (err) {
     addLog('warn', `算法配置加载失败: ${err.message || err}`);
@@ -1274,10 +1268,44 @@ const renderAlgorithmSettings = async () => {
 };
 
 const renderSettings = async () => {
+  await renderDeveloperSettings();
   await renderAlgorithmSettings();
   await renderRoiSettings();
   await renderNotificationSettings();
 };
+
+const renderDeveloperSettings = async () => {
+  try {
+    const cfg = await getAlgorithmConfig(null);
+    developerMode = !!(cfg.developerMode ?? cfg.developer_mode);
+    const input = $('#developer-mode');
+    if (input) input.checked = developerMode;
+    applyStateIcons();
+  } catch (err) {
+    addLog('warn', `开发设置加载失败: ${err.message || err}`);
+  }
+};
+
+$('#developer-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const cfg = await getAlgorithmConfig(null);
+    const payload = {
+      ...cfg,
+      developerMode: !!$('#developer-mode')?.checked,
+      scope: 'global',
+      scopeId: null,
+    };
+    const saved = await updateAlgorithmConfig(null, payload);
+    developerMode = !!(saved.developerMode ?? saved.developer_mode);
+    $('#developer-mode').checked = developerMode;
+    $('#developer-ok').textContent = '开发设置已保存';
+    renderLive();
+    addLog('info', developerMode ? '开发者模式已开启' : '开发者模式已关闭');
+  } catch (err) {
+    alert(err.message || '保存开发设置失败');
+  }
+});
 
 $('#algorithm-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1285,10 +1313,6 @@ $('#algorithm-form').addEventListener('submit', async (e) => {
     const sourceId = getSelectedAlgorithmSourceId();
     const payload = algorithmPayloadFromForm();
     algorithmConfig = await updateAlgorithmConfig(sourceId, payload);
-    if (!sourceId) {
-      developerMode = !!(algorithmConfig.developerMode ?? algorithmConfig.developer_mode);
-      renderLive();
-    }
     fillAlgorithmForm(algorithmConfig);
     addLog('info', sourceId ? '通道算法配置已保存' : '全局算法配置已保存');
   } catch (err) {

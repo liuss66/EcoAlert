@@ -228,6 +228,7 @@
         <nav class="settings-tabs" id="settings-tabs">
           <a href="#sec-account" class="settings-tab" data-target="sec-account">账号与安全</a>
           <a href="#sec-storage" class="settings-tab" data-target="sec-storage">数据存储</a>
+          <a href="#sec-developer" class="settings-tab" data-target="sec-developer">开发设置</a>
           <a href="#sec-algo" class="settings-tab" data-target="sec-algo">算法配置</a>
           <a href="#sec-roi" class="settings-tab" data-target="sec-roi">ROI 标定</a>
           <a href="#sec-notify" class="settings-tab" data-target="sec-notify">通知配置</a>
@@ -275,6 +276,25 @@
             </div>
           </div>
 
+          <!-- 开发设置 -->
+          <div class="panel settings-developer" id="sec-developer">
+            <div class="panel-header">
+              <h3>开发设置</h3>
+              <span class="panel-sub">调试和诊断</span>
+            </div>
+            <form id="developer-form" class="settings-form">
+              <label class="check-row">
+                <input type="checkbox" id="developer-mode" />
+                <span class="check-text">开发者模式</span>
+                <span class="check-hint">忽略算法生效时段，并在视频卡片显示检测读数</span>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn-primary">保存开发设置</button>
+              </div>
+              <div class="form-msg success" id="developer-ok"></div>
+            </form>
+          </div>
+
           <!-- 算法配置 -->
           <div class="panel settings-algo" id="sec-algo">
             <div class="panel-header">
@@ -300,11 +320,6 @@
                   <input type="checkbox" id="algo-enabled" checked />
                   <span class="check-text">启用算法调度</span>
                   <span class="check-hint">关闭后所有视频源停止算法推理</span>
-                </label>
-                <label class="check-row">
-                  <input type="checkbox" id="algo-developer-mode" />
-                  <span class="check-text">开发者模式</span>
-                  <span class="check-hint">忽略生效时段，并在视频卡片显示检测读数</span>
                 </label>
               </div>
 
