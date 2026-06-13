@@ -1,6 +1,8 @@
 // 应用状态：登录态、视频源、分组、状态推送、算法接入点
 use crate::auth::AuthConfig;
-use crate::pipeline::{notifier, scheduler};
+use crate::pipeline::{
+    decoder::DecodedFrame, detector::Detector, notifier, scheduler, PipelineConfig,
+};
 use crate::store::{
     backfill_groups, load, load_history, load_json, save, save_history, save_json, AlarmRecord,
     AlarmRecordFile, AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, HistoryFile,
@@ -77,7 +79,9 @@ impl AppState {
         // 向前兼容：补全 group_id
         backfill_groups(&mut data);
         // 首次运行把补全后的结果落盘
-        let _ = save(&data_file, &data);
+        if let Err(e) = save(&data_file, &data) {
+            log::warn!("初始化落盘失败(sources.json): {e}");
+        }
 
         let auth = if auth_file.exists() {
             match std::fs::read_to_string(&auth_file) {
@@ -97,12 +101,24 @@ impl AppState {
         let security_config: SecurityConfig = load_json(&security_config_file);
         let alarm_records: AlarmRecordFile = load_json(&alarm_records_file);
         let notification_history: NotificationHistoryFile = load_json(&notification_history_file);
-        let _ = save_json(&algorithm_config_file, &algorithm_config);
-        let _ = save_json(&roi_config_file, &roi_config);
-        let _ = save_json(&notification_config_file, &notification_config);
-        let _ = save_json(&security_config_file, &security_config);
-        let _ = save_json(&alarm_records_file, &alarm_records);
-        let _ = save_json(&notification_history_file, &notification_history);
+        if let Err(e) = save_json(&algorithm_config_file, &algorithm_config) {
+            log::warn!("初始化落盘失败(algorithm_config.json): {e}");
+        }
+        if let Err(e) = save_json(&roi_config_file, &roi_config) {
+            log::warn!("初始化落盘失败(roi_config.json): {e}");
+        }
+        if let Err(e) = save_json(&notification_config_file, &notification_config) {
+            log::warn!("初始化落盘失败(notification_config.json): {e}");
+        }
+        if let Err(e) = save_json(&security_config_file, &security_config) {
+            log::warn!("初始化落盘失败(security_config.json): {e}");
+        }
+        if let Err(e) = save_json(&alarm_records_file, &alarm_records) {
+            log::warn!("初始化落盘失败(alarm_records.json): {e}");
+        }
+        if let Err(e) = save_json(&notification_history_file, &notification_history) {
+            log::warn!("初始化落盘失败(notification_history.json): {e}");
+        }
         let sources = data.sources.clone();
         let groups = data.groups.clone();
 
@@ -178,11 +194,10 @@ impl AppState {
     /// 历史记录落盘（每个源最多保留 200 条）
     pub fn record_state_change(&self, rec: StateRecord) -> anyhow::Result<()> {
         let mut h = self.history.lock();
-        h.records.push(rec);
+        h.records.push_back(rec);
         // 简单的总量截断：保留最近 5000 条
-        if h.records.len() > 5000 {
-            let drop_n = h.records.len() - 5000;
-            h.records.drain(0..drop_n);
+        while h.records.len() > 5000 {
+            h.records.pop_front();
         }
         save_history(&self.history_file, &h)
     }
@@ -230,7 +245,7 @@ impl AppState {
                 Some(record.clone())
             } else {
                 let record = AlarmRecord::new_active(source_id.to_string(), ts, state_record_id);
-                file.records.push(record.clone());
+                file.records.push_back(record.clone());
                 Some(record)
             }
         } else if let Some(idx) = active_idx {
@@ -244,8 +259,9 @@ impl AppState {
         };
 
         if file.records.len() > 5000 {
-            let drop_n = file.records.len() - 5000;
-            file.records.drain(0..drop_n);
+            while file.records.len() > 5000 {
+                file.records.pop_front();
+            }
         }
         drop(file);
         if changed.is_some() {
@@ -256,10 +272,9 @@ impl AppState {
 
     pub fn record_notification(&self, record: NotificationRecord) -> anyhow::Result<()> {
         let mut file = self.notification_history.lock();
-        file.records.push(record);
-        if file.records.len() > 5000 {
-            let drop_n = file.records.len() - 5000;
-            file.records.drain(0..drop_n);
+        file.records.push_back(record);
+        while file.records.len() > 5000 {
+            file.records.pop_front();
         }
         save_json(&self.notification_history_file, &*file)
     }
@@ -331,7 +346,7 @@ pub fn spawn_status_ticker(app: AppHandle) {
     });
 }
 
-/// 启动算法模拟推送任务（生产中替换为 pipeline::Pipeline 真实输出）
+/// 启动算法推送任务（当前使用合成灰度帧，生产中替换为真实解码帧）
 ///
 /// 算法接口契约（请勿修改）：
 ///   输入：每路视频的连续帧（pipeline 内部完成解码）
@@ -341,7 +356,8 @@ pub fn spawn_status_ticker(app: AppHandle) {
 pub fn spawn_scene_state_ticker(app: AppHandle) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(4));
-        // 简单伪随机：每个源一个"状态种子"，随时间漂移
+        // 每个源保留一个 Detector，确保 EMA / 帧差状态连续。
+        let mut detectors: HashMap<String, Detector> = HashMap::new();
         let mut seeds: HashMap<String, (u64, bool, bool)> = HashMap::new();
         loop {
             interval.tick().await;
@@ -383,21 +399,22 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 if !decision.should_run_simple {
                     continue;
                 }
-                let id_bytes = s.id.bytes().next().unwrap_or(0) as u64;
+                let id_seed = s.id.bytes().fold(0u64, |acc, item| {
+                    acc.wrapping_mul(31).wrapping_add(item as u64)
+                });
                 let (counter, prev_p, prev_l) =
                     seeds.entry(s.id.clone()).or_insert((0, false, false));
-                // 噪声：基于时间窗和源 id 的伪随机
-                let t = (now / 4000).max(0) as u64;
-                let n = id_bytes.wrapping_mul(t);
-                let person = (n % 5) < 2; // ~40% 概率有人
-                let light = (n.wrapping_mul(3) % 7) < 3; // ~43% 概率开灯
                 *counter += 1;
-                let new_state = SceneState {
-                    person,
-                    light,
-                    frame_seq: *counter,
-                    confidence: 0.75 + ((n % 50) as f32) / 200.0,
-                };
+                let t = (now / 4000).max(0) as u64;
+                let frame = synthetic_gray_frame(&s.id, id_seed, t, *counter, now);
+                let roi_config = state.roi_config.lock().by_source.get(&s.id).cloned();
+                let detector = detectors
+                    .entry(s.id.clone())
+                    .or_insert_with(|| Detector::new(PipelineConfig::default()));
+                let analysis = detector.analyze_scene(&frame, roi_config.as_ref());
+                let new_state = analysis.scene;
+                let person = new_state.person;
+                let light = new_state.light;
                 {
                     let mut current = state.current_state.lock();
                     current.insert(s.id.clone(), new_state.clone());
@@ -478,10 +495,13 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         &app,
                         if alarm { "warn" } else { "info" },
                         format!(
-                            "[{}] 状态变化: 人数={} 灯={}{}",
+                            "[{}] 状态变化: 人数={} 灯={} 亮度={:.1} 运动={:.3} 耗时={:.2}ms{}",
                             s.name,
                             if person { "●" } else { "○" },
                             if light { "●" } else { "○" },
+                            analysis.light_brightness,
+                            analysis.motion_score,
+                            analysis.process_ms,
                             if alarm { "  ⚠️ 报警" } else { "" }
                         ),
                     );
@@ -504,6 +524,55 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             }
         }
     });
+}
+
+fn synthetic_gray_frame(
+    source_id: &str,
+    seed: u64,
+    tick: u64,
+    counter: u64,
+    pts_ms: i64,
+) -> DecodedFrame {
+    let width = 160u32;
+    let height = 120u32;
+    let light_on = seed.wrapping_add(tick.wrapping_mul(3)) % 7 < 3;
+    let motion_on = seed.wrapping_add(tick.wrapping_mul(5)) % 5 < 2;
+    let base = if light_on { 205u8 } else { 35u8 };
+    let mut data = vec![base; (width * height) as usize];
+
+    // 给每路源增加稳定但不同的局部亮区，便于 ROI 算法在无配置时也有自然变化。
+    let band = (seed as usize % 32) + 16;
+    for y in 20..80 {
+        for x in band..(band + 28).min(width as usize) {
+            let idx = y * width as usize + x;
+            if let Some(pixel) = data.get_mut(idx) {
+                *pixel = pixel.saturating_add(if light_on { 35 } else { 8 });
+            }
+        }
+    }
+
+    // 运动块会在帧间移动，Detector 的低分辨率帧差据此产生 person=true。
+    if motion_on {
+        let max_x = width as usize - 24;
+        let max_y = height as usize - 24;
+        let x0 = (seed as usize + counter as usize * 11 + source_id.len()) % max_x;
+        let y0 = (seed as usize / 3 + counter as usize * 7) % max_y;
+        for y in y0..(y0 + 24) {
+            for x in x0..(x0 + 24) {
+                let idx = y * width as usize + x;
+                if let Some(pixel) = data.get_mut(idx) {
+                    *pixel = if light_on { 20 } else { 235 };
+                }
+            }
+        }
+    }
+
+    DecodedFrame {
+        width,
+        height,
+        pts_ms,
+        data,
+    }
 }
 
 /// 日志事件：emit + 写 stdout

@@ -13,9 +13,11 @@ import {
   reportSceneState, getStateHistory,
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, updateAlgorithmConfig,
-  listNotificationTargets, createNotificationTarget, deleteNotificationTarget,
+  getRoiConfig, updateRoiConfig, testRoiConfig,
+  listNotificationTargets, createNotificationTarget, updateNotificationTarget, deleteNotificationTarget,
   listNotificationHistory, testNotificationTarget, resendNotification,
   changePassword, getDataDir,
+  startOAuthBinding, checkOAuthStatus, verifyChannelCredentials,
   onEvent, onStatus, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
 } from './api.js';
 
@@ -82,7 +84,7 @@ $('#login-form').addEventListener('submit', async (e) => {
 });
 
 $('#logout-btn').addEventListener('click', async () => {
-  try { await logout(); } catch (_) {}
+  try { await logout(); } catch (e) { console.warn('登出失败:', e); }
   showLogin();
 });
 
@@ -96,7 +98,7 @@ const enterApp = async () => {
   switchView('live');
   await subscribeEvents();
   // 设置页数据
-  try { $('#data-dir').textContent = await getDataDir(); } catch (_) {}
+  try { $('#data-dir').textContent = await getDataDir(); } catch (e) { console.warn('获取数据目录失败:', e); }
   await renderSettings();
   setupSettingsEnhancements();
   setupSettingsTabs();
@@ -144,9 +146,91 @@ function setupSettingsEnhancements() {
   };
   syncSlider('#algo-person-threshold', '#algo-person-threshold-val');
   syncSlider('#algo-light-threshold', '#algo-light-threshold-val');
+
+  setupRoiPreviewDrag();
 }
 
 let syncChipsFromHidden = () => {};
+
+function setRoiFields(x, y, w, h) {
+  $('#roi-x').value = x.toFixed(2);
+  $('#roi-y').value = y.toFixed(2);
+  $('#roi-w').value = w.toFixed(2);
+  $('#roi-h').value = h.toFixed(2);
+  updateRoiPreview();
+}
+
+function setupRoiPreviewDrag() {
+  const preview = $('#roi-preview');
+  const box = $('#roi-preview-box');
+  const handle = $('#roi-resize-handle');
+  if (!preview || !box || !handle || preview.dataset.bound) return;
+  preview.dataset.bound = '1';
+
+  let drag = null;
+  const readRect = () => ({
+    x: clamp01($('#roi-x').value, 0.2),
+    y: clamp01($('#roi-y').value, 0.2),
+    w: Math.max(0.01, clamp01($('#roi-w').value, 0.5)),
+    h: Math.max(0.01, clamp01($('#roi-h').value, 0.5)),
+  });
+  const pointToNorm = (event) => {
+    const rect = preview.getBoundingClientRect();
+    return {
+      x: clamp01((event.clientX - rect.left) / rect.width, 0),
+      y: clamp01((event.clientY - rect.top) / rect.height, 0),
+    };
+  };
+
+  preview.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const p = pointToNorm(event);
+    const rect = readRect();
+    const mode = event.target === handle ? 'resize' : (box.contains(event.target) ? 'move' : 'place');
+    drag = {
+      mode,
+      start: p,
+      rect,
+      offsetX: p.x - rect.x,
+      offsetY: p.y - rect.y,
+    };
+    preview.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    if (mode === 'place') {
+      const w = rect.w;
+      const h = rect.h;
+      setRoiFields(
+        Math.min(1 - w, Math.max(0, p.x - w / 2)),
+        Math.min(1 - h, Math.max(0, p.y - h / 2)),
+        w,
+        h
+      );
+    }
+  });
+
+  preview.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    const p = pointToNorm(event);
+    if (drag.mode === 'resize') {
+      const w = Math.max(0.01, Math.min(1 - drag.rect.x, p.x - drag.rect.x));
+      const h = Math.max(0.01, Math.min(1 - drag.rect.y, p.y - drag.rect.y));
+      setRoiFields(drag.rect.x, drag.rect.y, w, h);
+      return;
+    }
+    const current = readRect();
+    const x = Math.min(1 - current.w, Math.max(0, p.x - drag.offsetX));
+    const y = Math.min(1 - current.h, Math.max(0, p.y - drag.offsetY));
+    setRoiFields(x, y, current.w, current.h);
+  });
+
+  const endDrag = (event) => {
+    if (!drag) return;
+    drag = null;
+    preview.releasePointerCapture?.(event.pointerId);
+  };
+  preview.addEventListener('pointerup', endDrag);
+  preview.addEventListener('pointercancel', endDrag);
+}
 
 /* -------------------- 设置页 Tab 切换 -------------------- */
 function setupSettingsTabs() {
@@ -211,6 +295,7 @@ let groups = [];
 let stats = [];
 let alarms = [];
 let algorithmConfig = null;
+let roiConfig = null;
 let notificationTargets = [];
 let notificationHistory = [];
 /** 实时状态：sourceId -> { person, light, alarm, ts } */
@@ -218,11 +303,11 @@ let sceneStates = new Map();
 
 const loadSources = async () => {
   try { sources = await listSources(); }
-  catch (e) { sources = []; }
+  catch (e) { console.warn('加载视频源失败:', e); sources = []; }
 };
 const loadGroups = async () => {
   try { groups = await listGroups(); }
-  catch (e) { groups = []; }
+  catch (e) { console.warn('加载分组失败:', e); groups = []; }
 };
 
 /* -------------------- 实时监控 -------------------- */
@@ -1031,6 +1116,7 @@ const renderAlgorithmSettings = async () => {
 
 const renderSettings = async () => {
   await renderAlgorithmSettings();
+  await renderRoiSettings();
   await renderNotificationSettings();
 };
 
@@ -1048,25 +1134,273 @@ $('#algorithm-form').addEventListener('submit', async (e) => {
 
 $('#btn-reload-algorithm').addEventListener('click', renderAlgorithmSettings);
 
+/* -------------------- ROI 标定 -------------------- */
+const clamp01 = (value, fallback = 0) => {
+  const n = Number.parseFloat(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(1, Math.max(0, n));
+};
+
+const populateRoiSourceOptions = () => {
+  const sel = $('#roi-source');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = sources.length
+    ? sources.map((s) => `<option value="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(s.location || '未填写位置')}</option>`).join('')
+    : '<option value="">暂无视频源</option>';
+  if (current && sources.some((s) => s.id === current)) sel.value = current;
+};
+
+const updateRoiPreview = () => {
+  const box = $('#roi-preview-box');
+  if (!box) return;
+  const x = clamp01($('#roi-x').value, 0.2);
+  const y = clamp01($('#roi-y').value, 0.2);
+  const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 0.5)));
+  const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 0.5)));
+  box.style.left = `${x * 100}%`;
+  box.style.top = `${y * 100}%`;
+  box.style.width = `${w * 100}%`;
+  box.style.height = `${h * 100}%`;
+};
+
+const fillRoiForm = (cfg) => {
+  const roi = (cfg.lightRois || cfg.light_rois || [])[0] || { x: 0.2, y: 0.2, w: 0.5, h: 0.5 };
+  $('#roi-x').value = roi.x ?? 0.2;
+  $('#roi-y').value = roi.y ?? 0.2;
+  $('#roi-w').value = roi.w ?? 0.5;
+  $('#roi-h').value = roi.h ?? 0.5;
+  $('#roi-light-on').value = cfg.lightOnThreshold ?? cfg.light_on_threshold ?? 0.70;
+  $('#roi-light-off').value = cfg.lightOffThreshold ?? cfg.light_off_threshold ?? 0.45;
+  updateRoiPreview();
+};
+
+const roiPayloadFromForm = () => {
+  const sourceId = $('#roi-source').value;
+  const x = clamp01($('#roi-x').value, 0.2);
+  const y = clamp01($('#roi-y').value, 0.2);
+  const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 0.5)));
+  const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 0.5)));
+  const on = clamp01($('#roi-light-on').value, 0.70);
+  const off = Math.min(on, clamp01($('#roi-light-off').value, 0.45));
+  return {
+    ...(roiConfig || {}),
+    sourceId,
+    version: roiConfig?.version || `roi-${Date.now()}`,
+    lightRois: [{ id: 'light-main', label: '主灯光区域', x, y, w, h }],
+    excludeRois: roiConfig?.excludeRois || [],
+    personRois: roiConfig?.personRois || [],
+    lightOnThreshold: on,
+    lightOffThreshold: off,
+    updatedAt: Date.now(),
+  };
+};
+
+const loadSelectedRoi = async () => {
+  const sourceId = $('#roi-source')?.value;
+  if (!sourceId) return;
+  try {
+    roiConfig = await getRoiConfig(sourceId);
+    fillRoiForm(roiConfig);
+  } catch (err) {
+    addLog('warn', `ROI 配置加载失败: ${err.message || err}`);
+  }
+};
+
+const renderRoiSettings = async () => {
+  populateRoiSourceOptions();
+  await loadSelectedRoi();
+};
+
+$('#roi-source')?.addEventListener('change', loadSelectedRoi);
+['#roi-x', '#roi-y', '#roi-w', '#roi-h'].forEach((id) => {
+  $(id)?.addEventListener('input', updateRoiPreview);
+});
+$('#btn-reload-roi')?.addEventListener('click', loadSelectedRoi);
+$('#btn-test-roi')?.addEventListener('click', async () => {
+  const sourceId = $('#roi-source').value;
+  if (!sourceId) {
+    alert('请先选择视频源');
+    return;
+  }
+  try {
+    const result = await testRoiConfig(sourceId, roiPayloadFromForm());
+    const el = $('#roi-test-result');
+    if (el) {
+      el.classList.toggle('success', !!result.light);
+      el.textContent = `测试结果：${result.light ? '灯亮' : '灯灭'}，亮度 ${Number(result.brightness || 0).toFixed(1)}，置信度 ${Number(result.confidence || 0).toFixed(2)}，耗时 ${Number(result.processMs || result.process_ms || 0).toFixed(2)}ms`;
+    }
+    addLog('info', 'ROI 测试完成');
+  } catch (err) {
+    alert(err.message || 'ROI 测试失败');
+  }
+});
+$('#roi-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const sourceId = $('#roi-source').value;
+  if (!sourceId) {
+    alert('请先选择视频源');
+    return;
+  }
+  try {
+    const payload = roiPayloadFromForm();
+    roiConfig = await updateRoiConfig(sourceId, payload);
+    fillRoiForm(roiConfig);
+    addLog('info', 'ROI 配置已保存');
+  } catch (err) {
+    alert(err.message || '保存 ROI 失败');
+  }
+});
+
 /* -------------------- 通知配置 -------------------- */
+const CHANNEL_LABELS = {
+  webhook: 'Webhook',
+  feishu: '飞书',
+  wechat_work: '企业微信',
+  qqbot: 'QQ',
+};
+
+const CHANNEL_URL_HINTS = {
+  webhook: '支持 mock://local 走本地测试通道',
+  feishu: '飞书群机器人 Webhook 地址，例如 https://open.feishu.cn/open-apis/bot/v2/hook/xxx',
+  wechat_work: '企业微信群机器人 Webhook 地址，例如 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx',
+  qqbot: 'QQ 群机器人 Webhook 地址',
+};
+
+const CHANNEL_URL_PLACEHOLDERS = {
+  webhook: 'https://example.com/webhook',
+  feishu: 'https://open.feishu.cn/open-apis/bot/v2/hook/xxxx',
+  wechat_work: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx',
+  qqbot: 'https://api.sgroup.qq.com/...',
+};
+
+// API 模式各字段的 label 和 placeholder
+const CHANNEL_API_CONFIG = {
+  feishu: {
+    appIdLabel: 'App ID *',
+    appIdPlaceholder: '飞书开发者后台的 App ID（cli_ 开头）',
+    secretLabel: 'App Secret *',
+    secretPlaceholder: '飞书 App Secret',
+    chatIdLabel: '接收群 Chat ID *',
+    chatIdPlaceholder: 'oc_ 开头，可通过扫码绑定自动获取',
+    chatIdHint: '点右侧「扫码绑定」自动获取群列表',
+    showAgent: false,
+    showOAuth: true,
+  },
+  wechat_work: {
+    appIdLabel: 'Corp ID *',
+    appIdPlaceholder: '企业微信管理后台的 CorpID',
+    secretLabel: 'Secret *',
+    secretPlaceholder: '应用 Secret',
+    chatIdLabel: '接收人 / 部门 *',
+    chatIdPlaceholder: 'user1|user2 或 @all',
+    chatIdHint: '多人用 | 分隔，@all 表示全员',
+    showAgent: true,
+    showOAuth: false,
+  },
+  qqbot: {
+    appIdLabel: 'App ID *',
+    appIdPlaceholder: 'QQ 开放平台的 AppID',
+    secretLabel: 'Client Secret *',
+    secretPlaceholder: 'QQ Bot ClientSecret',
+    chatIdLabel: '群 OpenID *',
+    chatIdPlaceholder: '群机器人的 group_openid',
+    chatIdHint: '需手动填写',
+    showAgent: false,
+    showOAuth: false,
+  },
+};
+
+const getApiMode = () => {
+  const radios = $$('input[name="ntf-mode"]');
+  const checked = radios.find((r) => r.checked);
+  return checked ? checked.value : 'webhook';
+};
+
+const toggleNotifyChannelFields = () => {
+  const type = $('#ntf-channel').value;
+  const isWebhookType = type === 'webhook';
+  const modeSwitch = $('#ntf-mode-switch');
+  const apiMode = getApiMode();
+  const isApiMode = !isWebhookType && apiMode === 'api';
+
+  // 模式切换栏：通用 Webhook 渠道不显示
+  if (modeSwitch) modeSwitch.style.display = isWebhookType ? 'none' : '';
+
+  // Webhook URL：通用 Webhook 或简单模式下显示
+  const urlSection = $('#ntf-webhook-url-section');
+  if (urlSection) urlSection.style.display = (isWebhookType || !isApiMode) ? '' : 'none';
+
+  // API 凭证字段
+  const apiFields = $('#ntf-api-fields');
+  if (apiFields) apiFields.style.display = isApiMode ? '' : 'none';
+
+  // Webhook 专属字段（Method、Body 模板）
+  const webhookFields = $('#ntf-webhook-fields');
+  if (webhookFields) webhookFields.style.display = isWebhookType ? '' : 'none';
+
+  // URL hint / placeholder
+  const hint = $('#ntf-url-hint');
+  if (hint) hint.textContent = CHANNEL_URL_HINTS[type] || CHANNEL_URL_HINTS.webhook;
+  const urlInput = $('#ntf-url');
+  if (urlInput) urlInput.placeholder = CHANNEL_URL_PLACEHOLDERS[type] || CHANNEL_URL_PLACEHOLDERS.webhook;
+
+  // API 字段配置
+  if (isApiMode) {
+    const cfg = CHANNEL_API_CONFIG[type];
+    if (cfg) {
+      const appIdLabel = $('#ntf-appid-label');
+      if (appIdLabel) appIdLabel.textContent = cfg.appIdLabel;
+      const appIdInput = $('#ntf-app-id');
+      if (appIdInput) appIdInput.placeholder = cfg.appIdPlaceholder;
+      const secretLabel = $('#ntf-secret-label');
+      if (secretLabel) secretLabel.textContent = cfg.secretLabel;
+      const secretInput = $('#ntf-app-secret');
+      if (secretInput) secretInput.placeholder = cfg.secretPlaceholder;
+      const agentRow = $('#ntf-agent-row');
+      if (agentRow) agentRow.style.display = cfg.showAgent ? '' : 'none';
+      const chatIdLabel = $('#ntf-chatid-label');
+      if (chatIdLabel) chatIdLabel.textContent = cfg.chatIdLabel;
+      const chatIdInput = $('#ntf-chat-id');
+      if (chatIdInput) chatIdInput.placeholder = cfg.chatIdPlaceholder;
+      const chatIdHint = $('#ntf-chatid-hint');
+      if (chatIdHint) chatIdHint.textContent = cfg.chatIdHint;
+      const oauthSection = $('#ntf-oauth-section');
+      if (oauthSection) oauthSection.style.display = cfg.showOAuth ? '' : 'none';
+    }
+  }
+};
+
 const notifyPayloadFromForm = () => {
   const eventType = $('#ntf-event').value;
   const cooldown = Number.parseInt($('#ntf-cooldown').value, 10);
+  const channelType = $('#ntf-channel').value;
+  const isWebhookType = channelType === 'webhook';
+  const apiMode = getApiMode();
+  const isApi = !isWebhookType && apiMode === 'api';
   return {
     name: $('#ntf-name').value.trim(),
     enabled: $('#ntf-enabled').checked,
-    url: $('#ntf-url').value.trim(),
-    method: $('#ntf-method').value,
+    channelType,
+    url: isApi ? '' : $('#ntf-url').value.trim(),
+    method: isWebhookType ? ($('#ntf-method').value || 'POST') : 'POST',
     headers: [{ name: 'Content-Type', value: 'application/json' }],
-    bodyTemplate: $('#ntf-body').value.trim() || '{"event":"{{event}}","source":"{{source_name}}","location":"{{location}}"}',
+    bodyTemplate: isWebhookType ? ($('#ntf-body').value.trim()) : '',
     timeoutSec: 10,
     retryCount: 2,
     eventTypes: eventType ? [eventType] : [],
     cooldownSec: Number.isFinite(cooldown) && cooldown > 0 ? cooldown : 1800,
+    // API 凭证
+    appId: isApi ? ($('#ntf-app-id').value.trim()) : '',
+    appSecret: isApi ? ($('#ntf-app-secret').value.trim()) : '',
+    agentId: isApi ? ($('#ntf-agent-id').value.trim()) : '',
+    chatId: isApi ? ($('#ntf-chat-id').value.trim()) : '',
   };
 };
 
 const clearNotifyForm = () => {
+  $('#ntf-edit-id').value = '';
+  $('#ntf-channel').value = 'webhook';
   $('#ntf-name').value = '';
   $('#ntf-url').value = '';
   $('#ntf-method').value = 'POST';
@@ -1074,6 +1408,40 @@ const clearNotifyForm = () => {
   $('#ntf-cooldown').value = '1800';
   $('#ntf-body').value = '';
   $('#ntf-enabled').checked = true;
+  $('#ntf-app-id').value = '';
+  $('#ntf-app-secret').value = '';
+  $('#ntf-agent-id').value = '';
+  $('#ntf-chat-id').value = '';
+  // 重置模式为 webhook
+  const webhookRadio = $('input[name="ntf-mode"][value="webhook"]');
+  if (webhookRadio) webhookRadio.checked = true;
+  toggleNotifyChannelFields();
+};
+
+const fillNotifyForm = (target) => {
+  $('#ntf-edit-id').value = target.id || '';
+  const channelType = target.channelType || target.channel_type || 'webhook';
+  $('#ntf-channel').value = channelType;
+  $('#ntf-name').value = target.name || '';
+  $('#ntf-url').value = target.url || '';
+  $('#ntf-method').value = target.method || 'POST';
+  const evts = target.eventTypes || target.event_types || [];
+  $('#ntf-event').value = evts.length === 1 ? evts[0] : '';
+  $('#ntf-cooldown').value = target.cooldownSec || target.cooldown_sec || 1800;
+  $('#ntf-body').value = target.bodyTemplate || target.body_template || '';
+  $('#ntf-enabled').checked = target.enabled !== false;
+  // API 凭证
+  $('#ntf-app-id').value = target.appId || target.app_id || '';
+  $('#ntf-app-secret').value = target.appSecret || target.app_secret || '';
+  $('#ntf-agent-id').value = target.agentId || target.agent_id || '';
+  $('#ntf-chat-id').value = target.chatId || target.chat_id || '';
+  // 根据是否有凭证自动切模式
+  const hasCredentials = !!(target.appId || target.app_id);
+  const isWebhookType = channelType === 'webhook';
+  const mode = (!isWebhookType && hasCredentials) ? 'api' : 'webhook';
+  const modeRadio = $(`input[name="ntf-mode"][value="${mode}"]`);
+  if (modeRadio) modeRadio.checked = true;
+  toggleNotifyChannelFields();
 };
 
 const renderNotificationSettings = async () => {
@@ -1090,25 +1458,35 @@ const renderNotificationSettings = async () => {
 const renderNotificationTargets = () => {
   const tbody = $('#ntf-target-tbody');
   if (!notificationTargets.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted center">暂无通知目标</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="muted center">暂无通知目标</td></tr>';
     return;
   }
   tbody.innerHTML = notificationTargets.map((target) => {
+    const channelType = target.channelType || target.channel_type || 'webhook';
+    const channelLabel = CHANNEL_LABELS[channelType] || channelType;
     const events = (target.eventTypes || []).length ? target.eventTypes.join(', ') : '全部';
     return `
       <tr>
+        <td><span class="badge badge-channel">${escapeHtml(channelLabel)}</span></td>
         <td>${escapeHtml(target.name)}</td>
         <td>${escapeHtml(events)}</td>
         <td>${target.cooldownSec || target.cooldown_sec || 0}s</td>
         <td>${target.enabled ? '是' : '否'}</td>
-        <td title="${escapeHtml(target.url)}">${escapeHtml(target.url).slice(0, 64)}</td>
+        <td title="${escapeHtml(target.url)}">${escapeHtml(target.url).slice(0, 48)}</td>
         <td>
+          <button class="btn-ghost" data-edit-ntf="${target.id}">编辑</button>
           <button class="btn-ghost" data-test-ntf="${target.id}">测试</button>
           <button class="btn-ghost btn-danger" data-del-ntf="${target.id}">删除</button>
         </td>
       </tr>
     `;
   }).join('');
+  $$('[data-edit-ntf]', tbody).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const t = notificationTargets.find((x) => x.id === btn.dataset.editNtf);
+      if (t) fillNotifyForm(t);
+    });
+  });
   $$('[data-test-ntf]', tbody).forEach((btn) => {
     btn.addEventListener('click', () => testSavedNotification(btn.dataset.testNtf));
   });
@@ -1148,14 +1526,28 @@ $('#notify-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
     const payload = notifyPayloadFromForm();
-    if (!payload.name || !payload.url) {
-      alert('通知名称和 URL 不能为空');
+    const isApi = !!(payload.appId && payload.appSecret);
+    if (!payload.name) {
+      alert('通知名称不能为空');
       return;
     }
-    await createNotificationTarget(payload);
+    if (!isApi && !payload.url) {
+      alert('Webhook URL 不能为空（或切换到 API 凭证模式填写凭证）');
+      return;
+    }
+    if (isApi && !payload.chatId) {
+      alert('API 模式下接收目标不能为空');
+      return;
+    }
+    const editId = $('#ntf-edit-id').value.trim();
+    if (editId) {
+      await updateNotificationTarget(editId, payload);
+    } else {
+      await createNotificationTarget(payload);
+    }
     clearNotifyForm();
     await renderNotificationSettings();
-    addLog('info', '通知目标已保存');
+    addLog('info', editId ? '通知目标已更新' : '通知目标已创建');
   } catch (err) {
     alert(err.message || '保存通知目标失败');
   }
@@ -1163,12 +1555,126 @@ $('#notify-form').addEventListener('submit', async (e) => {
 
 $('#btn-refresh-notify').addEventListener('click', renderNotificationSettings);
 $('#btn-refresh-ntf-history')?.addEventListener('click', renderNotificationHistory);
+$('#ntf-channel').addEventListener('change', toggleNotifyChannelFields);
+
+// 模式切换
+$$('input[name="ntf-mode"]').forEach((radio) => {
+  radio.addEventListener('change', toggleNotifyChannelFields);
+});
+
+// 验证凭证
+$('#btn-verify-credentials')?.addEventListener('click', async () => {
+  const result = $('#verify-result');
+  const channelType = $('#ntf-channel').value;
+  const appId = $('#ntf-app-id').value.trim();
+  const appSecret = $('#ntf-app-secret').value.trim();
+  if (!appId || !appSecret) {
+    if (result) { result.textContent = '请填写 App ID 和 Secret'; result.className = 'verify-result err'; }
+    return;
+  }
+  if (result) { result.textContent = '验证中…'; result.className = 'verify-result'; }
+  try {
+    const res = await verifyChannelCredentials(channelType, appId, appSecret);
+    if (result) { result.textContent = res.message || '✓ 凭证有效'; result.className = 'verify-result ok'; }
+  } catch (err) {
+    if (result) { result.textContent = err.message || '凭证无效'; result.className = 'verify-result err'; }
+  }
+});
+
+// OAuth 扫码绑定（飞书）
+let oauthPollTimer = null;
+$('#btn-oauth-bind')?.addEventListener('click', async () => {
+  const appId = $('#ntf-app-id').value.trim();
+  const appSecret = $('#ntf-app-secret').value.trim();
+  if (!appId || !appSecret) {
+    alert('请先填写 App ID 和 App Secret');
+    return;
+  }
+  const modal = $('#oauth-modal');
+  const qrContainer = $('#qr-container');
+  const statusEl = $('#oauth-status');
+  const chatSelectDiv = $('#oauth-chat-select');
+  const confirmBtn = $('#btn-confirm-oauth');
+  modal.classList.remove('hidden');
+  chatSelectDiv.style.display = 'none';
+  confirmBtn.disabled = true;
+  statusEl.textContent = '正在启动授权服务…';
+  statusEl.className = 'oauth-status';
+  qrContainer.innerHTML = '<div class="qr-loading">正在生成二维码…</div>';
+
+  try {
+    const binding = await startOAuthBinding('feishu', appId, appSecret);
+    const authUrl = binding.authUrl || binding.qrData;
+    // 用 QR Server API 生成二维码图片（无需本地库）
+    const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(authUrl)}`;
+    qrContainer.innerHTML = `<img src="${qrImgUrl}" alt="飞书授权二维码" />`;
+    statusEl.textContent = '请用飞书 App 扫描二维码';
+
+    // 轮询授权状态
+    let oauthSessionId = binding.sessionId;
+    let oauthDone = false;
+    const poll = async () => {
+      if (oauthDone) return;
+      try {
+        const status = await checkOAuthStatus(oauthSessionId, appId, appSecret);
+        if (status.status === 'success') {
+          oauthDone = true;
+          statusEl.textContent = '✓ 授权成功！';
+          statusEl.className = 'oauth-status success';
+          // 显示群列表
+          if (status.chats && status.chats.length > 0) {
+            chatSelectDiv.style.display = '';
+            const select = $('#oauth-chat-id');
+            select.innerHTML = status.chats.map((c) =>
+              `<option value="${escapeHtml(c.chat_id)}">${escapeHtml(c.name)}</option>`
+            ).join('');
+            confirmBtn.disabled = false;
+          } else {
+            statusEl.textContent = '✓ 授权成功，但未找到可发送的群聊（机器人需在群内）';
+          }
+        }
+      } catch (e) { /* ignore poll errors */ }
+      if (!oauthDone) oauthPollTimer = setTimeout(poll, 2000);
+    };
+    oauthPollTimer = setTimeout(poll, 2000);
+  } catch (err) {
+    statusEl.textContent = err.message || '启动授权失败';
+    statusEl.className = 'oauth-status';
+  }
+});
+
+// 确认 OAuth 绑定
+$('#btn-confirm-oauth')?.addEventListener('click', () => {
+  const chatId = $('#oauth-chat-id').value;
+  if (chatId) {
+    $('#ntf-chat-id').value = chatId;
+  }
+  $('#oauth-modal').classList.add('hidden');
+  if (oauthPollTimer) clearTimeout(oauthPollTimer);
+});
+
+// 关闭 OAuth 弹窗
+const closeOAuthModal = () => {
+  $('#oauth-modal').classList.add('hidden');
+  if (oauthPollTimer) clearTimeout(oauthPollTimer);
+};
+$('#btn-close-oauth')?.addEventListener('click', closeOAuthModal);
+$('#btn-cancel-oauth')?.addEventListener('click', closeOAuthModal);
 
 $('#btn-test-notify-form').addEventListener('click', async () => {
   try {
     const payload = notifyPayloadFromForm();
-    if (!payload.name || !payload.url) {
-      alert('通知名称和 URL 不能为空');
+    const isApi = !!(payload.appId && payload.appSecret);
+    if (!payload.name) {
+      alert('通知名称不能为空');
+      return;
+    }
+    if (!isApi && !payload.url) {
+      alert('Webhook URL 不能为空（或切换到 API 凭证模式）');
+      return;
+    }
+    if (isApi && !payload.chatId) {
+      alert('API 模式下接收目标不能为空');
       return;
     }
     const record = await testNotificationTarget({ payload });

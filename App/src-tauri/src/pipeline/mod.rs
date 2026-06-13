@@ -9,15 +9,19 @@
 //! 帧数据不在前端展示（太大），Pipeline 只输出轻量结果
 //! （状态、计数、告警），通过 Tauri event 推给 webui。
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub mod alerts;
 pub mod analyzer;
+pub mod channel_auth;
 pub mod decoder;
 pub mod detector;
 pub mod notifier;
+pub mod oauth_server;
 pub mod scheduler;
 
 use crate::stream::FramePacket;

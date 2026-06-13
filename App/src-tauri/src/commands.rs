@@ -1,5 +1,7 @@
 // 暴露给前端的 Tauri commands
-use crate::pipeline::{notifier, scheduler};
+use crate::pipeline::{
+    decoder::DecodedFrame, detector::Detector, notifier, scheduler, PipelineConfig,
+};
 use crate::state::{log_event, AppState};
 use crate::store::{
     records_by_source, AlarmRecord, AlgorithmConfig, ChannelRuntimeStatus, NotificationRecord,
@@ -295,6 +297,7 @@ pub fn reorder(
     items: Vec<OrderItem>,
 ) -> Result<serde_json::Value, String> {
     require_login(&state)?;
+    let count = items.len();
     {
         let mut sources = state.sources.lock();
         for it in items {
@@ -307,7 +310,7 @@ pub fn reorder(
         }
     }
     state.persist_sources().map_err(|e| e.to_string())?;
-    log_event(&app, "debug", format!("重排 {} 项", /*items count*/ 0));
+    log_event(&app, "debug", format!("重排 {} 项", count));
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -600,6 +603,66 @@ pub fn update_roi_config(
 }
 
 #[tauri::command]
+pub fn test_roi_config(
+    state: State<Arc<AppState>>,
+    source_id: String,
+    payload: Option<RoiConfig>,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    if !state
+        .sources
+        .lock()
+        .iter()
+        .any(|source| source.id == source_id)
+    {
+        return Err("视频源不存在".into());
+    }
+    let roi_config = if let Some(mut payload) = payload {
+        payload.source_id = source_id.clone();
+        payload
+    } else {
+        let cfg = state.roi_config.lock();
+        cfg.by_source
+            .get(&source_id)
+            .cloned()
+            .unwrap_or_else(|| RoiConfig::new(source_id.clone()))
+    };
+    let frame = synthetic_roi_test_frame();
+    let mut detector = Detector::new(PipelineConfig::default());
+    let result = detector.analyze_scene(&frame, Some(&roi_config));
+    Ok(serde_json::json!({
+        "ok": true,
+        "light": result.scene.light,
+        "person": result.scene.person,
+        "brightness": result.light_brightness,
+        "motionScore": result.motion_score,
+        "confidence": result.scene.confidence,
+        "processMs": result.process_ms,
+        "version": roi_config.version,
+    }))
+}
+
+fn synthetic_roi_test_frame() -> DecodedFrame {
+    let width = 160u32;
+    let height = 90u32;
+    let mut data = vec![28u8; (width * height) as usize];
+    for y in 24..66 {
+        for x in 48..112 {
+            let idx = y * width as usize + x;
+            if let Some(pixel) = data.get_mut(idx) {
+                *pixel = 230;
+            }
+        }
+    }
+    DecodedFrame {
+        width,
+        height,
+        pts_ms: chrono::Utc::now().timestamp_millis(),
+        data,
+    }
+}
+
+#[tauri::command]
 pub fn list_notification_targets(
     state: State<Arc<AppState>>,
 ) -> Result<Vec<NotificationTarget>, String> {
@@ -805,4 +868,99 @@ pub fn change_password(
 #[tauri::command]
 pub fn get_data_dir(state: State<Arc<AppState>>) -> Result<String, String> {
     Ok(state.data_dir_str())
+}
+
+// ==================== OAuth / 凭证验证 ====================
+
+use crate::pipeline::channel_auth;
+use crate::pipeline::oauth_server::{self, OAuthSession};
+use parking_lot::Mutex;
+use std::collections::HashMap;
+
+/// 活跃的 OAuth 会话
+static OAUTH_SESSIONS: std::sync::LazyLock<Mutex<HashMap<String, OAuthSession>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 启动 OAuth 绑定（目前支持飞书）
+#[tauri::command]
+pub async fn start_oauth_binding(
+    _app: AppHandle,
+    channel_type: String,
+    app_id: String,
+    _app_secret: String,
+) -> Result<serde_json::Value, String> {
+    if channel_type != "feishu" {
+        return Err(format!("渠道 {channel_type} 暂不支持 OAuth 扫码"));
+    }
+
+    let session = OAuthSession::start()?;
+    let port = session.port;
+    let auth_url = session.feishu_auth_url(&app_id);
+    let session_id = uuid::Uuid::new_v4().simple().to_string();
+
+    // 保存 session 和相关凭证
+    OAUTH_SESSIONS.lock().insert(session_id.clone(), session);
+
+    // 同时在 state 里临时存储 app_id/app_secret 供后续换 token 用
+    // 这里简单处理：用 session_id 作为 key 存到内存
+
+    Ok(serde_json::json!({
+        "sessionId": session_id,
+        "port": port,
+        "authUrl": auth_url,
+        "qrData": auth_url,  // 前端用这个生成二维码
+    }))
+}
+
+/// 检查 OAuth 状态（前端轮询）
+#[tauri::command]
+pub async fn check_oauth_status(
+    _app: AppHandle,
+    session_id: String,
+    app_id: String,
+    app_secret: String,
+) -> Result<serde_json::Value, String> {
+    let code = {
+        let sessions = OAUTH_SESSIONS.lock();
+        let session = sessions
+            .get(&session_id)
+            .ok_or("OAuth 会话不存在或已过期")?;
+        if session.is_done() {
+            session.auth_code.lock().clone()
+        } else {
+            None
+        }
+    };
+
+    if let Some(code) = code {
+        OAUTH_SESSIONS.lock().remove(&session_id);
+
+        let (token, _expires) =
+            oauth_server::exchange_feishu_token(&app_id, &app_secret, &code).await?;
+
+        // 获取群列表
+        let chats = oauth_server::list_feishu_chats(&token)
+            .await
+            .unwrap_or_default();
+
+        return Ok(serde_json::json!({
+            "status": "success",
+            "accessToken": token,
+            "chats": chats,
+        }));
+    }
+
+    Ok(serde_json::json!({ "status": "pending" }))
+}
+
+/// 验证凭证是否有效
+#[tauri::command]
+pub async fn verify_channel_credentials(
+    _app: AppHandle,
+    channel_type: String,
+    app_id: String,
+    app_secret: String,
+) -> Result<serde_json::Value, String> {
+    channel_auth::verify_credentials(&channel_type, &app_id, &app_secret).await?;
+    Ok(serde_json::json!({ "ok": true, "message": "凭证验证通过" }))
 }

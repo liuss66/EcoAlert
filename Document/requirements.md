@@ -1,6 +1,6 @@
 # EcoAlert 视频监控 · 需求规格说明书
 
-> 版本：v1.3  
+> 版本：v1.7  
 > 日期：2026-06-13  
 > 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入，真实算法与配置 UI 待完善；分组拖拽已修复并优化性能）
 
@@ -163,7 +163,7 @@
 | F-AI-3 | 算法通过 `state.record_state_change(...)` 落库 | ✅ |
 | F-AI-4 | 状态变化时记录一条 `StateRecord`（含派生 alarm 字段） | ✅ |
 | F-AI-5 | 当前用 `spawn_scene_state_ticker` 做 mock，便于前端先跑通 | ✅ |
-| F-AI-6 | 真实算法接入位置：`src-tauri/src/pipeline/detector.rs` 替换帧差法 | ⏳ 框架已留 |
+| F-AI-6 | 真实算法接入位置：`src-tauri/src/pipeline/detector.rs` 替换帧差法 | ⚠️ 简单算法核心已接入运行链路，真实帧源接入待实现 |
 
 ### 3.11 算法策略与调度（新增）
 
@@ -183,7 +183,7 @@
 | --- | --- | --- | --- | --- |
 | 是否亮灯 | ROI 亮度 / HSV / 灰度均值 + 背景基线 + 时间平滑 | 快、稳定、无需训练，对固定摄像头和固定区域适配好 | 日光、屏幕反光、摄像头自动曝光导致误判 | 每路配置灯光 ROI、上下阈值、最小持续时间、日间禁用时段 |
 | 是否有人 | 轻量 person detector（ONNX YOLOv8n / YOLO11n / RT-DETR 小模型）或动态目标识别 | 人是报警抑制条件，应优先减少误检；简单模型延迟低，可高频执行 | 静止人员、遮挡、远距离小目标漏检 | 多帧投票、置信度阈值、人员存在保持时间、VLM 低频补漏 |
-| 动态目标识别 | 帧差 / 背景建模 / 光流作为辅助信号 | 计算量低，可用于发现画面变化和触发 VLM 复核 | 动态目标不等于人；风吹、反光、画面噪声容易误触发 | 只作为触发条件，不直接作为“有人”结论 |
+| 动态目标识别 | 帧差 / 背景建模 / 光流作为辅助信号 | 计算量低，可用于发现画面变化和触发 VLM 复核 | 动态目标不等于人；风吹、反光、画面噪声容易误触发 | 只作为触发条件，不直接作为“有人”结论；Rust 侧已实现低分辨率帧差核心 |
 
 结论：  
 第一版不建议只用帧差法判断“有人”。帧差法适合作为快速任务识别 / 变化触发器，但“有人”应由轻量目标检测模型给出；灯光状态可优先用 ROI 亮度规则完成。这样能在成本可控的前提下尽可能避免误检。
@@ -261,16 +261,19 @@ pub struct SceneState {
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-NOTIFY-1 | 系统设置新增「通知配置」页面或分区 | ⏳ 待实现 |
+| F-NOTIFY-1 | 系统设置新增「通知配置」页面或分区 | ✅ 已接入 |
 | F-NOTIFY-2 | 支持全局启用 / 停用通知 | ⏳ 待实现 |
-| F-NOTIFY-3 | 支持 Webhook / HTTP POST 通知接口配置 | ✅ 后端已实现 |
-| F-NOTIFY-4 | 通知配置包含：名称、URL、Method、Headers、Body 模板、超时、重试次数、启用状态 | ✅ 后端已实现 |
+| F-NOTIFY-3 | 支持 Webhook / HTTP POST 通知接口配置 | ✅ 已实现 |
+| F-NOTIFY-4 | 通知配置包含：名称、渠道类型、URL、Method、Headers、Body 模板、超时、重试次数、启用状态 | ✅ 已实现 |
 | F-NOTIFY-5 | 支持按事件类型选择通知：报警触发、报警恢复、视频离线、算法异常 | ⚠️ 已支持事件过滤，当前自动触发报警类事件 |
-| F-NOTIFY-6 | 支持通知冷却时间，默认同一通道同一报警 30 分钟内不重复通知 | ✅ 后端已实现 |
-| F-NOTIFY-7 | 支持测试发送，前端展示响应状态码和错误信息 | ⚠️ 后端命令已实现，UI 待接入 |
-| F-NOTIFY-8 | 通知发送结果写入系统日志，失败不影响本地报警展示 | ✅ 后端已实现 |
-| F-NOTIFY-9 | 通知 payload 需要包含 source、location、person、light、alarm、ts、confidence、state_source | ✅ 后端已实现 |
+| F-NOTIFY-6 | 支持通知冷却时间，默认同一通道同一报警 30 分钟内不重复通知 | ✅ 已实现 |
+| F-NOTIFY-7 | 支持测试发送，前端展示响应状态码和错误信息 | ✅ 已接入 |
+| F-NOTIFY-8 | 通知发送结果写入系统日志，失败不影响本地报警展示 | ✅ 已实现 |
+| F-NOTIFY-9 | 通知 payload 需要包含 source、location、person、light、alarm、ts、confidence、state_source | ✅ 已实现 |
 | F-NOTIFY-10 | 敏感字段如 token / secret 在 UI 中默认脱敏显示 | ⏳ 待实现 |
+| F-NOTIFY-11 | 支持飞书 / 企业微信 / QQ 渠道类型，除普通 Webhook 外可使用平台 API 凭证模式发送文本消息 | ⚠️ 后端已实现，UI 已有配置入口；生产联调待验证 |
+| F-NOTIFY-12 | 支持渠道凭证校验，飞书支持本地 OAuth 扫码绑定并拉取群列表 | ⚠️ 后端命令已实现；当前 OAuth 仅支持飞书 |
+| F-NOTIFY-13 | API 凭证模式自动获取、缓存并刷新 access token | ✅ 后端已实现 |
 
 通知 payload 默认格式：
 
@@ -334,10 +337,10 @@ resolved
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-ROI-1 | 每路视频可配置灯光检测 ROI，支持多个矩形区域 | ⏳ 待实现 |
+| F-ROI-1 | 每路视频可配置灯光检测 ROI，支持多个矩形区域 | ⚠️ 单灯光 ROI 配置 UI 已接入，多矩形待实现 |
 | F-ROI-2 | 每路视频可配置排除 ROI，用于排除窗户、屏幕、反光区域 | ⏳ 待实现 |
-| F-ROI-3 | 支持在视频画面上框选、拖拽、缩放 ROI | ⏳ 待实现 |
-| F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、实时亮度值和判定结果 | ⏳ 待实现 |
+| F-ROI-3 | 支持在视频画面上框选、拖拽、缩放 ROI | ⚠️ 当前支持 16:9 预览框内拖拽 / 缩放和数值配置，真实视频画面框选待实现 |
+| F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、实时亮度值和判定结果 | ⚠️ 当前展示 16:9 预览框，并支持基于合成标定帧测试亮度 / 判定；真实当前帧待实现 |
 | F-ROI-5 | 支持自动采样基线：记录“灯关”“灯亮”样本并生成推荐阈值 | ⏳ 待实现 |
 | F-ROI-6 | 支持每路视频保存 `person_roi`，仅在有效区域内识别人 | ⏳ 待实现 |
 | F-ROI-7 | ROI 坐标使用归一化坐标，避免不同分辨率下配置失效 | ⏳ 待实现 |
@@ -379,6 +382,10 @@ resolved
 | F-SEC-5 | API Key、Webhook Token、Header Secret 等敏感字段需加密或系统安全存储 | ⏳ 待实现 |
 | F-SEC-6 | UI 展示敏感字段时默认脱敏，仅允许重新输入，不明文回显 | ⏳ 待实现 |
 | F-SEC-7 | 支持可选人脸 / 人体区域打码后再发送给 VLM 或通知渠道 | ⏳ 待实现 |
+| F-SEC-8 | 配置合理的 CSP 内容安全策略，至少限制 `script-src` 和 `connect-src`，避免 `csp: null` 完全关闭 | ⏳ 待实现 |
+| F-SEC-9 | 密码哈希升级为 argon2id（或至少 PBKDF2），替换当前 SHA-256 + salt 方案，提高暴力破解抵抗力 | ⏳ 待实现 |
+| F-SEC-10 | 登录接口增加速率限制：连续 N 次（建议 5 次）失败后临时锁定账户（建议 5 分钟），并记录安全日志 | ⏳ 待实现 |
+| F-SEC-11 | 会话管理增加超时机制（建议 30 分钟无操作自动失效），避免当前 `logged_in` 布尔值永久有效 | ⏳ 待实现 |
 
 ### 3.18 配置导入导出与迁移（新增）
 
@@ -513,6 +520,7 @@ pub struct NotificationTarget {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    pub channel_type: String,             // webhook | feishu | wechat_work | qqbot
     pub url: String,
     pub method: String,                   // POST | PUT
     pub headers: Vec<HeaderPair>,
@@ -522,8 +530,16 @@ pub struct NotificationTarget {
     pub event_types: Vec<String>,         // alarm_triggered | alarm_resolved | source_offline | algorithm_error
     pub cooldown_sec: u32,
     pub created_at: i64,
+    pub app_id: String,                   // 飞书 App ID / 企微 CorpID / QQ AppID
+    pub app_secret: String,               // 飞书 App Secret / 企微 Secret / QQ ClientSecret
+    pub agent_id: String,                 // 企微 AgentID
+    pub chat_id: String,                  // 飞书 chat_id / 企微 touser / QQ group_openid
+    pub access_token: String,             // 后端缓存
+    pub token_expires_at: i64,            // 秒级时间戳
 }
 ```
+
+`channel_type = webhook` 时使用原始 URL / Header / 模板发送；`feishu`、`wechat_work`、`qqbot` 且配置了 `app_id` 时走平台 API 凭证模式，自动刷新 token。飞书额外提供本地 OAuth 扫码绑定命令以获取群列表。
 
 ### 4.8 RoiConfig（新增）
 
@@ -649,12 +665,12 @@ pub struct ChannelRuntimeStatus {
 | `get_effective_algorithm_config` | `source_id` | `{ config, sources }` | ✓ |
 | `get_roi_config` | `source_id` | `RoiConfig` | ✓ |
 | `update_roi_config` | `source_id, payload` | `RoiConfig` | ✓ |
-| `test_roi_config` | `source_id, payload?` | `{ ok, light, brightness, confidence }` | ✓ |
+| `test_roi_config` | `source_id, payload?` | `{ ok, light, person, brightness, motionScore, confidence, processMs, version }` | ✓ |
 | `list_alarms` | `status?, source_id?, limit?` | `AlarmRecord[]` | ✓ |
 | `get_channel_runtime_status` | `source_id?` | `ChannelRuntimeStatus[]` | ✓ |
 | `ack_alarm` | `alarm_id, note?` | `AlarmRecord` | ✓ |
 | `resolve_alarm` | `alarm_id, note?` | `AlarmRecord` | ✓ |
-| `mute_source` | `source_id, until_ts, reason?` | `{ ok }` | ✓ |
+| `mute_source` | `source_id, until_ts, reason?` | `{ ok }` | ⏳ 未注册 |
 | `list_notification_targets` | — | `NotificationTarget[]` | ✓ |
 | `create_notification_target` | `payload` | `NotificationTarget` | ✓ |
 | `update_notification_target` | `id, payload` | `NotificationTarget` | ✓ |
@@ -664,8 +680,11 @@ pub struct ChannelRuntimeStatus {
 | `resend_notification` | `record_id` | `NotificationRecord` | ✓ |
 | `get_security_config` | — | `SecurityConfig` | ✓ |
 | `update_security_config` | `payload` | `SecurityConfig` | ✓ |
-| `export_config` | `include_secrets: bool` | `String 或文件路径` | ✓ |
-| `import_config` | `payload, dry_run: bool` | `{ ok, diff, warnings }` | ✓ |
+| `start_oauth_binding` | `channel_type, app_id, app_secret` | `{ sessionId, port, authUrl, qrData }` | ✓ |
+| `check_oauth_status` | `session_id, app_id, app_secret` | `{ status }` 或 `{ status, accessToken, chats }` | ✓ |
+| `verify_channel_credentials` | `channel_type, app_id, app_secret` | `{ ok, message }` | ✓ |
+| `export_config` | `include_secrets: bool` | `String 或文件路径` | ⏳ 未注册 |
+| `import_config` | `payload, dry_run: bool` | `{ ok, diff, warnings }` | ⏳ 未注册 |
 | `change_password` | `old_password, new_password` | `{ ok }` | ✓ |
 | `get_data_dir` | — | `String` | ✓ |
 
@@ -841,6 +860,16 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 中 | 配置 schema 与迁移 | 新增算法 / 通知配置后，需要版本号、默认值和旧配置迁移 |
 | 中 | 测试补齐 | 至少补 Tauri command 单测、配置读写单测、通知模板渲染单测、算法调度规则单测 |
 | 低 | 大文件治理 | `Video/*.mp4` 体积较大，不建议提交到主仓；可改为外部下载或 Git LFS |
+| ~~高~~ ✅ | 文件持久化原子写入 | ~~使用「写临时文件 + rename」模式，防止写入中途崩溃导致数据损坏~~；已接入 `write_temp_then_replace` |
+| 高 | 锁竞争风险治理 | `AppState` 有 11 个 `Mutex`，在 `spawn_scene_state_ticker` 等函数中嵌套获取存在死锁风险；建议合并为更少的 `RwLock` 或重新设计锁粒度 |
+| ~~高~~ ✅ | reorder 命令日志 bug | 已改为先记录 `items.len()`，日志输出真实重排数量 |
+| 中 | 前端模块化拆分 | `main.js` 1300+ 行单文件，建议拆为 `auth` / `live` / `overview` / `settings` / `notifications` 五个模块 |
+| 中 | 前端增量渲染优化 | `renderOverview()` 每 4s 全量重建表格 DOM，视频源多时性能差；建议差量更新或节流 |
+| 中 | 通知目标编辑功能 | 前端通知表单只支持新建（始终调 `createNotificationTarget`），缺少编辑已有通知目标的逻辑 |
+| ~~中~~ ✅ | reqwest Client 复用 | 通知发送和渠道 token 获取均已使用 `OnceLock<reqwest::Client>` 复用 HTTP client |
+| 中 | 错误处理增强 | 多处静默吞错（前端 `catch (_) {}`、后端 `let _ = save()`），应至少记录 warn 日志 |
+| ~~低~~ ✅ | 历史记录容器优化 | 状态历史、报警记录、通知历史已改用 `VecDeque`，JSON 仍兼容数组格式 |
+| 低 | 结构化日志升级 | 从 `env_logger` 迁移到 `tracing`，支持 `source_id` / `alarm_id` 等结构化字段，便于生产环境排错 |
 
 ## 11. 未来工作
 
@@ -875,3 +904,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 2026-06-13 | 1.1 | 补充简单模型 + VLM 分层算法方案、算法启用时段、通知接口 / 配置能力和项目优化建议 |
 | 2026-06-13 | 1.2 | 补充报警生命周期、ROI 标定、算法验收指标、通知历史、隐私安全、配置导入导出和验收用例 |
 | 2026-06-13 | 1.3 | 修复分组拖拽：去除 `dragstart` 对 `<video>` 的误拦截（视频区占卡片 70-80% 面积，之前完全拖不动）；修复 `mockLoad` / `mockLoadGroups` 永远返回默认数据的 bug（浏览器预览模式拖放后卡片回弹）；拖放后只 `appendChild` 被拖卡片，不再 `renderLive()` 重建整个网格（避免 HLS 流全部断开重连导致卡顿）；增强拖拽视觉反馈（目标分组整体高亮、源分组表头半透明） |
+| 2026-06-13 | 1.4 | 补充安全需求（CSP / 密码哈希升级 / 登录防暴力破解 / 会话超时）；补充工程优化项（原子写入 / 锁竞争治理 / 前端模块化 / 增量渲染 / 通知目标编辑 / reqwest Client 复用 / 错误处理增强 / 结构化日志 / reorder 日志 bug 修复 / VecDeque 优化） |
+| 2026-06-13 | 1.5 | Rust 侧移植简单视觉检测核心并接入开发期运行链路：ROI 灯光亮度 + 磁滞阈值 + EMA 平滑、低分辨率帧差运动识别、合成帧单元测试；后台 ticker 当前使用合成灰度帧驱动 `Detector::analyze_scene()`，后续只替换真实帧源 |
+| 2026-06-13 | 1.6 | 系统设置新增 ROI 标定最小闭环：按通道选择、单灯光 ROI 归一化坐标、亮/灭灯阈值、16:9 可拖拽 / 缩放预览框、保存到 `roi_config.json`；实现 `test_roi_config`，支持用合成标定帧测试亮度 / 判定；浏览器 mock 模式支持 localStorage 持久化 |
+| 2026-06-13 | 1.7 | 根据当前代码同步通知渠道能力：补充 `webhook / feishu / wechat_work / qqbot` 渠道类型、平台 API 凭证字段、access token 缓存、飞书 OAuth 扫码绑定和凭证校验 commands；修正未注册的 `mute_source / export_config / import_config` 状态 |

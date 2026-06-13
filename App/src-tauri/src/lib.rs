@@ -46,6 +46,7 @@ pub fn run() {
             commands::update_algorithm_config,
             commands::get_roi_config,
             commands::update_roi_config,
+            commands::test_roi_config,
             commands::list_notification_targets,
             commands::create_notification_target,
             commands::update_notification_target,
@@ -57,6 +58,9 @@ pub fn run() {
             commands::update_security_config,
             commands::change_password,
             commands::get_data_dir,
+            commands::start_oauth_binding,
+            commands::check_oauth_status,
+            commands::verify_channel_credentials,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Tauri 失败");

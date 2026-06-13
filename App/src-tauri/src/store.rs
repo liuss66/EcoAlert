@@ -1,6 +1,6 @@
 // 视频源数据模型 + 持久化 + 分组 + 状态历史
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use uuid::Uuid;
@@ -151,15 +151,15 @@ impl AlarmRecord {
 #[serde(rename_all = "camelCase")]
 pub struct AlarmRecordFile {
     pub schema_version: u32,
-    #[serde(default)]
-    pub records: Vec<AlarmRecord>,
+    #[serde(default, with = "vecdeque_serde")]
+    pub records: VecDeque<AlarmRecord>,
 }
 
 impl Default for AlarmRecordFile {
     fn default() -> Self {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
-            records: vec![],
+            records: VecDeque::new(),
         }
     }
 }
@@ -206,7 +206,8 @@ pub struct DataFile {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HistoryFile {
     /// 每个源最近 N 条变更，按时间倒序
-    pub records: Vec<StateRecord>,
+    #[serde(with = "vecdeque_serde")]
+    pub records: VecDeque<StateRecord>,
 }
 
 pub fn load(path: &Path) -> DataFile {
@@ -224,7 +225,7 @@ pub fn save(path: &Path, data: &DataFile) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let s = serde_json::to_string_pretty(data)?;
-    fs::write(path, s)?;
+    write_temp_then_replace(path, s)?;
     Ok(())
 }
 
@@ -243,7 +244,7 @@ pub fn save_history(path: &Path, data: &HistoryFile) -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
     let s = serde_json::to_string_pretty(data)?;
-    fs::write(path, s)?;
+    write_temp_then_replace(path, s)?;
     Ok(())
 }
 
@@ -403,12 +404,18 @@ pub struct HeaderPair {
     pub value: String,
 }
 
+fn default_channel_type() -> String {
+    "webhook".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationTarget {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    #[serde(default = "default_channel_type")]
+    pub channel_type: String,
     pub url: String,
     pub method: String,
     #[serde(default)]
@@ -420,6 +427,26 @@ pub struct NotificationTarget {
     pub event_types: Vec<String>,
     pub cooldown_sec: u32,
     pub created_at: i64,
+
+    // ---- API 凭证模式（webhook 模式不填） ----
+    /// 飞书 App ID / 企微 CorpID / QQ AppID
+    #[serde(default)]
+    pub app_id: String,
+    /// 飞书 App Secret / 企微 Secret / QQ ClientSecret
+    #[serde(default)]
+    pub app_secret: String,
+    /// 企微 AgentID（仅企微需要）
+    #[serde(default)]
+    pub agent_id: String,
+    /// 绑定目标：飞书 chat_id / 企微 touser / QQ group_openid
+    #[serde(default)]
+    pub chat_id: String,
+
+    // ---- Token 缓存（内部使用） ----
+    #[serde(default)]
+    pub access_token: String,
+    #[serde(default)]
+    pub token_expires_at: i64,
 }
 
 impl NotificationTarget {
@@ -427,10 +454,14 @@ impl NotificationTarget {
         if payload.method.trim().is_empty() {
             payload.method = "POST".into();
         }
+        if payload.channel_type.trim().is_empty() {
+            payload.channel_type = "webhook".into();
+        }
         Self {
             id: format!("ntf-{}", Uuid::new_v4().simple()),
             name: payload.name,
             enabled: payload.enabled,
+            channel_type: payload.channel_type,
             url: payload.url,
             method: payload.method,
             headers: payload.headers,
@@ -440,7 +471,28 @@ impl NotificationTarget {
             event_types: payload.event_types,
             cooldown_sec: payload.cooldown_sec.unwrap_or(1800),
             created_at: chrono::Utc::now().timestamp_millis(),
+            app_id: payload.app_id,
+            app_secret: payload.app_secret,
+            agent_id: payload.agent_id,
+            chat_id: payload.chat_id,
+            access_token: String::new(),
+            token_expires_at: 0,
         }
+    }
+
+    /// 是否为 API 凭证模式（非 Webhook）
+    #[allow(dead_code)]
+    pub fn is_api_mode(&self) -> bool {
+        self.channel_type != "webhook" && !self.app_id.is_empty()
+    }
+
+    /// Token 是否即将过期（60 秒内）
+    pub fn token_needs_refresh(&self) -> bool {
+        if self.access_token.is_empty() {
+            return true;
+        }
+        let now = chrono::Utc::now().timestamp();
+        self.token_expires_at - now < 60
     }
 }
 
@@ -493,15 +545,15 @@ impl NotificationRecord {
 #[serde(rename_all = "camelCase")]
 pub struct NotificationHistoryFile {
     pub schema_version: u32,
-    #[serde(default)]
-    pub records: Vec<NotificationRecord>,
+    #[serde(default, with = "vecdeque_serde")]
+    pub records: VecDeque<NotificationRecord>,
 }
 
 impl Default for NotificationHistoryFile {
     fn default() -> Self {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
-            records: vec![],
+            records: VecDeque::new(),
         }
     }
 }
@@ -511,6 +563,8 @@ impl Default for NotificationHistoryFile {
 pub struct NotificationTargetPayload {
     pub name: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub channel_type: String,
     pub url: String,
     #[serde(default)]
     pub method: String,
@@ -526,6 +580,15 @@ pub struct NotificationTargetPayload {
     pub event_types: Vec<String>,
     #[serde(default)]
     pub cooldown_sec: Option<u32>,
+    // API 凭证模式
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub app_secret: String,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub chat_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -586,7 +649,7 @@ pub fn save_json<T: Serialize>(path: &Path, data: &T) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_string_pretty(data)?)?;
+    write_temp_then_replace(path, serde_json::to_string_pretty(data)?)?;
     Ok(())
 }
 
@@ -613,10 +676,47 @@ pub fn backfill_groups(data: &mut DataFile) {
 }
 
 /// 把 records 切成按 source_id 的 map（前端用）
-pub fn records_by_source(records: &[StateRecord]) -> HashMap<String, Vec<StateRecord>> {
+pub fn records_by_source<'a, I>(records: I) -> HashMap<String, Vec<StateRecord>>
+where
+    I: IntoIterator<Item = &'a StateRecord>,
+{
     let mut m: HashMap<String, Vec<StateRecord>> = HashMap::new();
     for r in records {
         m.entry(r.source_id.clone()).or_default().push(r.clone());
     }
     m
+}
+
+fn write_temp_then_replace(path: &Path, content: String) -> anyhow::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content)?;
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// serde 兼容模块：VecDeque 序列化为 JSON 数组，反序列化时也接受数组
+mod vecdeque_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::VecDeque;
+
+    pub fn serialize<T, S>(deque: &VecDeque<T>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: Serialize,
+        S: Serializer,
+    {
+        let vec: Vec<&T> = deque.iter().collect();
+        vec.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T, D>(deserializer: D) -> Result<VecDeque<T>, D::Error>
+    where
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        let vec: Vec<T> = Vec::deserialize(deserializer)?;
+        Ok(vec.into_iter().collect())
+    }
 }

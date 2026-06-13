@@ -228,6 +228,7 @@
           <a href="#sec-account" class="settings-tab" data-target="sec-account">账号与安全</a>
           <a href="#sec-storage" class="settings-tab" data-target="sec-storage">数据存储</a>
           <a href="#sec-algo" class="settings-tab" data-target="sec-algo">算法配置</a>
+          <a href="#sec-roi" class="settings-tab" data-target="sec-roi">ROI 标定</a>
           <a href="#sec-notify" class="settings-tab" data-target="sec-notify">通知配置</a>
         </nav>
         <div class="settings-grid">
@@ -426,6 +427,68 @@
             </form>
           </div>
 
+          <!-- ROI 标定 -->
+          <div class="panel settings-roi" id="sec-roi">
+            <div class="panel-header">
+              <h3>ROI 标定</h3>
+              <span class="panel-sub">灯光检测区域与阈值</span>
+            </div>
+            <form id="roi-form" class="settings-form">
+              <div class="field-row">
+                <label class="field full">
+                  <span class="field-label">通道</span>
+                  <select id="roi-source" class="text-input"></select>
+                  <span class="field-hint">ROI 坐标使用 0-1 归一化，后续接真实画面时不受分辨率影响</span>
+                </label>
+              </div>
+              <div class="roi-editor">
+                <div class="roi-preview" id="roi-preview">
+                  <div class="roi-box" id="roi-preview-box">
+                    <span class="roi-resize-handle" id="roi-resize-handle"></span>
+                  </div>
+                </div>
+                <div class="roi-fields">
+                  <div class="field-row">
+                    <label class="field">
+                      <span class="field-label">X</span>
+                      <input type="number" id="roi-x" class="text-input" min="0" max="1" step="0.01" value="0.20" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Y</span>
+                      <input type="number" id="roi-y" class="text-input" min="0" max="1" step="0.01" value="0.20" />
+                    </label>
+                  </div>
+                  <div class="field-row">
+                    <label class="field">
+                      <span class="field-label">W</span>
+                      <input type="number" id="roi-w" class="text-input" min="0.01" max="1" step="0.01" value="0.50" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">H</span>
+                      <input type="number" id="roi-h" class="text-input" min="0.01" max="1" step="0.01" value="0.50" />
+                    </label>
+                  </div>
+                  <div class="field-row">
+                    <label class="field">
+                      <span class="field-label">亮灯阈值</span>
+                      <input type="number" id="roi-light-on" class="text-input" min="0" max="1" step="0.01" value="0.70" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">关灯阈值</span>
+                      <input type="number" id="roi-light-off" class="text-input" min="0" max="1" step="0.01" value="0.45" />
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="button" class="btn-ghost" id="btn-reload-roi">重新加载</button>
+                <button type="button" class="btn-ghost" id="btn-test-roi">测试 ROI</button>
+                <button type="submit" class="btn-primary">保存 ROI</button>
+              </div>
+              <div class="form-msg" id="roi-test-result"></div>
+            </form>
+          </div>
+
           <!-- 通知配置 -->
           <div class="panel settings-notify" id="sec-notify">
             <div class="panel-header">
@@ -433,24 +496,75 @@
               <button class="btn-ghost btn-refresh-notify" id="btn-refresh-notify" title="刷新列表">↻ 刷新</button>
             </div>
             <form id="notify-form" class="settings-form">
+              <input type="hidden" id="ntf-edit-id" />
               <div class="field-row">
                 <label class="field">
-                  <span class="field-label">名称 *</span>
-                  <input type="text" id="ntf-name" class="text-input" required maxlength="64" placeholder="例如：企业微信机器人" />
-                </label>
-                <label class="field">
-                  <span class="field-label">Method</span>
-                  <select id="ntf-method" class="text-input">
-                    <option value="POST">POST</option>
-                    <option value="PUT">PUT</option>
+                  <span class="field-label">渠道类型</span>
+                  <select id="ntf-channel" class="text-input">
+                    <option value="webhook">通用 Webhook</option>
+                    <option value="feishu">飞书</option>
+                    <option value="wechat_work">企业微信</option>
+                    <option value="qqbot">QQ</option>
                   </select>
                 </label>
+                <label class="field">
+                  <span class="field-label">名称 *</span>
+                  <input type="text" id="ntf-name" class="text-input" required maxlength="64" placeholder="例如：运维报警群" />
+                </label>
               </div>
-              <label class="field full">
-                <span class="field-label">Webhook URL *</span>
-                <input type="url" id="ntf-url" class="text-input" required maxlength="512" placeholder="https://example.com/webhook  或  mock://local" />
-                <span class="field-hint">支持 mock://local 走本地测试通道</span>
-              </label>
+              <!-- 配置模式切换（非 Webhook 渠道才显示） -->
+              <div id="ntf-mode-switch" class="ntf-mode-switch" style="display:none">
+                <label class="mode-radio">
+                  <input type="radio" name="ntf-mode" value="webhook" checked />
+                  <span>简单模式（Webhook）</span>
+                </label>
+                <label class="mode-radio">
+                  <input type="radio" name="ntf-mode" value="api" />
+                  <span>API 凭证模式</span>
+                </label>
+              </div>
+              <!-- Webhook URL（简单模式 / 通用 Webhook） -->
+              <div id="ntf-webhook-url-section">
+                <label class="field full">
+                  <span class="field-label">Webhook URL *</span>
+                  <input type="url" id="ntf-url" class="text-input" required maxlength="512" placeholder="https://example.com/webhook" />
+                  <span class="field-hint" id="ntf-url-hint">支持 mock://local 走本地测试通道</span>
+                </label>
+              </div>
+              <!-- API 凭证字段（API 模式） -->
+              <div id="ntf-api-fields" style="display:none">
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label" id="ntf-appid-label">App ID *</span>
+                    <input type="text" id="ntf-app-id" class="text-input" maxlength="128" placeholder="" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label" id="ntf-secret-label">App Secret *</span>
+                    <input type="password" id="ntf-app-secret" class="text-input" maxlength="256" placeholder="" />
+                  </label>
+                </div>
+                <div class="field-row" id="ntf-agent-row" style="display:none">
+                  <label class="field">
+                    <span class="field-label">Agent ID *</span>
+                    <input type="text" id="ntf-agent-id" class="text-input" maxlength="64" placeholder="企微应用的 AgentId" />
+                  </label>
+                </div>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label" id="ntf-chatid-label">接收目标 *</span>
+                    <input type="text" id="ntf-chat-id" class="text-input" maxlength="256" placeholder="" />
+                    <span class="field-hint" id="ntf-chatid-hint"></span>
+                  </label>
+                  <div class="field" id="ntf-oauth-section" style="display:none">
+                    <span class="field-label">&nbsp;</span>
+                    <button type="button" class="btn-ghost" id="btn-oauth-bind">📱 扫码绑定</button>
+                  </div>
+                </div>
+                <div class="form-actions" style="margin-top:8px">
+                  <button type="button" class="btn-ghost" id="btn-verify-credentials">验证凭证</button>
+                  <span class="verify-result" id="verify-result"></span>
+                </div>
+              </div>
               <div class="field-row">
                 <label class="field">
                   <span class="field-label">事件类型</span>
@@ -469,18 +583,22 @@
                   <span class="field-hint">同一目标同一事件最小间隔</span>
                 </label>
               </div>
-              <label class="field full">
-                <span class="field-label">Body 模板</span>
-                <textarea id="ntf-body" class="text-input" rows="6" placeholder='{
-  "touser": "ai_challenge",
-  "msgtype": "text",
-  "agentcode": "ai_challenge",
-  "text": { "content": "{{rendered_text}}" },
-  "subject": "{{subject}}",
-  "from": "{{from}}"
-}'></textarea>
-                <span class="field-hint">支持占位符：<code>{{event}}</code> <code>{{source_name}}</code> <code>{{location}}</code> <code>{{ts}}</code></span>
-              </label>
+              <div id="ntf-webhook-fields">
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">Method</span>
+                    <select id="ntf-method" class="text-input">
+                      <option value="POST">POST</option>
+                      <option value="PUT">PUT</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="field full">
+                  <span class="field-label">Body 模板</span>
+                  <textarea id="ntf-body" class="text-input" rows="6" placeholder='留空则发送原始 JSON，或自定义模板'></textarea>
+                  <span class="field-hint">支持占位符：<code>{{event}}</code> <code>{{source_name}}</code> <code>{{location}}</code> <code>{{ts}}</code></span>
+                </label>
+              </div>
               <label class="check-row">
                 <input type="checkbox" id="ntf-enabled" checked />
                 <span class="check-text">启用该通知目标</span>
@@ -493,10 +611,10 @@
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
-                  <tr><th>名称</th><th>事件</th><th>冷却</th><th>启用</th><th>地址</th><th>操作</th></tr>
+                  <tr><th>渠道</th><th>名称</th><th>事件</th><th>冷却</th><th>启用</th><th>地址</th><th>操作</th></tr>
                 </thead>
                 <tbody id="ntf-target-tbody">
-                  <tr><td colspan="6" class="muted center">暂无通知目标</td></tr>
+                  <tr><td colspan="7" class="muted center">暂无通知目标</td></tr>
                 </tbody>
               </table>
             </div>
@@ -589,6 +707,33 @@
           <button type="submit" class="btn-primary">保存</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- OAuth 扫码弹窗 -->
+  <div class="modal-overlay hidden" id="oauth-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📱 飞书扫码绑定</h3>
+        <button class="modal-close" id="btn-close-oauth">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:12px">用飞书 App 扫描下方二维码，完成授权后自动绑定</p>
+        <div class="qr-container" id="qr-container">
+          <div class="qr-loading">正在生成二维码…</div>
+        </div>
+        <div class="oauth-status" id="oauth-status">等待扫码…</div>
+        <div id="oauth-chat-select" style="display:none">
+          <label class="field full" style="margin-top:12px">
+            <span class="field-label">选择接收报警的群</span>
+            <select id="oauth-chat-id" class="text-input"></select>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost" id="btn-cancel-oauth">取消</button>
+        <button class="btn-primary" id="btn-confirm-oauth" disabled>确认绑定</button>
+      </div>
     </div>
   </div>
 
