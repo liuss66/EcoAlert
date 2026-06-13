@@ -320,6 +320,7 @@ API 凭证模式示例：
 ```json
 {
   "enabled": true,
+  "developerMode": false,
   "scope": "source",
   "scopeId": "src-xxx",
   "activeWindows": [
@@ -351,6 +352,8 @@ system < global < group < source
 ```
 
 `get_effective_algorithm_config` 返回合并后的配置，并在 `sources` 中标明每个字段来自哪个层级。
+
+`developerMode = true` 时，后端调度忽略 `activeWindows / exceptionWindows`，前端实时视频卡片显示 `scene-readout` 检测读数；关闭时隐藏检测读数。
 
 ### 5.6 ChannelRuntimeStatus
 

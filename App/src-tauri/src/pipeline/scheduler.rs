@@ -60,7 +60,10 @@ fn decide_for_source_at(
     now: DateTime<Local>,
 ) -> ScheduleDecision {
     let effective = effective_algorithm_config(source, config_file);
-    let config = effective.config.clone();
+    let mut config = effective.config.clone();
+    if config_file.global.developer_mode {
+        config.developer_mode = true;
+    }
 
     if !source.enabled {
         return ScheduleDecision {
@@ -77,6 +80,16 @@ fn decide_for_source_at(
             should_run_simple: false,
             should_run_vlm: false,
             reason: "algorithm_disabled".into(),
+            config_scope: effective.scope,
+            effective_config: config,
+        };
+    }
+
+    if config.developer_mode {
+        return ScheduleDecision {
+            should_run_simple: true,
+            should_run_vlm: config.vlm_enabled,
+            reason: "developer_mode".into(),
             config_scope: effective.scope,
             effective_config: config,
         };
@@ -262,5 +275,33 @@ mod tests {
         let decision = decide_for_source_at(&src, &file, local_dt(2026, 6, 15, 20, 0));
         assert!(!decision.should_run_simple);
         assert_eq!(decision.reason, "exception_window");
+    }
+
+    #[test]
+    fn developer_mode_ignores_schedule_windows() {
+        let src = source("src-1", true, None);
+        let mut file = AlgorithmConfigFile::default();
+        file.global.developer_mode = true;
+        file.global.active_windows = vec![window(vec![1], "18:30", "08:30")];
+        file.global.exception_windows = vec![window(vec![1], "19:00", "21:00")];
+
+        let decision = decide_for_source_at(&src, &file, local_dt(2026, 6, 15, 20, 0));
+        assert!(decision.should_run_simple);
+        assert_eq!(decision.reason, "developer_mode");
+    }
+
+    #[test]
+    fn global_developer_mode_overrides_source_schedule() {
+        let src = source("src-1", true, None);
+        let mut file = AlgorithmConfigFile::default();
+        file.global.developer_mode = true;
+        let mut source_cfg = file.global.clone();
+        source_cfg.developer_mode = false;
+        source_cfg.active_windows = vec![window(vec![1], "18:30", "08:30")];
+        file.sources.insert("src-1".into(), source_cfg);
+
+        let decision = decide_for_source_at(&src, &file, local_dt(2026, 6, 15, 12, 0));
+        assert!(decision.should_run_simple);
+        assert_eq!(decision.reason, "developer_mode");
     }
 }

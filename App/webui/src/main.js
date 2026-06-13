@@ -95,6 +95,13 @@ const enterApp = async () => {
     startClock();
     await loadSources();
     await loadGroups();
+    try {
+      const globalAlgorithmConfig = await getAlgorithmConfig(null);
+      developerMode = !!(globalAlgorithmConfig.developerMode ?? globalAlgorithmConfig.developer_mode);
+    } catch (e) {
+      console.warn('开发者模式配置读取失败:', e);
+      developerMode = false;
+    }
     renderLive();
     renderSourcesTable();
     switchView('live');
@@ -292,6 +299,7 @@ const switchView = (name) => {
   if (name === 'overview') renderOverview();
   if (name === 'settings') renderSettings();
   if (name === 'notify-history') renderNotificationHistory();
+  if (name !== 'settings') destroyRoiVideo();
 };
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
 
@@ -304,6 +312,7 @@ let algorithmConfig = null;
 let roiConfig = null;
 let notificationTargets = [];
 let notificationHistory = [];
+let developerMode = false;
 /** 实时状态：sourceId -> { person, light, alarm, confidence, brightness, motion, ts } */
 let sceneStates = new Map();
 let runtimeStatuses = new Map();
@@ -613,6 +622,11 @@ function applyStateIcons() {
     }
   });
   $$('.scene-readout').forEach((el) => {
+    if (!developerMode) {
+      el.classList.add('hidden');
+      return;
+    }
+    el.classList.remove('hidden');
     const id = el.dataset.scene;
     const s = sceneStates.get(id);
     if (!s) {
@@ -739,7 +753,7 @@ const videoCardHtml = (s) => {
             <button class="ico-btn btn-del" data-id="${s.id}" title="删除">🗑</button>
           </span>
         </div>
-        <div class="scene-readout" data-scene="${s.id}" title="等待检测结果">检测：等待结果</div>
+        <div class="scene-readout ${developerMode ? '' : 'hidden'}" data-scene="${s.id}" title="等待检测结果">检测：等待结果</div>
       </div>
     </div>
   `;
@@ -1171,6 +1185,7 @@ const normalizeTimeText = (value, fallback) => {
 const fillAlgorithmForm = (cfg) => {
   const win = (cfg.activeWindows || [])[0] || { weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' };
   $('#algo-enabled').checked = !!cfg.enabled;
+  $('#algo-developer-mode').checked = !!(cfg.developerMode ?? cfg.developer_mode);
   $('#algo-weekdays').value = (win.weekdays || [1, 2, 3, 4, 5]).join(',');
   $('#algo-start').value = win.start || '18:30';
   $('#algo-end').value = win.end || '08:30';
@@ -1219,6 +1234,7 @@ const algorithmPayloadFromForm = () => {
   return {
     ...(algorithmConfig || {}),
     enabled: $('#algo-enabled').checked,
+    developerMode: $('#algo-developer-mode').checked,
     scope: sourceId ? 'source' : 'global',
     scopeId: sourceId,
     activeWindows: [{
@@ -1247,6 +1263,10 @@ const renderAlgorithmSettings = async () => {
     populateAlgorithmSourceOptions();
     const sourceId = getSelectedAlgorithmSourceId();
     algorithmConfig = await getAlgorithmConfig(sourceId);
+    if (!sourceId) {
+      developerMode = !!(algorithmConfig.developerMode ?? algorithmConfig.developer_mode);
+      applyStateIcons();
+    }
     fillAlgorithmForm(algorithmConfig);
   } catch (err) {
     addLog('warn', `算法配置加载失败: ${err.message || err}`);
@@ -1265,6 +1285,10 @@ $('#algorithm-form').addEventListener('submit', async (e) => {
     const sourceId = getSelectedAlgorithmSourceId();
     const payload = algorithmPayloadFromForm();
     algorithmConfig = await updateAlgorithmConfig(sourceId, payload);
+    if (!sourceId) {
+      developerMode = !!(algorithmConfig.developerMode ?? algorithmConfig.developer_mode);
+      renderLive();
+    }
     fillAlgorithmForm(algorithmConfig);
     addLog('info', sourceId ? '通道算法配置已保存' : '全局算法配置已保存');
   } catch (err) {
@@ -1294,6 +1318,85 @@ const clamp01 = (value, fallback = 0) => {
   return Math.min(1, Math.max(0, n));
 };
 
+/* ---- ROI 预览区视频播放 ---- */
+let roiHls = null;
+
+const destroyRoiVideo = () => {
+  if (roiHls) { roiHls.destroy(); roiHls = null; }
+  const wrap = $('#roi-video-wrap');
+  const preview = $('#roi-preview');
+  if (!wrap) return;
+  const video = wrap.querySelector('video');
+  if (video) { video.pause(); video.removeAttribute('src'); video.remove(); }
+  preview?.classList.remove('has-video');
+};
+
+const mountRoiVideo = (src) => {
+  destroyRoiVideo();
+  const wrap = $('#roi-video-wrap');
+  const preview = $('#roi-preview');
+  if (!wrap || !src) return;
+
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+
+  const showPlaceholder = () => {
+    preview?.classList.remove('has-video');
+  };
+
+  try {
+    if (src.type === 'hls') {
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          enableWorker: true,
+          liveSyncDurationCount: 3,
+          liveMaxLatencyDurationCount: 10,
+        });
+        hls.loadSource(src.url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            hls.startLoad();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          } else {
+            hls.destroy();
+            roiHls = null;
+            showPlaceholder();
+          }
+        });
+        roiHls = hls;
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src.url;
+      } else {
+        showPlaceholder();
+        return;
+      }
+    } else if (src.type === 'mp4') {
+      video.src = src.url;
+    } else if (src.type === 'webcam') {
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then((stream) => { video.srcObject = stream; })
+        .catch(() => showPlaceholder());
+    } else {
+      showPlaceholder();
+      return;
+    }
+  } catch (_) {
+    showPlaceholder();
+    return;
+  }
+
+  video.addEventListener('playing', () => {
+    preview?.classList.add('has-video');
+  }, { once: true });
+
+  wrap.insertBefore(video, wrap.firstChild);
+};
+
 const populateRoiSourceOptions = () => {
   const sel = $('#roi-source');
   if (!sel) return;
@@ -1307,10 +1410,10 @@ const populateRoiSourceOptions = () => {
 const updateRoiPreview = () => {
   const box = $('#roi-preview-box');
   if (!box) return;
-  const x = clamp01($('#roi-x').value, 0.2);
-  const y = clamp01($('#roi-y').value, 0.2);
-  const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 0.5)));
-  const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 0.5)));
+  const x = clamp01($('#roi-x').value, 0);
+  const y = clamp01($('#roi-y').value, 0);
+  const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 1)));
+  const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 1)));
   box.style.left = `${x * 100}%`;
   box.style.top = `${y * 100}%`;
   box.style.width = `${w * 100}%`;
@@ -1318,11 +1421,11 @@ const updateRoiPreview = () => {
 };
 
 const fillRoiForm = (cfg) => {
-  const roi = (cfg.lightRois || cfg.light_rois || [])[0] || { x: 0.2, y: 0.2, w: 0.5, h: 0.5 };
-  $('#roi-x').value = roi.x ?? 0.2;
-  $('#roi-y').value = roi.y ?? 0.2;
-  $('#roi-w').value = roi.w ?? 0.5;
-  $('#roi-h').value = roi.h ?? 0.5;
+  const roi = (cfg.lightRois || cfg.light_rois || [])[0] || { x: 0, y: 0, w: 1, h: 1 };
+  $('#roi-x').value = roi.x ?? 0;
+  $('#roi-y').value = roi.y ?? 0;
+  $('#roi-w').value = roi.w ?? 1;
+  $('#roi-h').value = roi.h ?? 1;
   $('#roi-light-on').value = cfg.lightOnThreshold ?? cfg.light_on_threshold ?? 0.70;
   $('#roi-light-off').value = cfg.lightOffThreshold ?? cfg.light_off_threshold ?? 0.45;
   updateRoiPreview();
@@ -1330,10 +1433,10 @@ const fillRoiForm = (cfg) => {
 
 const roiPayloadFromForm = () => {
   const sourceId = $('#roi-source').value;
-  const x = clamp01($('#roi-x').value, 0.2);
-  const y = clamp01($('#roi-y').value, 0.2);
-  const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 0.5)));
-  const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 0.5)));
+  const x = clamp01($('#roi-x').value, 0);
+  const y = clamp01($('#roi-y').value, 0);
+  const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 1)));
+  const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 1)));
   const on = clamp01($('#roi-light-on').value, 0.70);
   const off = Math.min(on, clamp01($('#roi-light-off').value, 0.45));
   return {
@@ -1352,6 +1455,8 @@ const roiPayloadFromForm = () => {
 const loadSelectedRoi = async () => {
   const sourceId = $('#roi-source')?.value;
   if (!sourceId) return;
+  const src = sources.find((s) => s.id === sourceId);
+  if (src) mountRoiVideo(src);
   try {
     roiConfig = await getRoiConfig(sourceId);
     fillRoiForm(roiConfig);

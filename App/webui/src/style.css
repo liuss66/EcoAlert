@@ -758,13 +758,40 @@ textarea.text-input {
     linear-gradient(135deg, #0f172a, #334155);
   background-size: 10% 10%, 10% 10%, 100% 100%;
 }
-.roi-preview::after {
-  content: "16:9 画面预览";
+.roi-preview.has-video {
+  background: #000;
+}
+.roi-video-wrap {
   position: absolute;
-  left: 10px;
-  bottom: 8px;
-  color: rgba(255,255,255,.72);
-  font-size: 12px;
+  inset: 0;
+  z-index: 0;
+}
+.roi-video-wrap video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.roi-video-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: rgba(255,255,255,.5);
+  font-size: 13px;
+}
+.roi-video-placeholder .illu {
+  font-size: 28px;
+  opacity: .6;
+}
+.roi-preview.has-video .roi-video-placeholder {
+  display: none;
+}
+.roi-preview .roi-box {
+  z-index: 1;
 }
 .roi-box {
   position: absolute;

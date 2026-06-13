@@ -514,6 +514,7 @@ export async function getAlgorithmConfig(sourceId = null) {
   if (isTauri) return invoke('get_algorithm_config', { sourceId });
   const defaults = {
     enabled: true,
+    developerMode: false,
     scope: 'global',
     scopeId: null,
     activeWindows: [],
@@ -577,7 +578,7 @@ export async function getRoiConfig(sourceId) {
   return {
     sourceId,
     version: 'mock-roi',
-    lightRois: [],
+    lightRois: [{ id: 'light-main', label: '全屏', x: 0, y: 0, w: 1, h: 1 }],
     excludeRois: [],
     personRois: [],
     lightOnThreshold: 0.7,
@@ -600,7 +601,7 @@ export async function updateRoiConfig(sourceId, payload) {
 
 export async function testRoiConfig(sourceId, payload = null) {
   if (isTauri) return invoke('test_roi_config', { sourceId, payload });
-  const roi = (payload?.lightRois || [])[0] || { x: 0.2, y: 0.2, w: 0.5, h: 0.5 };
+  const roi = (payload?.lightRois || [])[0] || { x: 0, y: 0, w: 1, h: 1 };
   const cx = roi.x + roi.w / 2;
   const cy = roi.y + roi.h / 2;
   const hitsBrightPatch = cx >= 0.3 && cx <= 0.7 && cy >= 0.27 && cy <= 0.73;

@@ -294,6 +294,8 @@ fn default_timezone() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct AlgorithmConfig {
     pub enabled: bool,
+    #[serde(default)]
+    pub developer_mode: bool,
     pub scope: String,
     #[serde(default)]
     pub scope_id: Option<String>,
@@ -319,6 +321,7 @@ impl Default for AlgorithmConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            developer_mode: false,
             scope: "global".into(),
             scope_id: None,
             // 空启用窗口表示全天运行。演示 / release 默认需要能立即抽帧检测。

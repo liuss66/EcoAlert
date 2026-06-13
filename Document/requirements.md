@@ -171,6 +171,7 @@
 - 人员：尚未接入人形检测模型，`person` 由低分辨率帧差运动分数临时代理；适合观察“画面有明显变化”，不适合作为生产人员存在结论。
 - 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；历史记录仍只在 `person / light` 变化时落库。
 - 默认调度：全局 `activeWindows` 为空，表示全天运行；旧版内置的“工作日 18:30-08:30”默认窗口会在启动时迁移为空，避免演示视频长期停留在“等待结果”。
+- 开发者模式：`developer_mode = true` 时忽略生效 / 例外时段，并且前端只在开发者模式下显示 `scene-readout` 检测读数。
 
 ### 3.11 算法策略与调度（新增）
 
@@ -344,7 +345,7 @@ resolved
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-ROI-1 | 每路视频可配置灯光检测 ROI，支持多个矩形区域 | ⚠️ 单灯光 ROI 配置 UI 已接入，多矩形待实现 |
+| F-ROI-1 | 每路视频可配置灯光检测 ROI，支持多个矩形区域 | ⚠️ 单灯光 ROI 配置 UI 已接入，默认全屏，多矩形待实现 |
 | F-ROI-2 | 每路视频可配置排除 ROI，用于排除窗户、屏幕、反光区域 | ⏳ 待实现 |
 | F-ROI-3 | 支持在视频画面上框选、拖拽、缩放 ROI | ⚠️ 当前支持 16:9 预览框内拖拽 / 缩放和数值配置，真实视频画面框选待实现 |
 | F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、实时亮度值和判定结果 | ⚠️ 当前展示 16:9 预览框；`test_roi_config` 已从当前视频源抽真实帧验证亮度 / 判定，页面实时帧预览待实现 |
@@ -486,6 +487,7 @@ pub struct StateRecord {
 ```rust
 pub struct AlgorithmConfig {
     pub enabled: bool,
+    pub developer_mode: bool,              // true 时忽略生效时段，并显示调试读数
     pub scope: String,                    // system | global | group | source
     pub scope_id: Option<String>,
     pub source_id: Option<String>,        // None 表示全局默认
