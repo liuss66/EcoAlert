@@ -1,7 +1,7 @@
 /* ===========================================================
    EcoAlert 前端主逻辑（Tauri 版）
    - 登录 / 鉴权
-   - 视图切换：实时监控 / 监控总览 / 视频管理 / 系统设置 / 日志
+   - 视图切换：实时监控 / 监控总览 / 视频管理 / 基础设置 / 检测配置 / 通知配置 / 日志
    - 视频播放（HLS / MP4 / 摄像头）
    - 事件订阅（替代 WebSocket）
    =========================================================== */
@@ -97,18 +97,15 @@ const enterApp = async () => {
     await loadGroups();
     try {
       const globalAlgorithmConfig = await getAlgorithmConfig(null);
-      developerMode = !!(globalAlgorithmConfig.developerMode ?? globalAlgorithmConfig.developer_mode);
+      setDeveloperMode(!!(globalAlgorithmConfig.developerMode ?? globalAlgorithmConfig.developer_mode));
     } catch (e) {
       console.warn('开发者模式配置读取失败:', e);
-      developerMode = false;
+      setDeveloperMode(false);
     }
     renderLive();
     renderSourcesTable();
     switchView('live');
     await subscribeEvents();
-    // 设置页数据
-    try { $('#data-dir').textContent = await getDataDir(); } catch (e) { console.warn('获取数据目录失败:', e); }
-    await renderSettings();
     setupSettingsEnhancements();
     setupSettingsTabs();
     if (!isTauriEnv) addLog('warn', '当前在浏览器预览模式（未连接 Tauri 后端）');
@@ -247,36 +244,41 @@ function setupRoiPreviewDrag() {
 
 /* -------------------- 设置页 Tab 切换 -------------------- */
 function setupSettingsTabs() {
-  const tabs = $$('#settings-tabs .settings-tab');
-  if (tabs.length === 0) return;
+  const tabBars = $$('.settings-tabs');
+  if (tabBars.length === 0) return;
 
   const getTabTargets = (tab) => (tab.dataset.targets || tab.dataset.target || '')
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean);
-  const panelIds = new Set();
-  tabs.forEach((tab) => getTabTargets(tab).forEach((id) => panelIds.add(id)));
-  const panels = [...panelIds]
-    .map((id) => document.getElementById(id))
-    .filter(Boolean);
-  const show = (tab) => {
-    const visibleIds = new Set(getTabTargets(tab));
-    tabs.forEach((t) => t.classList.toggle('active', t === tab));
-    panels.forEach((p) => p.classList.toggle('hidden', !visibleIds.has(p.id)));
-    // 切 tab 时把页面滚到顶，避免停留在上一个 panel 的中间
-    const main = document.querySelector('.main');
-    if (main) main.scrollTo?.({ top: 0, behavior: 'smooth' });
-    window.scrollTo?.({ top: 0, behavior: 'smooth' });
-  };
-  tabs.forEach((tab) => {
-    tab.addEventListener('click', (e) => {
-      e.preventDefault();
-      show(tab);
+
+  tabBars.forEach((tabBar) => {
+    const tabs = $$('.settings-tab', tabBar);
+    if (tabs.length === 0) return;
+    const panelIds = new Set();
+    tabs.forEach((tab) => getTabTargets(tab).forEach((id) => panelIds.add(id)));
+    const panels = [...panelIds]
+      .map((id) => document.getElementById(id))
+      .filter(Boolean);
+    const show = (tab) => {
+      const visibleIds = new Set(getTabTargets(tab));
+      tabs.forEach((t) => t.classList.toggle('active', t === tab));
+      panels.forEach((p) => p.classList.toggle('hidden', !visibleIds.has(p.id)));
+      // 切 tab 时把页面滚到顶，避免停留在上一个 panel 的中间
+      const main = document.querySelector('.main');
+      if (main) main.scrollTo?.({ top: 0, behavior: 'smooth' });
+      window.scrollTo?.({ top: 0, behavior: 'smooth' });
+    };
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', (e) => {
+        e.preventDefault();
+        show(tab);
+      });
     });
+    // 初始化：默认显示第一个 tab 对应 panel
+    const initial = tabs.find((t) => t.classList.contains('active')) || tabs[0];
+    show(initial);
   });
-  // 初始化：默认显示第一个 tab 对应 panel
-  const initial = tabs.find((t) => t.classList.contains('active')) || tabs[0];
-  show(initial);
 }
 
 /* -------------------- 时钟 -------------------- */
@@ -294,7 +296,9 @@ const VIEW_META = {
   live: { title: '实时监控', sub: '查看所有视频源的实时画面' },
   overview: { title: '监控总览', sub: '全局统计与各通道状态' },
   sources: { title: '视频管理', sub: '新增 / 编辑 / 删除视频流' },
-  settings: { title: '系统设置', sub: '修改登录密码 / 查看数据目录' },
+  'basic-settings': { title: '基础设置', sub: '账号安全、数据目录与调试开关' },
+  'detection-settings': { title: '检测配置', sub: '算法调度、阈值和 ROI 标定' },
+  'notification-settings': { title: '通知配置', sub: '通知渠道、事件规则和冷却时间' },
   'notify-history': { title: '通知历史', sub: '每次通知发送的记录与结果' },
   console: { title: '系统日志', sub: '服务端与客户端事件流' },
 };
@@ -305,9 +309,11 @@ const switchView = (name) => {
   $('#view-title').textContent = VIEW_META[name].title;
   $('#view-sub').textContent = VIEW_META[name].sub;
   if (name === 'overview') renderOverview();
-  if (name === 'settings') renderSettings();
+  if (name === 'basic-settings') renderBasicSettings();
+  if (name === 'detection-settings') renderDetectionSettings();
+  if (name === 'notification-settings') renderNotificationSettings();
   if (name === 'notify-history') renderNotificationHistory();
-  if (name !== 'settings') destroyRoiVideo();
+  if (name !== 'detection-settings') destroyRoiVideo();
 };
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
 
@@ -324,6 +330,11 @@ let developerMode = false;
 /** 实时状态：sourceId -> { person, light, alarm, confidence, brightness, motion, ts } */
 let sceneStates = new Map();
 let runtimeStatuses = new Map();
+
+const setDeveloperMode = (enabled) => {
+  developerMode = !!enabled;
+  document.body?.classList.toggle('developer-mode', developerMode);
+};
 
 const loadSources = async () => {
   try { sources = await listSources(); }
@@ -644,34 +655,36 @@ function applyStateIcons() {
         const err = rt.lastError || rt.last_error;
         const last = rt.lastAlgorithmAt || rt.last_algorithm_at;
         if (status === 'disabled') {
-          el.textContent = `检测：未运行 (${err || 'disabled'})`;
-          el.title = '算法被关闭、通道停用或当前不在启用时段';
+          el.textContent = '未运行';
+          el.title = '算法被关闭、通道停用或当前不在启用时段 · ' + (err || '');
         } else if (status === 'error') {
-          el.textContent = `检测：抽帧失败`;
+          el.textContent = '抽帧失败';
           el.title = err || '请检查 ffmpeg、HLS URL 和推流器';
         } else if (last) {
-          el.textContent = `检测：等待下一次结果`;
+          el.textContent = '等待中';
           el.title = `上次算法时间 ${fmtTime(last)}`;
         } else {
-          el.textContent = `检测：${status === 'running' ? '抽帧中' : '等待首次结果'}`;
+          el.textContent = status === 'running' ? '抽帧中' : '等待首次';
           el.title = err || 'Tauri 后端完成首次抽帧检测后显示';
         }
       } else {
-        el.textContent = '检测：等待后端状态';
+        el.textContent = '待连接';
         el.title = '等待 runtime_status 或 scene_state 事件';
       }
       return;
     }
-    const personText = s.person ? `人员：有人 ${(s.personConfidence * 100).toFixed(0)}%` : `人员：无人 ${(s.personConfidence * 100).toFixed(0)}%`;
-    const lightText = s.light ? `灯光：开灯 ${(s.lightConfidence * 100).toFixed(0)}%` : `灯光：关灯 ${(s.lightConfidence * 100).toFixed(0)}%`;
-    const brightness = s.lightBrightness == null ? '-' : Number(s.lightBrightness).toFixed(0);
-    const color = s.colorScore == null ? '-' : Number(s.colorScore).toFixed(3);
-    const motion = s.motionScore == null ? '-' : Number(s.motionScore).toFixed(3);
+    const personPct = s.personConfidence == null ? '-' : `${(s.personConfidence * 100).toFixed(0)}%`;
+    const lightPct  = s.lightConfidence  == null ? '-' : `${(s.lightConfidence  * 100).toFixed(0)}%`;
+    const colorPct   = s.colorScore  == null ? '-' : `${(Number(s.colorScore)  * 100).toFixed(0)}%`;
+    const motionPct  = s.motionScore == null ? '-' : `${(Number(s.motionScore) * 100).toFixed(0)}%`;
     const cost = s.processMs ?? s.modelLatencyMs;
     const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
-    el.textContent = `${personText} · ${lightText} · 色彩分数 ${color} · 运动 ${motion}`;
-    el.dataset.brightness = brightness;
-    el.title = `开关状态：${s.light ? '开灯' : '关灯'} / 色彩分数 ${color} / 亮度 ${brightness} / 来源 ${s.source || 'simple'} / ${s.reason || '-'} / #${s.frameSeq || 0} / ${costText} / ${fmtTime(s.ts)}`;
+    // 纯文字 + 百分比，无 label 无图标
+    const personText = s.person ? '在场' : '不在';
+    const lightText  = s.light  ? '开灯' : '关灯';
+    el.textContent = `${personText} ${personPct}  ${lightText} ${lightPct}  色彩 ${colorPct}  运动 ${motionPct}`;
+    el.dataset.brightness = s.lightBrightness ?? '';
+    el.title = `人: ${personText} (${personPct}) · 灯: ${lightText} (${lightPct}) · 色彩 ${colorPct} · 运动 ${motionPct} · 亮度 ${s.lightBrightness ?? '-'} · 来源 ${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
   });
 }
 
@@ -1142,7 +1155,7 @@ const removeSource = async (id) => {
   }
 };
 
-/* -------------------- 系统设置 / 改密码 -------------------- */
+/* -------------------- 基础设置 / 改密码 -------------------- */
 $('#pw-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const oldPw = $('#pw-old').value;
@@ -1277,16 +1290,31 @@ const renderAlgorithmSettings = async () => {
 };
 
 const renderSettings = async () => {
+  await renderBasicSettings();
+  await renderDetectionSettings();
+  await renderNotificationSettings();
+};
+
+const renderBasicSettings = async () => {
+  try {
+    const dataDir = await getDataDir();
+    const dataDirEl = $('#data-dir');
+    if (dataDirEl) dataDirEl.textContent = dataDir;
+  } catch (e) {
+    console.warn('获取数据目录失败:', e);
+  }
   await renderDeveloperSettings();
+};
+
+const renderDetectionSettings = async () => {
   await renderAlgorithmSettings();
   await renderRoiSettings();
-  await renderNotificationSettings();
 };
 
 const renderDeveloperSettings = async () => {
   try {
     const cfg = await getAlgorithmConfig(null);
-    developerMode = !!(cfg.developerMode ?? cfg.developer_mode);
+    setDeveloperMode(!!(cfg.developerMode ?? cfg.developer_mode));
     const input = $('#developer-mode');
     if (input) input.checked = developerMode;
     applyStateIcons();
@@ -1305,7 +1333,7 @@ $('#developer-mode')?.addEventListener('change', async (e) => {
       scopeId: null,
     };
     const saved = await updateAlgorithmConfig(null, payload);
-    developerMode = !!(saved.developerMode ?? saved.developer_mode);
+    setDeveloperMode(!!(saved.developerMode ?? saved.developer_mode));
     e.target.checked = developerMode;
     $('#developer-ok').textContent = '开发者模式已保存';
     renderLive();
@@ -2073,7 +2101,7 @@ const subscribeEvents = async () => {
   });
   await onNotification(async (payload) => {
     addLog(payload.ok ? 'info' : 'warn', `通知${payload.ok ? '成功' : '失败'}: ${payload.event || '-'}`);
-    if (!$('#view-settings').classList.contains('hidden')) {
+    if (!$('#view-notification-settings').classList.contains('hidden')) {
       await renderNotificationSettings();
     }
   });
