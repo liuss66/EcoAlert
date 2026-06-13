@@ -62,6 +62,8 @@ pub fn run() {
             commands::start_oauth_binding,
             commands::check_oauth_status,
             commands::verify_channel_credentials,
+            commands::open_devtools,
+            commands::probe_url,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Tauri 失败");

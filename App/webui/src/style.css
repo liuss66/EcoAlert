@@ -465,6 +465,16 @@ textarea.text-input {
   min-width: 0;
   flex: 1;
 }
+.video-card .scene-readout {
+  min-height: 18px;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 .video-card .state-icons {
   display: flex;
   gap: 2px;

@@ -16,6 +16,7 @@ pub struct DecodedFrame {
     pub height: u32,
     pub pts_ms: i64,
     pub data: Vec<u8>, // 灰度图，单通道 8-bit
+    pub rgb: Vec<u8>,  // RGB 图，三通道 8-bit，用于判断彩色 / 红外黑白模式
 }
 
 pub struct Decoder {
@@ -57,7 +58,7 @@ pub fn extract_gray_frame_from_url(
         "-frames:v",
         "1",
         "-vf",
-        &format!("scale={width}:{height},format=gray"),
+        &format!("scale={width}:{height},format=rgb24"),
         "-f",
         "rawvideo",
     ]);
@@ -89,17 +90,30 @@ pub fn extract_gray_frame_from_url(
         anyhow::bail!("ffmpeg 抽帧失败，退出码: {status}");
     }
 
-    let data = fs::read(&output)?;
+    let rgb = fs::read(&output)?;
     let _ = fs::remove_file(&output);
-    let expected = (width * height) as usize;
-    if data.len() != expected {
-        anyhow::bail!("抽帧大小异常: {} bytes, expected {}", data.len(), expected);
+    let expected = (width * height * 3) as usize;
+    if rgb.len() != expected {
+        anyhow::bail!("抽帧大小异常: {} bytes, expected {}", rgb.len(), expected);
     }
+    let data = rgb_to_gray(&rgb);
 
     Ok(DecodedFrame {
         width,
         height,
         pts_ms: chrono::Utc::now().timestamp_millis(),
         data,
+        rgb,
     })
+}
+
+fn rgb_to_gray(rgb: &[u8]) -> Vec<u8> {
+    rgb.chunks_exact(3)
+        .map(|px| {
+            let r = px[0] as u32;
+            let g = px[1] as u32;
+            let b = px[2] as u32;
+            ((77 * r + 150 * g + 29 * b) >> 8) as u8
+        })
+        .collect()
 }

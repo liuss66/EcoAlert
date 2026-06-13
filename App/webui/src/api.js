@@ -17,6 +17,8 @@ const MOCK_GROUPS_KEY = 'ecoalert_mock_groups';
 const MOCK_GROUP_VERSION_KEY = 'ecoalert_mock_groups_version';
 const MOCK_GROUP_VERSION = 'local-video-v2';
 const MOCK_HISTORY_KEY = 'ecoalert_mock_history';
+const MOCK_HISTORY_VERSION_KEY = 'ecoalert_mock_history_version';
+const MOCK_HISTORY_VERSION = 'real-detection-only-v1';
 const MOCK_PW_KEY = 'ecoalert_mock_pw';
 const MOCK_NTF_KEY = 'ecoalert_mock_notify_targets';
 const MOCK_NTF_HISTORY_KEY = 'ecoalert_mock_notify_history';
@@ -54,6 +56,17 @@ function normalizeSceneState(payload) {
   return {
     ...payload,
     sourceId: payload.sourceId ?? payload.source_id,
+    personConfidence: payload.personConfidence ?? payload.person_confidence ?? 0,
+    lightConfidence: payload.lightConfidence ?? payload.light_confidence ?? 0,
+    source: payload.source ?? 'simple',
+    modelLatencyMs: payload.modelLatencyMs ?? payload.model_latency_ms ?? null,
+    frameSeq: payload.frameSeq ?? payload.frame_seq ?? 0,
+    confidence: payload.confidence ?? 0,
+    reason: payload.reason ?? null,
+    lightBrightness: payload.lightBrightness ?? payload.light_brightness ?? null,
+    colorScore: payload.colorScore ?? payload.color_score ?? null,
+    motionScore: payload.motionScore ?? payload.motion_score ?? null,
+    processMs: payload.processMs ?? payload.process_ms ?? null,
   };
 }
 
@@ -206,6 +219,10 @@ function mockSaveGroups(arr) {
 }
 function mockLoadHistory(sourceId, limit) {
   try {
+    if (localStorage.getItem(MOCK_HISTORY_VERSION_KEY) !== MOCK_HISTORY_VERSION) {
+      localStorage.removeItem(MOCK_HISTORY_KEY);
+      localStorage.setItem(MOCK_HISTORY_VERSION_KEY, MOCK_HISTORY_VERSION);
+    }
     const raw = localStorage.getItem(MOCK_HISTORY_KEY);
     const all = raw ? JSON.parse(raw) : [];
     let out = sourceId ? all.filter((r) => r.sourceId === sourceId) : all;
@@ -303,6 +320,21 @@ function mockLoadNtfHistory() {
 }
 function mockSaveNtfHistory(arr) {
   localStorage.setItem(MOCK_NTF_HISTORY_KEY, JSON.stringify(arr));
+}
+
+/* ---------- 诊断工具 ---------- */
+export async function openDevtools() {
+  if (isTauri) return invoke('open_devtools');
+}
+export async function probeUrl(url) {
+  if (isTauri) return invoke('probe_url', { url });
+  // 浏览器 mock：fetch 一下
+  try {
+    const r = await fetch(url, { method: 'HEAD' });
+    return { ok: r.ok, status: r.status, content_length: Number(r.headers.get('content-length') || 0) };
+  } catch (e) {
+    return { ok: false, status: 0, content_length: 0, error: String(e) };
+  }
 }
 
 /* ---------- 命令封装 ---------- */
@@ -450,11 +482,11 @@ export async function getChannelRuntimeStatus(sourceId = null) {
     .map((s) => ({
       sourceId: s.id,
       onlineStatus: s.enabled ? 'online' : 'offline',
-      algorithmStatus: s.enabled ? 'idle' : 'disabled',
+      algorithmStatus: 'disabled',
       alarmStatus: 'normal',
       lastFrameAt: s.enabled ? now : null,
       lastAlgorithmAt: null,
-      lastError: null,
+      lastError: '浏览器预览模式不运行检测，请使用 Tauri 应用查看真实算法结果',
       effectiveAlgorithmConfigScope: 'global',
       ts: now,
     }));
@@ -484,7 +516,7 @@ export async function getAlgorithmConfig(sourceId = null) {
     enabled: true,
     scope: 'global',
     scopeId: null,
-    activeWindows: [{ weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' }],
+    activeWindows: [],
     exceptionWindows: [],
     simpleIntervalSec: 10,
     vlmIntervalSec: 300,
@@ -776,45 +808,9 @@ export async function onSources(handler) {
 }
 export async function onSceneState(handler) {
   if (isTauri) return listen('ecoalert://scene_state', (e) => handler(normalizeSceneState(e.payload)));
-  // 浏览器 mock：每 4s 给每个源推一次状态（与 Rust 端节奏一致）
-  const seedMap = new Map();
-  const timer = setInterval(() => {
-    const all = mockLoad();
-    for (const s of all) {
-      if (!s.enabled) continue;
-      const cur = seedMap.get(s.id) || { seq: 0, person: false, light: false };
-      const t = Date.now() / 4000;
-      const idSeed = s.id.charCodeAt(0) || 0;
-      const n = idSeed * Math.floor(t);
-      const person = (n % 5) < 2;
-      const light = (n * 3 % 7) < 3;
-      cur.seq++;
-      // 写历史（仅变化时）
-      if (person !== cur.person || light !== cur.light) {
-        const alarm = !person && light;
-        const rec = {
-          id: 'rec-' + Math.random().toString(36).slice(2, 10),
-          sourceId: s.id,
-          person, light, alarm,
-          ts: Date.now(),
-        };
-        try {
-          const raw = localStorage.getItem(MOCK_HISTORY_KEY);
-          const arr = raw ? JSON.parse(raw) : [];
-          arr.push(rec);
-          if (arr.length > 5000) arr.splice(0, arr.length - 5000);
-          localStorage.setItem(MOCK_HISTORY_KEY, JSON.stringify(arr));
-        } catch (e) { console.warn('[mock] 状态历史写入失败:', e); }
-        cur.person = person;
-        cur.light = light;
-        seedMap.set(s.id, cur);
-        handler({ sourceId: s.id, person, light, ts: Date.now() });
-      } else if (cur.seq % 3 === 0) {
-        handler({ sourceId: s.id, person, light, ts: Date.now() });
-      }
-    }
-  }, 4000);
-  return () => clearInterval(timer);
+  // 浏览器预览模式只负责 UI 和视频播放，不再伪造算法检测结果。
+  // 真实 person/light 事件只由 Tauri 后端的 ffmpeg 抽帧 + Detector 链路产生。
+  return () => {};
 }
 
 export const isTauriEnv = isTauri;

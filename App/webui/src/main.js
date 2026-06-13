@@ -18,7 +18,8 @@ import {
   listNotificationHistory, testNotificationTarget, resendNotification,
   changePassword, getDataDir,
   startOAuthBinding, checkOAuthStatus, verifyChannelCredentials,
-  onEvent, onStatus, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
+  onEvent, onStatus, onRuntimeStatus, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
+  openDevtools, probeUrl,
 } from './api.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -90,19 +91,24 @@ $('#logout-btn').addEventListener('click', async () => {
 
 const enterApp = async () => {
   showApp();
-  startClock();
-  await loadSources();
-  await loadGroups();
-  renderLive();
-  renderSourcesTable();
-  switchView('live');
-  await subscribeEvents();
-  // 设置页数据
-  try { $('#data-dir').textContent = await getDataDir(); } catch (e) { console.warn('获取数据目录失败:', e); }
-  await renderSettings();
-  setupSettingsEnhancements();
-  setupSettingsTabs();
-  if (!isTauriEnv) addLog('warn', '当前在浏览器预览模式（未连接 Tauri 后端）');
+  try {
+    startClock();
+    await loadSources();
+    await loadGroups();
+    renderLive();
+    renderSourcesTable();
+    switchView('live');
+    await subscribeEvents();
+    // 设置页数据
+    try { $('#data-dir').textContent = await getDataDir(); } catch (e) { console.warn('获取数据目录失败:', e); }
+    await renderSettings();
+    setupSettingsEnhancements();
+    setupSettingsTabs();
+    if (!isTauriEnv) addLog('warn', '当前在浏览器预览模式（未连接 Tauri 后端）');
+  } catch (err) {
+    console.warn('应用初始化过程中出现非致命错误:', err);
+    addLog('warn', `初始化警告: ${err.message || err}`);
+  }
 };
 
 /* -------------------- 设置页增强：chip / slider 同步 -------------------- */
@@ -298,8 +304,9 @@ let algorithmConfig = null;
 let roiConfig = null;
 let notificationTargets = [];
 let notificationHistory = [];
-/** 实时状态：sourceId -> { person, light, alarm, ts } */
+/** 实时状态：sourceId -> { person, light, alarm, confidence, brightness, motion, ts } */
 let sceneStates = new Map();
+let runtimeStatuses = new Map();
 
 const loadSources = async () => {
   try { sources = await listSources(); }
@@ -589,17 +596,60 @@ function applyStateIcons() {
     const alarm = el.querySelector('.alarm');
     if (person) {
       person.style.display = s.person ? '' : 'none';
-      person.title = s.person ? '人：在场' : '人：不在';
+      person.title = s.person
+        ? `人：在场 (置信度 ${(s.personConfidence * 100).toFixed(0)}%)`
+        : '人：不在';
     }
     if (light) {
       light.style.display = s.light ? '' : 'none';
-      light.title = s.light ? '灯：亮' : '灯：关';
+      light.title = s.light
+        ? `灯：亮 (置信度 ${(s.lightConfidence * 100).toFixed(0)}%)`
+        : '灯：关';
     }
     if (alarm) {
-      const isAlarm = !s.person && s.light;
+      const isAlarm = !!s.alarm;
       alarm.style.display = isAlarm ? '' : 'none';
-      alarm.title = isAlarm ? '⚠️ 报警：无人 + 亮灯' : '正常';
+      alarm.title = isAlarm ? '⚠️ 报警：无人 + 亮灯' : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常');
     }
+  });
+  $$('.scene-readout').forEach((el) => {
+    const id = el.dataset.scene;
+    const s = sceneStates.get(id);
+    if (!s) {
+      const rt = runtimeStatuses.get(id);
+      if (rt) {
+        const status = rt.algorithmStatus || rt.algorithm_status || 'idle';
+        const err = rt.lastError || rt.last_error;
+        const last = rt.lastAlgorithmAt || rt.last_algorithm_at;
+        if (status === 'disabled') {
+          el.textContent = `检测：未运行 (${err || 'disabled'})`;
+          el.title = '算法被关闭、通道停用或当前不在启用时段';
+        } else if (status === 'error') {
+          el.textContent = `检测：抽帧失败`;
+          el.title = err || '请检查 ffmpeg、HLS URL 和推流器';
+        } else if (last) {
+          el.textContent = `检测：等待下一次结果`;
+          el.title = `上次算法时间 ${fmtTime(last)}`;
+        } else {
+          el.textContent = `检测：${status === 'running' ? '抽帧中' : '等待首次结果'}`;
+          el.title = err || 'Tauri 后端完成首次抽帧检测后显示';
+        }
+      } else {
+        el.textContent = '检测：等待后端状态';
+        el.title = '等待 runtime_status 或 scene_state 事件';
+      }
+      return;
+    }
+    const personText = s.person ? `有人 ${(s.personConfidence * 100).toFixed(0)}%` : `无人 ${(s.personConfidence * 100).toFixed(0)}%`;
+    const lightText = s.light ? `亮灯 ${(s.lightConfidence * 100).toFixed(0)}%` : `关灯 ${(s.lightConfidence * 100).toFixed(0)}%`;
+    const brightness = s.lightBrightness == null ? '-' : Number(s.lightBrightness).toFixed(0);
+    const color = s.colorScore == null ? '-' : Number(s.colorScore).toFixed(3);
+    const motion = s.motionScore == null ? '-' : Number(s.motionScore).toFixed(3);
+    const cost = s.processMs ?? s.modelLatencyMs;
+    const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
+    el.textContent = `${personText} · ${lightText} · 色彩 ${color} · 运动 ${motion}`;
+    el.dataset.brightness = brightness;
+    el.title = `来源 ${s.source || 'simple'} / ${s.reason || '-'} / #${s.frameSeq || 0} / ${costText} / ${fmtTime(s.ts)}`;
   });
 }
 
@@ -608,10 +658,28 @@ function updateLiveState(payload) {
   sceneStates.set(payload.sourceId, {
     person: !!payload.person,
     light: !!payload.light,
+    alarm: !!payload.alarm,
+    alarmStatus: payload.alarmStatus || payload.alarm_status || 'normal',
     ts: payload.ts || Date.now(),
+    personConfidence: payload.personConfidence ?? 0,
+    lightConfidence: payload.lightConfidence ?? 0,
+    source: payload.source ?? 'simple',
+    modelLatencyMs: payload.modelLatencyMs ?? null,
+    frameSeq: payload.frameSeq ?? 0,
+    confidence: payload.confidence ?? 0,
+    reason: payload.reason ?? null,
+    lightBrightness: payload.lightBrightness ?? null,
+    colorScore: payload.colorScore ?? null,
+    motionScore: payload.motionScore ?? null,
+    processMs: payload.processMs ?? null,
   });
   applyStateIcons();
   updateAlarmBanner();
+}
+
+function updateRuntimeStatuses(payload) {
+  runtimeStatuses = new Map((payload || []).map((item) => [item.sourceId || item.source_id, item]));
+  applyStateIcons();
 }
 
 function updateAlarmBanner() {
@@ -620,7 +688,7 @@ function updateAlarmBanner() {
   // 统计当前在报警的源
   const alarming = sources.filter((s) => {
     const st = sceneStates.get(s.id);
-    return st && !st.person && st.light;
+    return st && st.alarm;
   });
   // 永远占位、内容切换不改变高度（高度由 CSS 固定）
   if (alarming.length === 0) {
@@ -646,7 +714,7 @@ function updateAlarmBanner() {
 const videoCardHtml = (s) => {
   const st = stats.find((x) => x.id === s.id) || {};
   const scene = sceneStates.get(s.id) || { person: false, light: false };
-  const alarm = !scene.person && scene.light;
+  const alarm = !!scene.alarm;
   return `
     <div class="video-card" draggable="true" data-id="${s.id}" data-group-id="${s.groupId || 'grp-default'}">
       <div class="video-wrap" id="vw-${s.id}">
@@ -671,6 +739,7 @@ const videoCardHtml = (s) => {
             <button class="ico-btn btn-del" data-id="${s.id}" title="删除">🗑</button>
           </span>
         </div>
+        <div class="scene-readout" data-scene="${s.id}" title="等待检测结果">检测：等待结果</div>
       </div>
     </div>
   `;
@@ -760,6 +829,28 @@ $('#btn-refresh-status').addEventListener('click', async () => {
   renderLive();
   renderSourcesTable();
 });
+$('#btn-probe')?.addEventListener('click', async () => {
+  // 1. 写入诊断日志
+  try { await openDevtools(); } catch (_) {}
+  // 2. 后端探测 m3u8，确认本机网络和推流器是否可达
+  const url = 'http://127.0.0.1:8080/cam-1/index.m3u8';
+  addLog('info', `诊断: 后端探测 ${url} ...`);
+  const r = await probeUrl(url);
+  if (r && r.ok) {
+    addLog('success', `m3u8 可达 status=${r.status} len=${r.content_length}`);
+  } else {
+    addLog('error', `m3u8 探测失败: ${JSON.stringify(r)}`);
+  }
+  // 3. 探测 ts 分片
+  const tsUrl = url.replace(/index\.m3u8.*$/, 'seg_99999.ts');
+  const r2 = await probeUrl(tsUrl);
+  if (r2 && r2.ok) {
+    addLog('success', `ts 分片可达 status=${r2.status} len=${r2.content_length}`);
+  } else {
+    addLog('warn', `ts 分片可能不存在 (status=${r2?.status ?? '?'})`);
+  }
+  addLog('info', '诊断完成：该结果只证明后端可达；播放问题仍以视频卡片和 WebView 网络行为为准');
+});
 
 /* -------------------- 视频管理 -------------------- */
 const renderSourcesTable = () => {
@@ -803,7 +894,7 @@ const renderOverview = async () => {
   const totalViewers = stats.reduce((s, x) => s + (x.viewers || 0), 0);
   // 算法状态聚合
   const personCount = Array.from(sceneStates.values()).filter((x) => x.person).length;
-  const alarmCount = Array.from(sceneStates.values()).filter((x) => !x.person && x.light).length;
+  const alarmCount = Array.from(sceneStates.values()).filter((x) => x.alarm).length;
   $('#ov-online').textContent = online;
   $('#ov-online-rate').textContent = sources.length ? `${online} / ${sources.length} 路在线` : '—';
   $('#ov-bitrate').innerHTML = `${totalBitrate} <small>kbps</small>`;
@@ -816,7 +907,7 @@ const renderOverview = async () => {
   const banner = $('#ov-alarm-banner');
   const alarming = sources.filter((s) => {
     const st = sceneStates.get(s.id);
-    return st && !st.person && st.light;
+    return st && st.alarm;
   });
   if (alarming.length > 0) {
     banner.classList.add('alarm');
@@ -840,7 +931,7 @@ const renderOverview = async () => {
     tb.innerHTML = sources.map((s) => {
       const st = stats.find((x) => x.id === s.id) || {};
       const sc = sceneStates.get(s.id) || { person: false, light: false };
-      const alarm = !sc.person && sc.light;
+      const alarm = !!sc.alarm;
       const personIcon = `<span style="color:${sc.person ? '#10b981' : '#94a3b8'};">${sc.person ? '🟢' : '⚪'}</span>`;
       const lightIcon = `<span style="color:${sc.light ? '#10b981' : '#94a3b8'};">${sc.light ? '🟢' : '⚪'}</span>`;
       const alarmIcon = alarm
@@ -1290,7 +1381,7 @@ $('#btn-test-roi')?.addEventListener('click', async () => {
     const el = $('#roi-test-result');
     if (el) {
       el.classList.toggle('success', !!result.light);
-      el.textContent = `测试结果：${result.light ? '灯亮' : '灯灭'}，亮度 ${Number(result.brightness || 0).toFixed(1)}，置信度 ${Number(result.confidence || 0).toFixed(2)}，耗时 ${Number(result.processMs || result.process_ms || 0).toFixed(2)}ms`;
+      el.textContent = `测试结果：${result.light ? '灯亮' : '灯灭'}，色彩 ${Number(result.colorScore || result.color_score || 0).toFixed(3)}，亮度 ${Number(result.brightness || 0).toFixed(1)}，置信度 ${Number(result.confidence || 0).toFixed(2)}，耗时 ${Number(result.processMs || result.process_ms || 0).toFixed(2)}ms`;
     }
     addLog('info', 'ROI 测试完成');
   } catch (err) {
@@ -1814,6 +1905,9 @@ const subscribeEvents = async () => {
     updateLiveStats();
     if (!$('#view-overview').classList.contains('hidden')) renderOverview();
   });
+  await onRuntimeStatus((payload) => {
+    updateRuntimeStatuses(payload);
+  });
   await onSceneState((payload) => {
     updateLiveState(payload);
     if (!$('#view-overview').classList.contains('hidden')) renderOverview();
@@ -1863,8 +1957,9 @@ const updateLiveStats = () => {
   dot.className = isTauriEnv ? 'dot ok' : 'dot';
   try {
     await checkAuth();
-    await enterApp();
   } catch (_) {
     showLogin();
+    return;
   }
+  await enterApp();
 })();

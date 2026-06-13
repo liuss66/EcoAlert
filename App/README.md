@@ -28,6 +28,20 @@ npm run tauri:dev      # 开发
 npm run tauri:build    # 打包 .msi / .exe
 ```
 
+浏览器预览只验证 UI、视频播放和 localStorage 模拟数据，不再伪造 person / light 检测事件。真实算法事件需要运行 Tauri 桌面端，并确保本机可执行 `ffmpeg`。
+
+## 本地 HLS 联调
+
+默认视频源指向 `http://127.0.0.1:8080/cam-N/index.m3u8`，与 `Tools/push_streamer` 的 `config.example.yaml` 保持一致。release 包播放本地 HLS 时，`tauri.conf.json` 需要允许 `connect-src` / `media-src` 访问本机地址，并保留针对 WebView2 私网请求限制的 `additionalBrowserArgs` feature 配置。
+
+实时监控页的“诊断”按钮调用 Rust 后端访问 `cam-1`，用于确认推流器和本机网络可达；它不等同于 WebView/HLS.js 播放成功。
+
+## 当前检测状态
+
+- 灯光检测：已使用真实 RGB 抽帧，优先按“开灯彩色、关灯红外黑白”的色彩分数做 EMA + 磁滞阈值判断，实时卡片会显示色彩分数和置信度；亮度规则保留为兜底。
+- 人员检测：当前不是人形模型，只是低分辨率帧差运动代理；视频中有人静止时可能判为无人，画面整体变化时也可能误判为有人。
+- 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；默认全天运行。若实时卡片显示“检测：抽帧失败”或“检测：未运行”，优先看 tooltip、ffmpeg 是否在 PATH、HLS URL 是否可达和算法启用时段配置。
+
 ## 数据存储
 
 - Windows: `%APPDATA%\com.ecoalert.monitor\`

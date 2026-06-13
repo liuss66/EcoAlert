@@ -100,7 +100,8 @@ impl AppState {
         };
 
         let history = load_history(&history_file);
-        let algorithm_config: AlgorithmConfigFile = load_json(&algorithm_config_file);
+        let mut algorithm_config: AlgorithmConfigFile = load_json(&algorithm_config_file);
+        migrate_legacy_default_algorithm_window(&mut algorithm_config);
         let roi_config: RoiConfigFile = load_json(&roi_config_file);
         let notification_config: NotificationConfigFile = load_json(&notification_config_file);
         let security_config: SecurityConfig = load_json(&security_config_file);
@@ -285,9 +286,21 @@ impl AppState {
     }
 }
 
+fn migrate_legacy_default_algorithm_window(config: &mut AlgorithmConfigFile) {
+    let windows = &config.global.active_windows;
+    let is_legacy_default = windows.len() == 1
+        && windows[0].weekdays == vec![1, 2, 3, 4, 5]
+        && windows[0].start == "18:30"
+        && windows[0].end == "08:30"
+        && config.global.exception_windows.is_empty();
+    if is_legacy_default {
+        config.global.active_windows.clear();
+    }
+}
+
 /// 启动后台状态推送任务（码率/FPS/在线）
 pub fn spawn_status_ticker(app: AppHandle) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3));
         loop {
             interval.tick().await;
@@ -351,19 +364,21 @@ pub fn spawn_status_ticker(app: AppHandle) {
     });
 }
 
-/// 启动算法推送任务（当前使用合成灰度帧，生产中替换为真实解码帧）
+/// 启动算法推送任务（ffmpeg 按需抽帧 + 轻量检测）
 ///
 /// 算法接口契约（请勿修改）：
 ///   输入：每路视频的连续帧（pipeline 内部完成解码）
-///   输出：SceneState { person: bool, light: bool, frame_seq, confidence }
-///   推送：通过 Tauri event "ecoalert://scene_state" 发给前端
+///   输出：SceneState { person, light, confidence, brightness, motion_score, ... }
+///   推送：每次检测完成后通过 Tauri event "ecoalert://scene_state" 发给前端
 ///   落库：状态变化时调用 record_state_change
 pub fn spawn_scene_state_ticker(app: AppHandle) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(4));
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
         // 每个源保留一个 Detector，确保 EMA / 帧差状态连续。
         let mut detectors: HashMap<String, Detector> = HashMap::new();
         let mut seeds: HashMap<String, (u64, bool, bool)> = HashMap::new();
+        let mut alarm_timers: HashMap<String, AlarmTimer> = HashMap::new();
+        let mut last_simple_run: HashMap<String, i64> = HashMap::new();
         loop {
             interval.tick().await;
             let state = app.state::<Arc<AppState>>();
@@ -372,13 +387,22 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             let now = chrono::Utc::now().timestamp_millis();
             for s in &sources {
                 let decision = scheduler::decide_for_source(s, &algorithm_config);
+                let simple_interval_ms =
+                    decision.effective_config.simple_interval_sec.max(1) as i64 * 1000;
+                let last_run = last_simple_run.get(&s.id).copied();
+                let should_wait_interval = decision.should_run_simple
+                    && last_run
+                        .map(|last| now.saturating_sub(last) < simple_interval_ms)
+                        .unwrap_or(false);
                 {
                     let mut runtime = state.runtime_status.lock();
                     let entry = runtime
                         .entry(s.id.clone())
                         .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
                     entry.effective_algorithm_config_scope = decision.config_scope.clone();
-                    entry.algorithm_status = if decision.should_run_simple {
+                    entry.algorithm_status = if should_wait_interval {
+                        "idle".into()
+                    } else if decision.should_run_simple {
                         "running".into()
                     } else {
                         "disabled".into()
@@ -394,16 +418,27 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "ecoalert://algorithm_schedule",
                     serde_json::json!({
                         "source_id": s.id,
-                        "action": if decision.should_run_simple { "run_simple" } else { "skip" },
-                        "reason": decision.reason.clone(),
+                        "action": if should_wait_interval {
+                            "skip"
+                        } else if decision.should_run_simple {
+                            "run_simple"
+                        } else {
+                            "skip"
+                        },
+                        "reason": if should_wait_interval {
+                            "simple_interval_wait"
+                        } else {
+                            decision.reason.as_str()
+                        },
                         "latency_ms": null,
                         "ts": now,
                     }),
                 );
 
-                if !decision.should_run_simple {
+                if !decision.should_run_simple || should_wait_interval {
                     continue;
                 }
+                last_simple_run.insert(s.id.clone(), now);
                 let (counter, prev_p, prev_l) =
                     seeds.entry(s.id.clone()).or_insert((0, false, false));
                 *counter += 1;
@@ -455,13 +490,44 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     }
                 };
                 let roi_config = state.roi_config.lock().by_source.get(&s.id).cloned();
-                let detector = detectors
-                    .entry(s.id.clone())
-                    .or_insert_with(|| Detector::new(PipelineConfig::default()));
+                let detector = detectors.entry(s.id.clone()).or_insert_with(|| {
+                    Detector::with_thresholds(
+                        PipelineConfig::default(),
+                        decision.effective_config.person_threshold,
+                        decision.effective_config.light_threshold,
+                    )
+                });
+                // 每次循环更新阈值，响应用户配置变更而不丢失 EMA 状态
+                detector.set_thresholds(
+                    decision.effective_config.person_threshold,
+                    decision.effective_config.light_threshold,
+                );
                 let analysis = detector.analyze_scene(&frame, roi_config.as_ref());
                 let new_state = analysis.scene;
                 let person = new_state.person;
                 let light = new_state.light;
+                let raw_alarm = !person && light;
+                let recover_condition =
+                    should_recover_alarm(person, light, &decision.effective_config.recover_policy);
+                let alarm_transition = alarm_timers.entry(s.id.clone()).or_default().update(
+                    raw_alarm,
+                    recover_condition,
+                    now,
+                    decision.effective_config.alarm_hold_sec,
+                    decision.effective_config.alarm_recover_sec,
+                );
+                let alarm_status = alarm_timers
+                    .get(&s.id)
+                    .map(|timer| {
+                        if timer.active {
+                            "alarm_active"
+                        } else if raw_alarm {
+                            "suspected"
+                        } else {
+                            "normal"
+                        }
+                    })
+                    .unwrap_or("normal");
                 {
                     let mut current = state.current_state.lock();
                     current.insert(s.id.clone(), new_state.clone());
@@ -474,22 +540,66 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     entry.algorithm_status = "idle".into();
                     entry.last_error = None;
                     entry.last_algorithm_at = Some(now);
-                    entry.alarm_status = if !person && light {
-                        "alarm_active".into()
-                    } else {
-                        "normal".into()
-                    };
+                    entry.alarm_status = alarm_status.into();
                     entry.ts = now;
                 }
-                // 只在变化时落库 + 推送
+                let scene_payload = serde_json::json!({
+                    "source_id": s.id,
+                    "person": person,
+                    "light": light,
+                    "alarm": alarm_status == "alarm_active",
+                    "alarm_status": alarm_status,
+                    "person_confidence": new_state.person_confidence,
+                    "light_confidence": new_state.light_confidence,
+                    "confidence": new_state.confidence,
+                    "source": new_state.source,
+                    "reason": new_state.reason,
+                    "frame_seq": new_state.frame_seq,
+                    "model_latency_ms": new_state.model_latency_ms,
+                    "light_brightness": new_state.light_brightness,
+                    "color_score": new_state.color_score,
+                    "motion_score": new_state.motion_score,
+                    "process_ms": new_state.process_ms,
+                    "ts": now,
+                });
+                let _ = app.emit("ecoalert://scene_state", scene_payload);
+
+                // 状态历史只在 person / light 变化时落库，避免历史文件快速膨胀。
+                let mut state_record_id: Option<String> = None;
                 if person != *prev_p || light != *prev_l {
                     let rec = StateRecord::from_change(&s.id, &new_state);
                     let rec_id = rec.id.clone();
-                    let alarm = rec.alarm;
                     if let Err(e) = state.record_state_change(rec) {
                         log::warn!("历史落库失败: {e}");
                     }
-                    match state.apply_alarm_state(&s.id, alarm, Some(rec_id), now) {
+                    state_record_id = Some(rec_id);
+                    log_event(
+                        &app,
+                        if raw_alarm { "warn" } else { "info" },
+                        format!(
+                            "[{}] 状态变化: 人={}(conf={:.2}) 灯={} 亮度={:.1} 色彩={:.3} 运动={:.3} 耗时={:.2}ms src={}{}",
+                            s.name,
+                            if person { "●" } else { "○" },
+                            new_state.person_confidence,
+                            if light { "●" } else { "○" },
+                            analysis.light_brightness,
+                            new_state.color_score,
+                            analysis.motion_score,
+                            analysis.process_ms,
+                            new_state.source.as_str(),
+                            if raw_alarm {
+                                "  疑似无人亮灯"
+                            } else {
+                                ""
+                            }
+                        ),
+                    );
+                    *prev_p = person;
+                    *prev_l = light;
+                }
+
+                if let Some(alarm_active) = alarm_transition {
+                    match state.apply_alarm_state(&s.id, alarm_active, state_record_id, now) {
                         Ok(Some(alarm_record)) => {
                             {
                                 let mut runtime = state.runtime_status.lock();
@@ -504,19 +614,19 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                     "alarm_id": alarm_record.id,
                                     "source_id": alarm_record.source_id,
                                     "status": alarm_record.status,
-                                    "event": if alarm { "alarm_triggered" } else { "alarm_resolved" },
+                                    "event": if alarm_active { "alarm_triggered" } else { "alarm_resolved" },
                                     "ts": now,
                                 }),
                             );
                             let app_for_notify = app.clone();
                             let state_for_notify = state.inner().clone();
-                            let event = if alarm {
+                            let event = if alarm_active {
                                 "alarm_triggered"
                             } else {
                                 "alarm_resolved"
                             }
                             .to_string();
-                            tokio::spawn(async move {
+                            tauri::async_runtime::spawn(async move {
                                 notifier::dispatch_alarm_event(
                                     app_for_notify,
                                     state_for_notify,
@@ -529,48 +639,65 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         Ok(None) => {}
                         Err(e) => log::warn!("报警状态落库失败: {e}"),
                     }
-                    let _ = app.emit(
-                        "ecoalert://scene_state",
-                        serde_json::json!({
-                            "source_id": s.id,
-                            "person": person,
-                            "light": light,
-                            "ts": now,
-                        }),
-                    );
-                    log_event(
-                        &app,
-                        if alarm { "warn" } else { "info" },
-                        format!(
-                            "[{}] 状态变化: 人数={} 灯={} 亮度={:.1} 运动={:.3} 耗时={:.2}ms{}",
-                            s.name,
-                            if person { "●" } else { "○" },
-                            if light { "●" } else { "○" },
-                            analysis.light_brightness,
-                            analysis.motion_score,
-                            analysis.process_ms,
-                            if alarm { "  ⚠️ 报警" } else { "" }
-                        ),
-                    );
-                    *prev_p = person;
-                    *prev_l = light;
-                } else {
-                    // 即便没变化也定期推一次，让前端心跳（每 ~12s 一次）
-                    if *counter % 3 == 0 {
-                        let _ = app.emit(
-                            "ecoalert://scene_state",
-                            serde_json::json!({
-                                "source_id": s.id,
-                                "person": person,
-                                "light": light,
-                                "ts": now,
-                            }),
-                        );
-                    }
                 }
             }
         }
     });
+}
+
+#[derive(Default)]
+struct AlarmTimer {
+    alarm_since: Option<i64>,
+    recover_since: Option<i64>,
+    active: bool,
+}
+
+impl AlarmTimer {
+    fn update(
+        &mut self,
+        raw_alarm: bool,
+        recover_condition: bool,
+        now: i64,
+        hold_sec: u32,
+        recover_sec: u32,
+    ) -> Option<bool> {
+        if raw_alarm {
+            self.recover_since = None;
+            let since = *self.alarm_since.get_or_insert(now);
+            if !self.active && now - since >= hold_sec as i64 * 1000 {
+                self.active = true;
+                return Some(true);
+            }
+            return None;
+        }
+
+        self.alarm_since = None;
+        if self.active {
+            if recover_condition {
+                let since = *self.recover_since.get_or_insert(now);
+                if now - since >= recover_sec as i64 * 1000 {
+                    self.active = false;
+                    self.recover_since = None;
+                    return Some(false);
+                }
+            } else {
+                self.recover_since = None;
+            }
+        } else {
+            self.recover_since = None;
+        }
+        None
+    }
+}
+
+fn should_recover_alarm(person: bool, light: bool, policy: &str) -> bool {
+    match policy {
+        "light_off" => !light,
+        "person_present" => person,
+        "both" => person && !light,
+        "either" => person || !light,
+        _ => person || !light,
+    }
 }
 
 /// 日志事件：emit + 写 stdout
@@ -587,5 +714,48 @@ pub fn log_event(app: &AppHandle, level: &str, text: impl Into<String>) {
         "error" => log::error!("{}", text_str),
         "warn" => log::warn!("{}", text_str),
         _ => log::info!("{}", text_str),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_recover_alarm, AlarmTimer};
+
+    #[test]
+    fn alarm_timer_respects_hold_and_recover_seconds() {
+        let mut timer = AlarmTimer::default();
+        assert_eq!(timer.update(true, false, 1_000, 10, 5), None);
+        assert_eq!(timer.update(true, false, 10_999, 10, 5), None);
+        assert_eq!(timer.update(true, false, 11_000, 10, 5), Some(true));
+        assert!(timer.active);
+
+        assert_eq!(timer.update(false, true, 12_000, 10, 5), None);
+        assert_eq!(timer.update(false, true, 16_999, 10, 5), None);
+        assert_eq!(timer.update(false, true, 17_000, 10, 5), Some(false));
+        assert!(!timer.active);
+    }
+
+    #[test]
+    fn alarm_timer_resets_recover_window_when_condition_breaks() {
+        let mut timer = AlarmTimer {
+            active: true,
+            ..AlarmTimer::default()
+        };
+        assert_eq!(timer.update(false, true, 1_000, 0, 5), None);
+        assert_eq!(timer.update(false, false, 4_000, 0, 5), None);
+        assert_eq!(timer.update(false, true, 6_000, 0, 5), None);
+        assert_eq!(timer.update(false, true, 11_000, 0, 5), Some(false));
+    }
+
+    #[test]
+    fn recover_policy_matches_config_values() {
+        assert!(should_recover_alarm(false, false, "light_off"));
+        assert!(!should_recover_alarm(true, true, "light_off"));
+        assert!(should_recover_alarm(true, true, "person_present"));
+        assert!(!should_recover_alarm(false, false, "person_present"));
+        assert!(should_recover_alarm(true, false, "both"));
+        assert!(!should_recover_alarm(true, true, "both"));
+        assert!(should_recover_alarm(false, false, "either"));
+        assert!(should_recover_alarm(true, true, "either"));
     }
 }

@@ -1,6 +1,6 @@
 # EcoAlert 接口契约
 
-> 版本：v1.1  
+> 版本：v1.2
 > 日期：2026-06-13  
 > 范围：Tauri commands、Tauri events、通知 Payload
 
@@ -100,7 +100,7 @@
 
 ## 3. 配置 / 运行 Commands
 
-### 3.1 算法配置（后端骨架已实现）
+### 3.1 算法配置（后端已接入全局 / 通道级）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
@@ -109,13 +109,15 @@
 | `delete_algorithm_config` | `{ sourceId }` | `{ ok }` |
 | `get_effective_algorithm_config` | `{ sourceId }` | `{ config, scope }` |
 
-### 3.2 ROI（配置读写已实现，测试待实现）
+### 3.2 ROI（配置读写与真实帧测试已实现）
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
 | `get_roi_config` | `{ sourceId }` | `RoiConfig` |
 | `update_roi_config` | `{ sourceId, payload }` | `RoiConfig` |
-| `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, person, brightness, motionScore, confidence, processMs, version }` |
+| `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, person, brightness, colorScore, motionScore, confidence, processMs, version }` |
+
+`test_roi_config` 会对当前视频源 URL 调用 ffmpeg 抽取一帧 `160x90` RGB 图，同时生成灰度图，再用传入或已保存的 ROI 配置运行 `Detector::analyze_scene()`。调用环境需要可执行的 `ffmpeg`。
 
 ### 3.3 报警（生命周期骨架已实现，静默待实现）
 
@@ -176,10 +178,10 @@
 | `ecoalert://event` | `{ level, text, ts }` | 不定 |
 | `ecoalert://status` | `ChannelStatus[]` | 3s |
 | `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 3s 或状态变化 |
-| `ecoalert://scene_state` | `{ source_id, person, light, ts }` | 变化时或心跳 |
+| `ecoalert://scene_state` | `{ source_id, person, light, alarm, alarm_status, ts }` | 变化时或心跳 |
 | `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化 |
 | `ecoalert://notification` | `{ record_id, target_id, event, ok, status, error, ts }` | 通知发送完成 |
-| `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度 |
+| `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度；`action` 包含 `run_simple`、`skip`、`frame_error` |
 
 ### 4.2 待实现
 
@@ -214,17 +216,25 @@
   "sourceId": "src-xxx",
   "person": false,
   "light": true,
+  "alarm": false,
+  "alarmStatus": "suspected",
   "frameSeq": 128,
   "confidence": 0.92,
   "source": "fused",
   "personConfidence": 0.21,
   "lightConfidence": 0.96,
   "reason": "vlm_recheck",
-  "modelLatencyMs": 180
+  "modelLatencyMs": 180,
+  "lightBrightness": 213.4,
+  "colorScore": 0.087,
+  "motionScore": 0.018,
+  "processMs": 2.7
 }
 ```
 
-`SceneState` 只表达画面事实，不直接触发通知。
+`SceneState` 本体只表达画面事实；事件 payload 额外携带 `alarm / alarmStatus` 供前端展示。通知仍只由 `AlarmRecord` 状态变化触发。
+
+当前 `source = simple` 时，`light` 优先来自 `colorScore`：开灯时摄像头输出彩色图，关灯红外模式输出黑白图；RGB 不可用时才回退到 ROI / 全帧亮度 + 磁滞阈值。`person` 仍是帧差运动代理结果，不等同于真实人形检测。前端实时卡片会展示 `colorScore / motionScore / processMs`，用于判断是算法阈值问题还是事件链路问题。
 
 ### 5.3 AlarmRecord
 

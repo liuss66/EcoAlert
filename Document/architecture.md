@@ -1,6 +1,6 @@
 # EcoAlert 架构设计
 
-> 版本：v1.0  
+> 版本：v1.1
 > 日期：2026-06-13  
 > 对应需求：[`requirements.md`](./requirements.md)
 
@@ -51,11 +51,11 @@ flowchart LR
 | --- | --- | --- | --- |
 | 前端 UI | `App/webui/` | 登录、实时监控、总览、视频管理、设置、日志 | 已实现基础功能 |
 | Tauri Commands | `App/src-tauri/src/commands.rs` | 前后端 IPC、鉴权、CRUD、状态查询 | 已实现基础功能 |
-| 应用状态 | `App/src-tauri/src/state.rs` | 全局状态、后台 ticker、事件推送、历史落库 | 已实现 mock 状态 |
+| 应用状态 | `App/src-tauri/src/state.rs` | 全局状态、后台 ticker、事件推送、历史落库、报警保持 / 恢复计时 | 已接 ffmpeg 单帧抽样状态 |
 | 数据模型 | `App/src-tauri/src/store.rs` | 视频源、分组、状态历史、JSON 持久化 | 已实现基础模型 |
 | 视频输入 | `App/src-tauri/src/stream/` / `pipeline/decoder.rs` | HLS / MP4 单帧抽样，后续扩展常驻解码 | 已接 ffmpeg 抽帧 |
-| 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 待实现 |
-| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、分析、告警 | 已接真实帧抽样 + 简单检测，真实人形模型待接 |
+| 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 已接简单模型周期和跳过原因 |
+| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、分析、告警 | 已接真实 RGB 抽样 + 彩色 / 红外灯光检测；人员仍是运动代理，真实人形模型待接 |
 | 推流工具 | `Tools/push_streamer/` | 用本地视频模拟实时 HLS 源，供 App 页面联调 | 已实现 ffmpeg + HLS |
 | 文档 | `Document/` | 需求、架构、接口、部署、ADR、变更日志 | 本文档集 |
 
@@ -100,6 +100,8 @@ sequenceDiagram
     State->>File: state_history.json
 ```
 
+当前 `ecoalert://scene_state` 每次检测完成都会推送，前端实时卡片展示 `person / light`、色彩分数、运动分数、耗时和帧序号。`state_history.json` 只记录 `person / light` 变化，避免稳定画面持续写盘。
+
 ### 4.2 目标算法路径
 
 ```mermaid
@@ -114,7 +116,7 @@ sequenceDiagram
 
     Stream->>Decoder: FramePacket
     Decoder->>Simple: DecodedFrame + ROI
-    Simple-->>Alarm: person/light/confidence
+    Simple-->>Alarm: light/confidence + motion proxy
     alt simple model found person
         Alarm-->>UI: scene_state person=true
     else no person and light on
@@ -133,7 +135,7 @@ sequenceDiagram
 
 | 层级 | 频率 | 作用 | 输出 |
 | --- | --- | --- | --- |
-| ROI 灯光规则 | 5-15 秒 | 判断灯亮 / 灯灭 | `light`, `light_confidence` |
+| 彩色 / 红外灯光规则 | 5-15 秒 | 判断灯亮 / 灯灭 | `light`, `light_confidence`, `color_score` |
 | 轻量人形检测 | 5-15 秒 | 判断是否有人 | `person`, `person_confidence` |
 | 动态目标识别 | 5-15 秒 | 变化触发器，不直接判断有人 | `motion`, `confidence` |
 | VLM 复核 | 2-10 分钟或按条件触发 | 修补简单模型漏检 | `person`, `light`, `reason` |

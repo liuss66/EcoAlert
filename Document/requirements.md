@@ -1,6 +1,6 @@
 # EcoAlert 视频监控 · 需求规格说明书
 
-> 版本：v1.7  
+> 版本：v1.8
 > 日期：2026-06-13  
 > 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入，真实算法与配置 UI 待完善；分组拖拽已修复并优化性能）
 
@@ -39,13 +39,13 @@
 
 | 阶段 | 范围 | 说明 |
 | --- | --- | --- |
-| MVP-1 | App 本体可用 | 登录、视频源 / 分组管理、MP4 / HLS 播放、mock 状态、状态历史、基础 UI |
+| MVP-1 | App 本体可用 | 登录、视频源 / 分组管理、MP4 / HLS 播放、状态历史、基础 UI |
 | MVP-2 | 配置与运行状态 | 字段命名统一、配置文件框架、`ChannelRuntimeStatus`、算法调度器骨架 |
 | MVP-3 | 报警闭环 | 报警状态机、确认 / 恢复、通知配置和通知历史骨架 |
 | MVP-4 | 简单算法 | ROI 灯光规则、轻量人员检测接口、VLM mock provider |
-| 后续 | 推流和真实模型 | ffmpeg 推流器、RTSP 转码、真实 ONNX / VLM 接入 |
+| 后续 | 推流和真实模型 | ffmpeg 推流器已接入；RTSP 转码、真实 ONNX / VLM 接入待实现 |
 
-当前目录结构也按这个边界收敛：`App/` 是主产品，`Video/` 是平铺测试素材，`Tools/` 是后续辅助工具，不作为 MVP-1 的必要依赖。
+当前目录结构也按这个边界收敛：`App/` 是主产品，`Video/` 是平铺测试素材，`Tools/` 是开发辅助工具；其中 HLS 推流器已可用于本地联调。
 
 ---
 
@@ -158,12 +158,19 @@
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-AI-1 | Rust 端定义 `SceneState { person, light, frame_seq, confidence }` | ✅ |
-| F-AI-2 | 算法通过 `app.emit("ecoalert://scene_state", ...)` 推给前端 | ✅ |
+| F-AI-1 | Rust 端定义 `SceneState { person, light, frame_seq, confidence, light_brightness, color_score, motion_score, process_ms }` | ✅ |
+| F-AI-2 | 算法通过 `app.emit("ecoalert://scene_state", ...)` 推给前端 | ✅ 每次检测完成均推送 |
 | F-AI-3 | 算法通过 `state.record_state_change(...)` 落库 | ✅ |
 | F-AI-4 | 状态变化时记录一条 `StateRecord`（含派生 alarm 字段） | ✅ |
-| F-AI-5 | 当前用 `spawn_scene_state_ticker` 做 mock，便于前端先跑通 | ✅ 已从合成帧推进到 ffmpeg 真实视频帧抽样 |
-| F-AI-6 | 真实算法接入位置：`src-tauri/src/pipeline/detector.rs` 替换帧差法 | ⚠️ 真实帧源已接入，轻量人形模型 / 常驻解码待实现 |
+| F-AI-5 | `spawn_scene_state_ticker` 驱动开发期后台检测链路，后续可替换为常驻解码管线 | ✅ 已从合成帧推进到 ffmpeg 真实视频帧抽样 |
+| F-AI-6 | 真实算法接入位置：`src-tauri/src/pipeline/detector.rs` 替换帧差法 | ⚠️ 灯光检测可用；人员仍是运动代理，轻量人形模型 / 常驻解码待实现 |
+
+当前检测状态：
+
+- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧 `color_score` 并做 EMA + 磁滞阈值。RGB 不可用时才回退到 ROI 亮度 / 全帧亮度规则。
+- 人员：尚未接入人形检测模型，`person` 由低分辨率帧差运动分数临时代理；适合观察“画面有明显变化”，不适合作为生产人员存在结论。
+- 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；历史记录仍只在 `person / light` 变化时落库。
+- 默认调度：全局 `activeWindows` 为空，表示全天运行；旧版内置的“工作日 18:30-08:30”默认窗口会在启动时迁移为空，避免演示视频长期停留在“等待结果”。
 
 ### 3.11 算法策略与调度（新增）
 
@@ -181,12 +188,12 @@
 
 | 识别目标 | 推荐方案 | 理由 | 风险 | 规避 |
 | --- | --- | --- | --- | --- |
-| 是否亮灯 | ROI 亮度 / HSV / 灰度均值 + 背景基线 + 时间平滑 | 快、稳定、无需训练，对固定摄像头和固定区域适配好 | 日光、屏幕反光、摄像头自动曝光导致误判 | 每路配置灯光 ROI、上下阈值、最小持续时间、日间禁用时段 |
+| 是否亮灯 | 彩色 / 红外黑白模式切换检测 + ROI 亮度兜底 | 快、稳定、无需训练，适配“开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、彩色噪声低、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI、持续时间、必要时回退亮度阈值 |
 | 是否有人 | 轻量 person detector（ONNX YOLOv8n / YOLO11n / RT-DETR 小模型）或动态目标识别 | 人是报警抑制条件，应优先减少误检；简单模型延迟低，可高频执行 | 静止人员、遮挡、远距离小目标漏检 | 多帧投票、置信度阈值、人员存在保持时间、VLM 低频补漏 |
 | 动态目标识别 | 帧差 / 背景建模 / 光流作为辅助信号 | 计算量低，可用于发现画面变化和触发 VLM 复核 | 动态目标不等于人；风吹、反光、画面噪声容易误触发 | 只作为触发条件，不直接作为“有人”结论；Rust 侧已实现低分辨率帧差核心 |
 
 结论：  
-第一版不建议只用帧差法判断“有人”。帧差法适合作为快速任务识别 / 变化触发器，但“有人”应由轻量目标检测模型给出；灯光状态可优先用 ROI 亮度规则完成。这样能在成本可控的前提下尽可能避免误检。
+第一版不建议只用帧差法判断“有人”。帧差法适合作为快速任务识别 / 变化触发器，但“有人”应由轻量目标检测模型给出；灯光状态优先利用摄像头“彩色 / 红外黑白”切换特征完成，亮度阈值只作为兜底。这样能在成本可控的前提下尽可能避免误检。
 
 #### 3.11.3 调度规则
 
@@ -194,8 +201,8 @@
 | --- | --- | --- |
 | F-AIS-1 | 每路视频可独立启用 / 停用算法 | ✅ 通道级算法配置 UI 已接入 |
 | F-AIS-2 | 每路视频可配置算法启用时段，默认仅在下班后启用，例如 `18:30-08:30` | ✅ 全局 / 通道级时段 UI 已接入 |
-| F-AIS-3 | 支持工作日 / 周末 / 节假日三类时段配置；第一版至少支持按星期配置 | ⚠️ 按星期配置已接入 |
-| F-AIS-4 | 简单模型高频执行，默认周期 5-15 秒，可按通道配置 | ⚠️ 全局 / 通道级周期 UI 已接入，真实任务节拍待细化 |
+| F-AIS-3 | 支持工作日 / 周末 / 节假日三类时段配置；第一版至少支持按星期配置 | ✅ 按星期配置已接入，跨天窗口按起始日归属 |
+| F-AIS-4 | 简单模型高频执行，默认周期 5-15 秒，可按通道配置 | ✅ `simpleIntervalSec` 已接入后端真实抽帧周期 |
 | F-AIS-5 | VLM 低频执行，默认周期 2-10 分钟，可按通道配置 | ⚠️ 全局 / 通道级 VLM 配置 UI 已接入，真实 VLM provider 待实现 |
 | F-AIS-6 | 当简单模型识别到“有人”时，当前周期不得调用 VLM | ⚠️ 配置项已接入，真实 VLM 调度待实现 |
 | F-AIS-7 | 当简单模型识别为“无人 + 亮灯”但置信度不足、状态刚变化、或持续时间达到复核阈值时，允许调用 VLM 复核 | ⏳ 待实现 |
@@ -203,7 +210,7 @@
 | F-AIS-9 | 简单模型与 VLM 输出需要保留来源字段，便于排查是 simple 还是 vlm 给出的结论 | ⏳ 待实现 |
 | F-AIS-10 | 算法需支持冷却和并发限制，避免多路视频同时调用 VLM | ⏳ 待实现 |
 | F-AIS-11 | 算法禁用时段内，不产生新报警、不调用模型；已存在报警可按配置自动恢复或保持展示 | ⏳ 待实现 |
-| F-AIS-12 | 提供算法调度日志：跳过原因、模型耗时、置信度、VLM 调用次数 | ⏳ 待实现 |
+| F-AIS-12 | 提供算法调度日志：跳过原因、模型耗时、置信度、VLM 调用次数 | ⚠️ 已推送跳过原因和调度事件，VLM 次数待接 |
 | F-AIS-13 | 算法调度逻辑由独立 scheduler 模块负责，不放入 detector / analyzer | ⏳ 待实现 |
 | F-AIS-14 | 配置支持继承：系统默认 < 全局配置 < 分组配置 < 通道配置 | ⚠️ 后端有效配置已支持；UI 已支持全局和通道级，分组级待接 |
 | F-AIS-15 | UI 需要展示每项配置的来源层级，并支持恢复为继承值 | ⚠️ 已展示全局 / 通道 / 继承状态，并支持通道恢复全局继承 |
@@ -322,13 +329,13 @@ resolved
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-ALM-1 | 报警状态包含 `normal / suspected / alarm_active / acknowledged / resolved` | ⏳ 待实现 |
-| F-ALM-2 | `suspected` 状态仅本地展示，不发送外部通知 | ⏳ 待实现 |
+| F-ALM-1 | 报警状态包含 `normal / suspected / alarm_active / acknowledged / resolved` | ⚠️ 运行态已支持 suspected；持久化记录支持 active / acknowledged / resolved |
+| F-ALM-2 | `suspected` 状态仅本地展示，不发送外部通知 | ✅ 后端仅达到保持时间后才生成正式报警和通知 |
 | F-ALM-3 | `alarm_active` 首次进入时发送 `alarm_triggered` 通知 | ✅ 后端已实现 |
 | F-ALM-4 | 管理员可确认报警，确认后进入 `acknowledged`，记录确认人、确认时间、备注 | ✅ 后端与总览 UI 已实现 |
 | F-ALM-5 | 已确认报警默认不重复发送触发通知，但仍可发送恢复通知 | ⚠️ 冷却已实现，确认态策略待细化 |
-| F-ALM-6 | 报警恢复条件可配置：灯关闭、有人出现、二者任一、二者同时满足 | ⏳ 待实现 |
-| F-ALM-7 | 报警恢复需满足连续稳定时间，默认 60 秒，避免状态抖动 | ⏳ 待实现 |
+| F-ALM-6 | 报警恢复条件可配置：灯关闭、有人出现、二者任一、二者同时满足 | ✅ `recoverPolicy` 已接入后端状态机 |
+| F-ALM-7 | 报警恢复需满足连续稳定时间，默认 60 秒，避免状态抖动 | ✅ `alarmRecoverSec` 已接入后端状态机 |
 | F-ALM-8 | 支持对单通道临时静默，静默期间不发送通知但继续记录状态 | ⏳ 待实现 |
 | F-ALM-9 | 支持例外日期 / 加班时段配置，例外时段内不触发“忘关灯”报警 | ⏳ 待实现 |
 | F-ALM-10 | 视频离线作为独立事件，不应被误判为无人 + 亮灯 | ⏳ 待实现 |
@@ -340,7 +347,7 @@ resolved
 | F-ROI-1 | 每路视频可配置灯光检测 ROI，支持多个矩形区域 | ⚠️ 单灯光 ROI 配置 UI 已接入，多矩形待实现 |
 | F-ROI-2 | 每路视频可配置排除 ROI，用于排除窗户、屏幕、反光区域 | ⏳ 待实现 |
 | F-ROI-3 | 支持在视频画面上框选、拖拽、缩放 ROI | ⚠️ 当前支持 16:9 预览框内拖拽 / 缩放和数值配置，真实视频画面框选待实现 |
-| F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、实时亮度值和判定结果 | ⚠️ 当前展示 16:9 预览框，并支持基于合成标定帧测试亮度 / 判定；真实当前帧待实现 |
+| F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、实时亮度值和判定结果 | ⚠️ 当前展示 16:9 预览框；`test_roi_config` 已从当前视频源抽真实帧验证亮度 / 判定，页面实时帧预览待实现 |
 | F-ROI-5 | 支持自动采样基线：记录“灯关”“灯亮”样本并生成推荐阈值 | ⏳ 待实现 |
 | F-ROI-6 | 支持每路视频保存 `person_roi`，仅在有效区域内识别人 | ⏳ 待实现 |
 | F-ROI-7 | ROI 坐标使用归一化坐标，避免不同分辨率下配置失效 | ⏳ 待实现 |
@@ -662,6 +669,7 @@ pub struct ChannelRuntimeStatus {
 | `get_state_history` | `source_id?, limit?` | `{ ok, records, by_source }` | ✓ |
 | `get_algorithm_config` | `source_id?` | `AlgorithmConfig` | ✓ |
 | `update_algorithm_config` | `source_id?, payload` | `AlgorithmConfig` | ✓ |
+| `delete_algorithm_config` | `source_id` | `{ ok }` | ✓ |
 | `get_effective_algorithm_config` | `source_id` | `{ config, sources }` | ✓ |
 | `get_roi_config` | `source_id` | `RoiConfig` | ✓ |
 | `update_roi_config` | `source_id, payload` | `RoiConfig` | ✓ |
@@ -696,7 +704,7 @@ pub struct ChannelRuntimeStatus {
 | `ecoalert://status` | `ChannelStatus[]` | 3s |
 | `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 3s 或状态变化时 |
 | `ecoalert://sources` | `VideoSource[]` | 源变更时 |
-| `ecoalert://scene_state` | `{ source_id, person, light, ts }` | 4s 或变化时 |
+| `ecoalert://scene_state` | `{ source_id, person, light, alarm, alarm_status, ts }` | 状态变化或心跳 |
 | `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化时 |
 | `ecoalert://notification` | `{ target_id, event, ok, status, error, ts }` | 通知发送后 |
 | `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度时 |
@@ -735,13 +743,19 @@ pub struct ChannelRuntimeStatus {
 ```
 当前开发期：
 
-Video/*.mp4 或 HLS URL
+Video/*.mp4
         │
         ▼
-webui 播放预览 + Tauri mock 状态
+Tools/push_streamer 生成 HLS
         │
         ▼
-图标 / 报警 banner / 状态历史
+webui 播放预览
+        │
+        ▼
+Tauri 后端 ffmpeg 单帧抽样 + Detector
+        │
+        ▼
+实时检测读数 / 图标 / 报警 banner / 状态历史
 
 目标生产链路：
 
@@ -775,7 +789,7 @@ npm install
 npm run dev          # http://localhost:1420
 ```
 
-前端自动降级到 localStorage 模拟，4 组 12 路示例数据。
+前端自动降级到 localStorage 模拟视频源、分组和配置；浏览器预览模式不再伪造 person / light 检测结果，真实检测事件只在 Tauri 模式由后端产生。
 
 ### 8.2 Tauri 桌面应用（生产）
 
@@ -810,7 +824,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 - **Node.js 18+**
 - **Rust 1.77+**（仅 Tauri 模式）
 - **WebView2**（Windows 10+ / 11 自带）
-- **ffmpeg**（后续推流器 / RTSP 转码依赖）
+- **ffmpeg**（当前 HLS 推流器和 Tauri 后端单帧抽样依赖；RTSP 转码后续继续依赖）
 
 ---
 
@@ -854,7 +868,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | --- | --- | --- |
 | 高 | 前后端字段命名统一 | Rust 使用 `source_type / group_id / created_at`，前端使用 `type / groupId / createdAt`，需要统一 serde rename 或 API 转换层 |
 | ~~高~~ ✅ | mock 与真实数据一致性 | ~~浏览器 mock 每次返回默认数据，新增 / 修改不能稳定复现~~；已修复：`mockLoad` / `mockLoadGroups` 现优先读 localStorage，首次才写入默认值 |
-| 高 | 算法 pipeline 真正接入状态推送 | 当前 `spawn_scene_state_ticker` 是 mock；需要让 `pipeline::detector -> analyzer -> state` 成为主路径 |
+| ~~高~~ ✅ | 算法 pipeline 接入状态推送 | 已由 `spawn_scene_state_ticker` 调度 ffmpeg 单帧抽样 + `Detector::analyze_scene()`，并推送 `scene_state / alarm / algorithm_schedule`；后续优化为常驻解码管线 |
 | 中 | RTSP / HLS 转码闭环 | 文档写 RTSP 支持，但实现仍是占位提示；需要明确依赖 ffmpeg 还是内置转码服务 |
 | 中 | 日志持久化 | 当前系统日志主要是前端内存态，重启后不可查；建议后端落盘并支持查询 |
 | 中 | 配置 schema 与迁移 | 新增算法 / 通知配置后，需要版本号、默认值和旧配置迁移 |
@@ -875,14 +889,13 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 
 | 优先级 | 任务 |
 | --- | --- |
-| 高 | 真实算法接入：灯光 ROI 规则 + 轻量人形检测 + VLM 低频复核 |
-| 高 | ROI 框选、标定、测试和版本管理 |
-| 高 | 算法启用时段、周期、阈值、VLM 策略配置页面 |
-| 高 | 报警生命周期：疑似、触发、确认、恢复、静默 |
-| 高 | 通知接口与通知配置页面 |
+| 高 | 真实人员识别接入：轻量人形检测 + VLM 低频复核 |
+| 高 | ROI 标定增强：真实画面框选、多 ROI、排除区、基线采样和版本管理 |
+| 高 | 算法配置增强：分组级覆盖、VLM 调度策略、并发限制和调用上限落地 |
+| 高 | 报警生命周期增强：确认态策略、静默、例外时段、离线事件隔离 |
+| 高 | 通知配置完善：全局启停、敏感字段脱敏、模板变量预览 |
 | 高 | 通知历史、失败重发和通知模板变量预览 |
 | 高 | RTSP → HLS 转码服务（`stream/rtmp.rs`） |
-| 中 | Tools 推流器补完 ffmpeg 进程管理；当前仅保留 CLI 占位 |
 | 中 | 状态历史按时间段筛选 / 导出 |
 | 中 | 隐私安全配置：外部 VLM、截图保存、密钥存储、打码 |
 | 中 | 配置导入导出、dry-run、schema 迁移 |
@@ -908,3 +921,4 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 2026-06-13 | 1.5 | Rust 侧移植简单视觉检测核心并接入开发期运行链路：ROI 灯光亮度 + 磁滞阈值 + EMA 平滑、低分辨率帧差运动识别、合成帧单元测试；后台 ticker 当前使用合成灰度帧驱动 `Detector::analyze_scene()`，后续只替换真实帧源 |
 | 2026-06-13 | 1.6 | 系统设置新增 ROI 标定最小闭环：按通道选择、单灯光 ROI 归一化坐标、亮/灭灯阈值、16:9 可拖拽 / 缩放预览框、保存到 `roi_config.json`；实现 `test_roi_config`，支持用合成标定帧测试亮度 / 判定；浏览器 mock 模式支持 localStorage 持久化 |
 | 2026-06-13 | 1.7 | 根据当前代码同步通知渠道能力：补充 `webhook / feishu / wechat_work / qqbot` 渠道类型、平台 API 凭证字段、access token 缓存、飞书 OAuth 扫码绑定和凭证校验 commands；修正未注册的 `mute_source / export_config / import_config` 状态 |
+| 2026-06-13 | 1.8 | 根据当前代码同步真实抽帧与报警状态机进展：后台检测改为 ffmpeg 单帧抽样，浏览器预览停止伪造算法结果，`scene_state` 增加 `alarm / alarm_status`，`simpleIntervalSec / alarmHoldSec / alarmRecoverSec / recoverPolicy` 已接入后端运行链路；Tools 推流器和测试可视化视频生成已补齐 |

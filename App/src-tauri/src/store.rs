@@ -87,6 +87,33 @@ pub struct SceneState {
     /// 算法给出的置信度（0..1），仅作参考
     #[serde(default)]
     pub confidence: f32,
+    /// 检测结果来源：simple | vlm | fused | mock
+    #[serde(default)]
+    pub source: String,
+    /// 人员检测置信度（0..1）
+    #[serde(default)]
+    pub person_confidence: f32,
+    /// 灯光检测置信度（0..1）
+    #[serde(default)]
+    pub light_confidence: f32,
+    /// 判定原因
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// 模型推理耗时（毫秒）
+    #[serde(default)]
+    pub model_latency_ms: Option<u32>,
+    /// 灯光 ROI 或全帧平均亮度（0..255）
+    #[serde(default)]
+    pub light_brightness: f32,
+    /// 彩色程度（0..1）。彩色摄像头开灯时通常较高，红外黑白时接近 0。
+    #[serde(default)]
+    pub color_score: f32,
+    /// 帧差运动面积比例（0..1），当前人员检测的临时代理信号
+    #[serde(default)]
+    pub motion_score: f32,
+    /// 本次检测总耗时（毫秒）
+    #[serde(default)]
+    pub process_ms: f32,
 }
 
 /// 单条状态历史记录（只在状态变化时落库）
@@ -294,12 +321,8 @@ impl Default for AlgorithmConfig {
             enabled: true,
             scope: "global".into(),
             scope_id: None,
-            active_windows: vec![ActiveWindow {
-                weekdays: vec![1, 2, 3, 4, 5],
-                start: "18:30".into(),
-                end: "08:30".into(),
-                timezone: default_timezone(),
-            }],
+            // 空启用窗口表示全天运行。演示 / release 默认需要能立即抽帧检测。
+            active_windows: vec![],
             exception_windows: vec![],
             simple_interval_sec: 10,
             vlm_interval_sec: 300,
@@ -915,5 +938,60 @@ mod vecdeque_serde {
     {
         let vec: Vec<T> = Vec::deserialize(deserializer)?;
         Ok(vec.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_state_serde_backward_compat() {
+        let old_json = r#"{"person":true,"light":false,"frame_seq":42,"confidence":0.8}"#;
+        let state: SceneState = serde_json::from_str(old_json).unwrap();
+        assert!(state.person);
+        assert!(!state.light);
+        assert_eq!(state.frame_seq, 42);
+        assert_eq!(state.confidence, 0.8);
+        // 新字段取默认值
+        assert_eq!(state.source, "");
+        assert_eq!(state.person_confidence, 0.0);
+        assert_eq!(state.light_confidence, 0.0);
+        assert!(state.reason.is_none());
+        assert!(state.model_latency_ms.is_none());
+        assert_eq!(state.light_brightness, 0.0);
+        assert_eq!(state.color_score, 0.0);
+        assert_eq!(state.motion_score, 0.0);
+        assert_eq!(state.process_ms, 0.0);
+    }
+
+    #[test]
+    fn scene_state_serde_roundtrip() {
+        let state = SceneState {
+            person: true,
+            light: false,
+            frame_seq: 10,
+            confidence: 0.9,
+            source: "simple".into(),
+            person_confidence: 0.75,
+            light_confidence: 0.85,
+            reason: Some("simple_motion_proxy".into()),
+            model_latency_ms: Some(12),
+            light_brightness: 88.0,
+            color_score: 0.09,
+            motion_score: 0.12,
+            process_ms: 2.5,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: SceneState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.source, "simple");
+        assert_eq!(restored.person_confidence, 0.75);
+        assert_eq!(restored.light_confidence, 0.85);
+        assert_eq!(restored.reason.as_deref(), Some("simple_motion_proxy"));
+        assert_eq!(restored.model_latency_ms, Some(12));
+        assert_eq!(restored.light_brightness, 88.0);
+        assert_eq!(restored.color_score, 0.09);
+        assert_eq!(restored.motion_score, 0.12);
+        assert_eq!(restored.process_ms, 2.5);
     }
 }

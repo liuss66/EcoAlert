@@ -9,7 +9,7 @@ use crate::store::{
     SourceGroup, StateRecord, VideoSource,
 };
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 fn require_login(state: &State<Arc<AppState>>) -> Result<(), String> {
     if !*state.logged_in.lock() {
@@ -332,6 +332,15 @@ pub fn report_scene_state(
         light,
         frame_seq: 0,
         confidence: 1.0,
+        source: "mock".into(),
+        person_confidence: 1.0,
+        light_confidence: 1.0,
+        reason: None,
+        model_latency_ms: None,
+        light_brightness: if light { 255.0 } else { 0.0 },
+        color_score: if light { 1.0 } else { 0.0 },
+        motion_score: if person { 1.0 } else { 0.0 },
+        process_ms: 0.0,
     };
     let rec = StateRecord::from_change(&source_id, &scene);
     state.record_state_change(rec).map_err(|e| e.to_string())?;
@@ -654,6 +663,7 @@ pub fn test_roi_config(
         "light": result.scene.light,
         "person": result.scene.person,
         "brightness": result.light_brightness,
+        "colorScore": result.scene.color_score,
         "motionScore": result.motion_score,
         "confidence": result.scene.confidence,
         "processMs": result.process_ms,
@@ -962,4 +972,39 @@ pub async fn verify_channel_credentials(
 ) -> Result<serde_json::Value, String> {
     channel_auth::verify_credentials(&channel_type, &app_id, &app_secret).await?;
     Ok(serde_json::json!({ "ok": true, "message": "凭证验证通过" }))
+}
+
+/// 写入 WebView 侧诊断日志。
+/// 注意：Tauri 2 当前这里不直接打开 DevTools，只辅助排查视频流加载问题。
+#[tauri::command]
+pub fn open_devtools(app: AppHandle) -> Result<(), String> {
+    if let Some(wv) = app.get_webview_window("main") {
+        let _ = wv.eval("console.log('=== EcoAlert DevTools Probe ===')");
+        let _ = wv.eval("console.log('CSP:', document.querySelector('meta[http-equiv=Content-Security-Policy]')?.content || '(none in meta)')");
+        let _ = wv.eval(
+            "fetch('http://127.0.0.1:8080/cam-1/index.m3u8').then(r => console.log('probe m3u8 status:', r.status)).catch(e => console.error('probe m3u8 FAIL:', e))",
+        );
+        Ok(())
+    } else {
+        Err("找不到主窗口".into())
+    }
+}
+
+/// 测试一个 URL 能否从 Rust 后端访问（用于区分推流器不可达和 WebView 播放问题）。
+#[tauri::command]
+pub async fn probe_url(url: String) -> Result<serde_json::Value, String> {
+    use std::time::Duration;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let ok = status.is_success();
+    let body_len = resp.content_length().unwrap_or(0);
+    Ok(serde_json::json!({
+        "ok": ok,
+        "status": status.as_u16(),
+        "content_length": body_len,
+    }))
 }

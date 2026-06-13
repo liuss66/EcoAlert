@@ -12,10 +12,9 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 pub struct StreamRegistry {
-    inner: Mutex<HashMap<String, JoinHandle<()>>>,
+    inner: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl StreamRegistry {
@@ -33,13 +32,13 @@ impl StreamRegistry {
             crate::stream::StreamKind::Hls => {
                 let r = HlsReader::new(&spec.url);
                 let run_source_id = source_id.clone();
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     let _ = r.run(run_source_id, tx).await;
                 })
             }
             crate::stream::StreamKind::Rtmp => {
                 let s = RtmpServer::new("0.0.0.0:1935");
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     let _ = s.run(tx).await;
                 })
             }
@@ -49,7 +48,7 @@ impl StreamRegistry {
             }
         };
         // 帧消费侧：将来连 pipeline
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             while rx.recv().await.is_some() {
                 // TODO: 把帧丢给 pipeline
             }
