@@ -58,6 +58,7 @@ function normalizeSceneState(payload) {
     sourceId: payload.sourceId ?? payload.source_id,
     personConfidence: payload.personConfidence ?? payload.person_confidence ?? 0,
     lightConfidence: payload.lightConfidence ?? payload.light_confidence ?? 0,
+    lightState: payload.lightState ?? payload.light_state ?? (payload.light ? 'on' : 'off'),
     source: payload.source ?? 'simple',
     modelLatencyMs: payload.modelLatencyMs ?? payload.model_latency_ms ?? null,
     frameSeq: payload.frameSeq ?? payload.frame_seq ?? 0,
@@ -581,8 +582,8 @@ export async function getRoiConfig(sourceId) {
     lightRois: [{ id: 'light-main', label: '全屏', x: 0, y: 0, w: 1, h: 1 }],
     excludeRois: [],
     personRois: [],
-    lightOnThreshold: 0.7,
-    lightOffThreshold: 0.45,
+    lightOnThreshold: 0.055,
+    lightOffThreshold: 0.025,
     updatedAt: Date.now(),
   };
 }
@@ -606,12 +607,15 @@ export async function testRoiConfig(sourceId, payload = null) {
   const cy = roi.y + roi.h / 2;
   const hitsBrightPatch = cx >= 0.3 && cx <= 0.7 && cy >= 0.27 && cy <= 0.73;
   const brightness = hitsBrightPatch ? 230 : 28;
-  const light = brightness / 255 >= (payload?.lightOnThreshold ?? 0.7);
+  const colorScore = hitsBrightPatch ? 0.08 : 0.01;
+  const light = colorScore >= (payload?.lightOnThreshold ?? 0.055);
   return {
     ok: true,
     light,
+    lightState: light ? 'on' : 'off',
     person: false,
     brightness,
+    colorScore,
     motionScore: 0,
     confidence: light ? 0.9 : 0.7,
     processMs: 0.1,

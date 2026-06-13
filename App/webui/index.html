@@ -386,12 +386,12 @@
                     <span class="field-hint">越低越容易判定"有人"，误报↑ 漏报↓</span>
                   </label>
                   <label class="field">
-                    <span class="field-label">灯光检测阈值</span>
+                    <span class="field-label">亮度兜底阈值</span>
                     <div class="threshold-row">
                       <input type="range" id="algo-light-threshold" min="0" max="1" step="0.05" value="0.70" />
                       <span class="threshold-value" id="algo-light-threshold-val">0.70</span>
                     </div>
-                    <span class="field-hint">画面平均亮度判为"亮"的下限</span>
+                    <span class="field-hint">仅在没有 RGB 彩色帧时使用；正常灯光判断以 ROI 色彩阈值为准</span>
                   </label>
                 </div>
                 <div class="field-row">
@@ -449,7 +449,7 @@
           <div class="panel settings-roi" id="sec-roi">
             <div class="panel-header">
               <h3>ROI 标定</h3>
-              <span class="panel-sub">灯光检测区域与阈值</span>
+              <span class="panel-sub">灯光区域与彩色 / 红外阈值</span>
             </div>
             <form id="roi-form" class="settings-form">
               <div class="field-row">
@@ -494,12 +494,14 @@
                   </div>
                   <div class="field-row">
                     <label class="field">
-                      <span class="field-label">亮灯阈值</span>
-                      <input type="number" id="roi-light-on" class="text-input" min="0" max="1" step="0.01" value="0.70" />
+                      <span class="field-label">开灯色彩阈值</span>
+                      <input type="number" id="roi-light-on" class="text-input" min="0" max="0.2" step="0.005" value="0.055" />
+                      <span class="field-hint">彩色画面达到该分数后判定为开灯</span>
                     </label>
                     <label class="field">
-                      <span class="field-label">关灯阈值</span>
-                      <input type="number" id="roi-light-off" class="text-input" min="0" max="1" step="0.01" value="0.45" />
+                      <span class="field-label">关灯色彩阈值</span>
+                      <input type="number" id="roi-light-off" class="text-input" min="0" max="0.2" step="0.005" value="0.025" />
+                      <span class="field-hint">红外黑白画面低于该分数后判定为关灯</span>
                     </label>
                   </div>
                 </div>

@@ -547,6 +547,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "source_id": s.id,
                     "person": person,
                     "light": light,
+                    "light_state": if light { "on" } else { "off" },
                     "alarm": alarm_status == "alarm_active",
                     "alarm_status": alarm_status,
                     "person_confidence": new_state.person_confidence,

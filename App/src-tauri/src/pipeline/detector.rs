@@ -39,7 +39,7 @@ pub struct Detector {
     frame_counter: u64,
     /// 人员检测阈值（来自 AlgorithmConfig.person_threshold，0..1）
     person_threshold: f32,
-    /// 灯光检测阈值（来自 AlgorithmConfig.light_threshold，0..1）
+    /// 无 RGB 数据时的亮度兜底阈值（来自 AlgorithmConfig.light_threshold，0..1）
     light_threshold: f32,
 }
 
@@ -111,20 +111,20 @@ impl Detector {
         // 优先使用摄像头模式特征：开灯为彩色图像，关灯红外为黑白图像。
         // 无 RGB 数据时回退到 ROI / 全帧亮度阈值。
         let has_color_signal = !frame.rgb.is_empty();
-        let (on_threshold, off_threshold) = roi_config
-            .map(|cfg| (cfg.light_on_threshold, cfg.light_off_threshold))
-            .unwrap_or((self.light_threshold, self.light_threshold * 0.65));
+        let (color_on_threshold, color_off_threshold) = color_thresholds(roi_config);
+        let (brightness_on_threshold, brightness_off_threshold) =
+            (self.light_threshold, self.light_threshold * 0.65);
         let brightness_norm = (smoothed_brightness / 255.0).clamp(0.0, 1.0);
         if has_color_signal {
-            if smoothed_color >= COLOR_ON_THRESHOLD {
+            if smoothed_color >= color_on_threshold {
                 self.light_state = true;
-            } else if smoothed_color <= COLOR_OFF_THRESHOLD {
+            } else if smoothed_color <= color_off_threshold {
                 self.light_state = false;
             }
         } else {
-            if brightness_norm >= on_threshold {
+            if brightness_norm >= brightness_on_threshold {
                 self.light_state = true;
-            } else if brightness_norm <= off_threshold {
+            } else if brightness_norm <= brightness_off_threshold {
                 self.light_state = false;
             }
         }
@@ -151,8 +151,8 @@ impl Detector {
             light_confidence(
                 brightness_norm,
                 self.light_state,
-                on_threshold,
-                off_threshold,
+                brightness_on_threshold,
+                brightness_off_threshold,
             )
         };
 
@@ -313,6 +313,20 @@ fn average_color_score(frame: &DecodedFrame, roi_config: Option<&RoiConfig>) -> 
         .unwrap_or(0.0)
 }
 
+fn color_thresholds(roi_config: Option<&RoiConfig>) -> (f32, f32) {
+    let Some(cfg) = roi_config else {
+        return (COLOR_ON_THRESHOLD, COLOR_OFF_THRESHOLD);
+    };
+    // 旧版本 ROI 阈值是亮度归一化阈值，常见为 0.70 / 0.45。
+    // 彩色分数通常在 0.00-0.15 范围内；检测到旧值时回退默认色彩阈值。
+    if cfg.light_on_threshold > 0.2 || cfg.light_off_threshold > 0.2 {
+        return (COLOR_ON_THRESHOLD, COLOR_OFF_THRESHOLD);
+    }
+    let on = cfg.light_on_threshold.clamp(0.0, 0.2);
+    let off = cfg.light_off_threshold.clamp(0.0, on);
+    (on, off)
+}
+
 fn roi_color_sum(frame: &DecodedFrame, roi: &RoiRect) -> Option<(f32, usize)> {
     let (x1, y1, x2, y2) = roi_bounds(frame.width, frame.height, roi)?;
     color_sum_for_bounds(frame, x1, y1, x2, y2)
@@ -462,6 +476,38 @@ mod tests {
             back_to_ir = detector.analyze_scene(&rgb_frame(16, 16, [180, 180, 180]), None);
         }
         assert!(!back_to_ir.scene.light);
+    }
+
+    #[test]
+    fn light_detector_uses_configured_color_thresholds() {
+        let mut cfg = RoiConfig::new("src-test".into());
+        cfg.light_on_threshold = 0.03;
+        cfg.light_off_threshold = 0.015;
+        let mut detector = Detector::new(PipelineConfig::default());
+
+        let muted_color = detector.analyze_scene(&rgb_frame(16, 16, [160, 120, 110]), Some(&cfg));
+        assert!(muted_color.scene.light);
+        assert!(muted_color
+            .scene
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("light_by_color"));
+    }
+
+    #[test]
+    fn legacy_roi_brightness_thresholds_do_not_break_color_mode() {
+        let mut cfg = RoiConfig::new("src-test".into());
+        cfg.light_on_threshold = 0.70;
+        cfg.light_off_threshold = 0.45;
+        let mut detector = Detector::new(PipelineConfig::default());
+
+        let mut color = detector.analyze_scene(&rgb_frame(16, 16, [220, 120, 40]), Some(&cfg));
+        for _ in 0..3 {
+            color = detector.analyze_scene(&rgb_frame(16, 16, [220, 120, 40]), Some(&cfg));
+        }
+        assert!(color.scene.light);
+        assert!(color.scene.color_score > COLOR_ON_THRESHOLD);
     }
 
     #[test]

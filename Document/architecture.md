@@ -101,6 +101,7 @@ sequenceDiagram
 ```
 
 当前 `ecoalert://scene_state` 每次检测完成都会推送，前端实时卡片展示 `person / light`、色彩分数、运动分数、耗时和帧序号。`state_history.json` 只记录 `person / light` 变化，避免稳定画面持续写盘。
+其中 `light` 是最终开关状态，事件 payload 同时给出 `light_state=on/off`；`color_score` 是彩色 / 红外黑白判定依据，不等同于“关灯概率”。
 
 ### 4.2 目标算法路径
 
@@ -144,6 +145,7 @@ sequenceDiagram
 关键规则：
 
 - 简单模型识别到有人时，不调用 VLM。
+- 灯光规则优先使用 ROI 内色彩分数，默认开灯阈值 `0.055`、关灯阈值 `0.025`；无 RGB 数据时才使用亮度兜底阈值。
 - VLM 只在无人 + 亮灯且需要复核时调用。
 - 算法启用时段外不产生新报警。
 - 视频离线不能被解释为无人 + 亮灯。

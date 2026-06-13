@@ -399,8 +399,8 @@ impl RoiConfig {
             light_rois: vec![],
             exclude_rois: vec![],
             person_rois: vec![],
-            light_on_threshold: 0.70,
-            light_off_threshold: 0.45,
+            light_on_threshold: 0.055,
+            light_off_threshold: 0.025,
             updated_at: chrono::Utc::now().timestamp_millis(),
         }
     }

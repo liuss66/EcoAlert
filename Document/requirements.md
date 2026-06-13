@@ -1,8 +1,8 @@
 # EcoAlert 视频监控 · 需求规格说明书
 
-> 版本：v1.8
+> 版本：v1.9
 > 日期：2026-06-13  
-> 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入，真实算法与配置 UI 待完善；分组拖拽已修复并优化性能）
+> 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入；灯光检测已切换到彩色 / 红外黑白模式特征，人员检测仍为运动代理）
 
 ---
 
@@ -158,7 +158,7 @@
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-AI-1 | Rust 端定义 `SceneState { person, light, frame_seq, confidence, light_brightness, color_score, motion_score, process_ms }` | ✅ |
+| F-AI-1 | Rust 端定义 `SceneState { person, light, frame_seq, confidence, light_brightness, color_score, motion_score, process_ms }`，事件 payload 额外派生 `light_state=on/off` | ✅ |
 | F-AI-2 | 算法通过 `app.emit("ecoalert://scene_state", ...)` 推给前端 | ✅ 每次检测完成均推送 |
 | F-AI-3 | 算法通过 `state.record_state_change(...)` 落库 | ✅ |
 | F-AI-4 | 状态变化时记录一条 `StateRecord`（含派生 alarm 字段） | ✅ |
@@ -167,7 +167,7 @@
 
 当前检测状态：
 
-- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧 `color_score` 并做 EMA + 磁滞阈值。RGB 不可用时才回退到 ROI 亮度 / 全帧亮度规则。
+- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧 `color_score` 并做 EMA + 磁滞阈值，输出 `light=true/false` 和 `light_state=on/off`。RGB 不可用时才回退到亮度阈值。
 - 人员：尚未接入人形检测模型，`person` 由低分辨率帧差运动分数临时代理；适合观察“画面有明显变化”，不适合作为生产人员存在结论。
 - 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；历史记录仍只在 `person / light` 变化时落库。
 - 默认调度：全局 `activeWindows` 为空，表示全天运行；旧版内置的“工作日 18:30-08:30”默认窗口会在启动时迁移为空，避免演示视频长期停留在“等待结果”。
@@ -189,7 +189,7 @@
 
 | 识别目标 | 推荐方案 | 理由 | 风险 | 规避 |
 | --- | --- | --- | --- | --- |
-| 是否亮灯 | 彩色 / 红外黑白模式切换检测 + ROI 亮度兜底 | 快、稳定、无需训练，适配“开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、彩色噪声低、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI、持续时间、必要时回退亮度阈值 |
+| 是否亮灯 | 彩色 / 红外黑白模式切换检测 + 亮度兜底 | 快、稳定、无需训练，适配“开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、彩色噪声低、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI 和开 / 关色彩阈值；无 RGB 帧时回退亮度阈值 |
 | 是否有人 | 轻量 person detector（ONNX YOLOv8n / YOLO11n / RT-DETR 小模型）或动态目标识别 | 人是报警抑制条件，应优先减少误检；简单模型延迟低，可高频执行 | 静止人员、遮挡、远距离小目标漏检 | 多帧投票、置信度阈值、人员存在保持时间、VLM 低频补漏 |
 | 动态目标识别 | 帧差 / 背景建模 / 光流作为辅助信号 | 计算量低，可用于发现画面变化和触发 VLM 复核 | 动态目标不等于人；风吹、反光、画面噪声容易误触发 | 只作为触发条件，不直接作为“有人”结论；Rust 侧已实现低分辨率帧差核心 |
 
@@ -225,10 +225,10 @@
 [当前是否在算法启用时段?] --否--> [跳过并记录 reason=schedule_disabled]
         │ 是
         ▼
-[抽帧 + 预处理 + ROI 裁剪]
+[抽帧 + RGB 预处理 + ROI 裁剪]
         │
         ▼
-[简单模型 / 规则]
+[简单模型 / 规则：先用 color_score 判开灯 / 关灯，无 RGB 时回退亮度阈值]
         │
         ├─ 有人? ──是──> [输出 person=true；不调用 VLM；报警恢复]
         │
@@ -255,13 +255,17 @@
 pub struct SceneState {
     pub person: bool,
     pub light: bool,
+    pub light_state: String,      // on | off，事件 payload 字段；Rust 结构体中由 light 派生
     pub frame_seq: u64,
     pub confidence: f32,
     pub source: String,           // mock | simple | vlm | fused
     pub person_confidence: f32,
-    pub light_confidence: f32,
+    pub light_confidence: f32,    // 当前 light 判断的置信度，不是单纯“关灯概率”
     pub reason: Option<String>,   // schedule_disabled | simple_hit_person | vlm_recheck | ...
     pub model_latency_ms: Option<u32>,
+    pub light_brightness: f32,    // 亮度兜底和排障读数
+    pub color_score: f32,         // 彩色程度；彩色画面高，红外黑白低
+    pub motion_score: f32,
 }
 ```
 
@@ -348,7 +352,7 @@ resolved
 | F-ROI-1 | 每路视频可配置灯光检测 ROI，支持多个矩形区域 | ⚠️ 单灯光 ROI 配置 UI 已接入，默认全屏，多矩形待实现 |
 | F-ROI-2 | 每路视频可配置排除 ROI，用于排除窗户、屏幕、反光区域 | ⏳ 待实现 |
 | F-ROI-3 | 支持在视频画面上框选、拖拽、缩放 ROI | ⚠️ 当前支持 16:9 预览框内拖拽 / 缩放和数值配置，真实视频画面框选待实现 |
-| F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、实时亮度值和判定结果 | ⚠️ 当前展示 16:9 预览框；`test_roi_config` 已从当前视频源抽真实帧验证亮度 / 判定，页面实时帧预览待实现 |
+| F-ROI-4 | ROI 配置页面展示当前帧、ROI 覆盖层、色彩分数、亮度值和开 / 关灯判定结果 | ⚠️ 当前展示 16:9 预览框；`test_roi_config` 已从当前视频源抽真实帧验证色彩分数、亮度和判定，页面实时帧预览待实现 |
 | F-ROI-5 | 支持自动采样基线：记录“灯关”“灯亮”样本并生成推荐阈值 | ⏳ 待实现 |
 | F-ROI-6 | 支持每路视频保存 `person_roi`，仅在有效区域内识别人 | ⏳ 待实现 |
 | F-ROI-7 | ROI 坐标使用归一化坐标，避免不同分辨率下配置失效 | ⏳ 待实现 |
@@ -560,8 +564,8 @@ pub struct RoiConfig {
     pub light_rois: Vec<RoiRect>,
     pub exclude_rois: Vec<RoiRect>,
     pub person_rois: Vec<RoiRect>,
-    pub light_on_threshold: f32,
-    pub light_off_threshold: f32,
+    pub light_on_threshold: f32,          // RGB 模式下的开灯色彩阈值，默认 0.055
+    pub light_off_threshold: f32,         // RGB 模式下的关灯色彩阈值，默认 0.025
     pub baseline_samples: Vec<BaselineSample>,
     pub updated_at: i64,
 }
@@ -675,7 +679,7 @@ pub struct ChannelRuntimeStatus {
 | `get_effective_algorithm_config` | `source_id` | `{ config, sources }` | ✓ |
 | `get_roi_config` | `source_id` | `RoiConfig` | ✓ |
 | `update_roi_config` | `source_id, payload` | `RoiConfig` | ✓ |
-| `test_roi_config` | `source_id, payload?` | `{ ok, light, person, brightness, motionScore, confidence, processMs, version }` | ✓ |
+| `test_roi_config` | `source_id, payload?` | `{ ok, light, lightState, person, brightness, colorScore, motionScore, confidence, processMs, version }` | ✓ |
 | `list_alarms` | `status?, source_id?, limit?` | `AlarmRecord[]` | ✓ |
 | `get_channel_runtime_status` | `source_id?` | `ChannelRuntimeStatus[]` | ✓ |
 | `ack_alarm` | `alarm_id, note?` | `AlarmRecord` | ✓ |
@@ -706,7 +710,7 @@ pub struct ChannelRuntimeStatus {
 | `ecoalert://status` | `ChannelStatus[]` | 3s |
 | `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 3s 或状态变化时 |
 | `ecoalert://sources` | `VideoSource[]` | 源变更时 |
-| `ecoalert://scene_state` | `{ source_id, person, light, alarm, alarm_status, ts }` | 状态变化或心跳 |
+| `ecoalert://scene_state` | `{ source_id, person, light, light_state, alarm, alarm_status, light_confidence, color_score, motion_score, ts }` | 每次检测完成 |
 | `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化时 |
 | `ecoalert://notification` | `{ target_id, event, ok, status, error, ts }` | 通知发送后 |
 | `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度时 |
@@ -845,7 +849,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | AC-9 | 已确认报警恢复 | 状态变为 `resolved`，按配置发送 `alarm_resolved` 通知 |
 | AC-10 | 通知接口超时或返回 500 | 本地报警和历史正常记录，通知历史记录失败原因 |
 | AC-11 | 视频源离线 | 产生 `source_offline` 事件，不被判定为无人 + 亮灯 |
-| AC-12 | 修改 ROI 后测试 | UI 展示亮度值、判定结果和使用的 ROI 版本 |
+| AC-12 | 修改 ROI 后测试 | UI 展示色彩分数、亮度值、开 / 关灯判定结果和使用的 ROI 版本 |
 | AC-13 | 外部 VLM 未启用 | 系统不得向外部 API 发送截图 |
 | AC-14 | 导入配置 dry-run | 展示差异和冲突，不修改当前配置 |
 
@@ -924,3 +928,4 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 2026-06-13 | 1.6 | 系统设置新增 ROI 标定最小闭环：按通道选择、单灯光 ROI 归一化坐标、亮/灭灯阈值、16:9 可拖拽 / 缩放预览框、保存到 `roi_config.json`；实现 `test_roi_config`，支持用合成标定帧测试亮度 / 判定；浏览器 mock 模式支持 localStorage 持久化 |
 | 2026-06-13 | 1.7 | 根据当前代码同步通知渠道能力：补充 `webhook / feishu / wechat_work / qqbot` 渠道类型、平台 API 凭证字段、access token 缓存、飞书 OAuth 扫码绑定和凭证校验 commands；修正未注册的 `mute_source / export_config / import_config` 状态 |
 | 2026-06-13 | 1.8 | 根据当前代码同步真实抽帧与报警状态机进展：后台检测改为 ffmpeg 单帧抽样，浏览器预览停止伪造算法结果，`scene_state` 增加 `alarm / alarm_status`，`simpleIntervalSec / alarmHoldSec / alarmRecoverSec / recoverPolicy` 已接入后端运行链路；Tools 推流器和测试可视化视频生成已补齐 |
+| 2026-06-13 | 1.9 | 同步灯光检测策略变更：开灯优先按彩色画面、关灯按红外黑白画面判断；ROI 阈值改为开 / 关灯色彩阈值，亮度阈值仅作无 RGB 数据兜底；`scene_state` 和 ROI 测试输出补充 `light_state / lightState` 便于 UI 直接展示开关状态 |

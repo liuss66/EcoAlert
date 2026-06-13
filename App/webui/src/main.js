@@ -662,16 +662,16 @@ function applyStateIcons() {
       }
       return;
     }
-    const personText = s.person ? `有人 ${(s.personConfidence * 100).toFixed(0)}%` : `无人 ${(s.personConfidence * 100).toFixed(0)}%`;
-    const lightText = s.light ? `亮灯 ${(s.lightConfidence * 100).toFixed(0)}%` : `关灯 ${(s.lightConfidence * 100).toFixed(0)}%`;
+    const personText = s.person ? `人员：有人 ${(s.personConfidence * 100).toFixed(0)}%` : `人员：无人 ${(s.personConfidence * 100).toFixed(0)}%`;
+    const lightText = s.light ? `灯光：开灯 ${(s.lightConfidence * 100).toFixed(0)}%` : `灯光：关灯 ${(s.lightConfidence * 100).toFixed(0)}%`;
     const brightness = s.lightBrightness == null ? '-' : Number(s.lightBrightness).toFixed(0);
     const color = s.colorScore == null ? '-' : Number(s.colorScore).toFixed(3);
     const motion = s.motionScore == null ? '-' : Number(s.motionScore).toFixed(3);
     const cost = s.processMs ?? s.modelLatencyMs;
     const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
-    el.textContent = `${personText} · ${lightText} · 色彩 ${color} · 运动 ${motion}`;
+    el.textContent = `${personText} · ${lightText} · 色彩分数 ${color} · 运动 ${motion}`;
     el.dataset.brightness = brightness;
-    el.title = `来源 ${s.source || 'simple'} / ${s.reason || '-'} / #${s.frameSeq || 0} / ${costText} / ${fmtTime(s.ts)}`;
+    el.title = `开关状态：${s.light ? '开灯' : '关灯'} / 色彩分数 ${color} / 亮度 ${brightness} / 来源 ${s.source || 'simple'} / ${s.reason || '-'} / #${s.frameSeq || 0} / ${costText} / ${fmtTime(s.ts)}`;
   });
 }
 
@@ -680,6 +680,7 @@ function updateLiveState(payload) {
   sceneStates.set(payload.sourceId, {
     person: !!payload.person,
     light: !!payload.light,
+    lightState: payload.lightState || payload.light_state || (payload.light ? 'on' : 'off'),
     alarm: !!payload.alarm,
     alarmStatus: payload.alarmStatus || payload.alarm_status || 'normal',
     ts: payload.ts || Date.now(),
@@ -1350,6 +1351,15 @@ const clamp01 = (value, fallback = 0) => {
   return Math.min(1, Math.max(0, n));
 };
 
+const DEFAULT_COLOR_ON_THRESHOLD = 0.055;
+const DEFAULT_COLOR_OFF_THRESHOLD = 0.025;
+
+const normalizeColorThreshold = (value, fallback) => {
+  const n = Number.parseFloat(value);
+  if (!Number.isFinite(n) || n > 0.2) return fallback;
+  return Math.min(0.2, Math.max(0, n));
+};
+
 /* ---- ROI 预览区视频播放 ---- */
 let roiHls = null;
 
@@ -1458,8 +1468,14 @@ const fillRoiForm = (cfg) => {
   $('#roi-y').value = roi.y ?? 0;
   $('#roi-w').value = roi.w ?? 1;
   $('#roi-h').value = roi.h ?? 1;
-  $('#roi-light-on').value = cfg.lightOnThreshold ?? cfg.light_on_threshold ?? 0.70;
-  $('#roi-light-off').value = cfg.lightOffThreshold ?? cfg.light_off_threshold ?? 0.45;
+  $('#roi-light-on').value = normalizeColorThreshold(
+    cfg.lightOnThreshold ?? cfg.light_on_threshold,
+    DEFAULT_COLOR_ON_THRESHOLD,
+  ).toFixed(3);
+  $('#roi-light-off').value = normalizeColorThreshold(
+    cfg.lightOffThreshold ?? cfg.light_off_threshold,
+    DEFAULT_COLOR_OFF_THRESHOLD,
+  ).toFixed(3);
   updateRoiPreview();
 };
 
@@ -1469,8 +1485,8 @@ const roiPayloadFromForm = () => {
   const y = clamp01($('#roi-y').value, 0);
   const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 1)));
   const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 1)));
-  const on = clamp01($('#roi-light-on').value, 0.70);
-  const off = Math.min(on, clamp01($('#roi-light-off').value, 0.45));
+  const on = normalizeColorThreshold($('#roi-light-on').value, DEFAULT_COLOR_ON_THRESHOLD);
+  const off = Math.min(on, normalizeColorThreshold($('#roi-light-off').value, DEFAULT_COLOR_OFF_THRESHOLD));
   return {
     ...(roiConfig || {}),
     sourceId,
@@ -1518,7 +1534,7 @@ $('#btn-test-roi')?.addEventListener('click', async () => {
     const el = $('#roi-test-result');
     if (el) {
       el.classList.toggle('success', !!result.light);
-      el.textContent = `测试结果：${result.light ? '灯亮' : '灯灭'}，色彩 ${Number(result.colorScore || result.color_score || 0).toFixed(3)}，亮度 ${Number(result.brightness || 0).toFixed(1)}，置信度 ${Number(result.confidence || 0).toFixed(2)}，耗时 ${Number(result.processMs || result.process_ms || 0).toFixed(2)}ms`;
+      el.textContent = `测试结果：灯光${result.light ? '开灯' : '关灯'}，色彩分数 ${Number(result.colorScore || result.color_score || 0).toFixed(3)}，亮度 ${Number(result.brightness || 0).toFixed(1)}，置信度 ${Number(result.confidence || 0).toFixed(2)}，耗时 ${Number(result.processMs || result.process_ms || 0).toFixed(2)}ms`;
     }
     addLog('info', 'ROI 测试完成');
   } catch (err) {

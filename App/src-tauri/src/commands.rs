@@ -350,6 +350,7 @@ pub fn report_scene_state(
             "source_id": source_id,
             "person": person,
             "light": light,
+            "light_state": if light { "on" } else { "off" },
             "ts": chrono::Utc::now().timestamp_millis(),
         }),
     );
@@ -661,6 +662,7 @@ pub fn test_roi_config(
     Ok(serde_json::json!({
         "ok": true,
         "light": result.scene.light,
+        "lightState": if result.scene.light { "on" } else { "off" },
         "person": result.scene.person,
         "brightness": result.light_brightness,
         "colorScore": result.scene.color_score,
