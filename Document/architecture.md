@@ -53,9 +53,9 @@ flowchart LR
 | Tauri Commands | `App/src-tauri/src/commands.rs` | 前后端 IPC、鉴权、CRUD、状态查询 | 已实现基础功能 |
 | 应用状态 | `App/src-tauri/src/state.rs` | 全局状态、后台 ticker、事件推送、历史落库 | 已实现 mock 状态 |
 | 数据模型 | `App/src-tauri/src/store.rs` | 视频源、分组、状态历史、JSON 持久化 | 已实现基础模型 |
-| 视频输入 | `App/src-tauri/src/stream/` | HLS / RTMP 接入骨架 | 部分占位 |
+| 视频输入 | `App/src-tauri/src/stream/` / `pipeline/decoder.rs` | HLS / MP4 单帧抽样，后续扩展常驻解码 | 已接 ffmpeg 抽帧 |
 | 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 待实现 |
-| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、分析、告警 | 骨架完成，真实算法待接 |
+| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、分析、告警 | 已接真实帧抽样 + 简单检测，真实人形模型待接 |
 | 推流工具 | `Tools/push_streamer/` | 用本地视频模拟实时 HLS 源，供 App 页面联调 | 已实现 ffmpeg + HLS |
 | 文档 | `Document/` | 需求、架构、接口、部署、ADR、变更日志 | 本文档集 |
 
