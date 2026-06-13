@@ -285,6 +285,14 @@
               </span>
             </div>
             <form id="algorithm-form" class="settings-form">
+              <div class="field-row">
+                <label class="field full">
+                  <span class="field-label">配置范围</span>
+                  <select id="algo-source" class="text-input"></select>
+                  <span class="field-hint">选择具体视频源后，保存会覆盖该通道的算法时段、周期和阈值</span>
+                </label>
+              </div>
+
               <div class="form-section">
                 <div class="form-section-title">调度开关</div>
                 <label class="check-row">
@@ -421,6 +429,7 @@
               </div>
 
               <div class="form-actions">
+                <button type="button" class="btn-ghost" id="btn-reset-algorithm-source">恢复全局继承</button>
                 <button type="button" class="btn-ghost" id="btn-reload-algorithm">放弃修改</button>
                 <button type="submit" class="btn-primary">保存算法配置</button>
               </div>
@@ -675,7 +684,7 @@
         <div class="form-grid">
           <label class="field">
             <span class="field-label">名称 *</span>
-            <input type="text" id="src-name" required maxlength="64" placeholder="例如：园区东门" />
+            <input type="text" id="src-name" required maxlength="64" placeholder="例如：4·24 域控" />
           </label>
           <label class="field">
             <span class="field-label">类型</span>
@@ -696,7 +705,7 @@
           </label>
           <label class="field full">
             <span class="field-label">位置 / 备注</span>
-            <input type="text" id="src-location" maxlength="128" placeholder="例如：A 栋 3 楼走廊" />
+            <input type="text" id="src-location" maxlength="128" placeholder="例如：Video/4·24域控.mp4" />
           </label>
           <label class="field full check-inline">
             <input type="checkbox" id="src-enabled" checked /> 启用该视频源

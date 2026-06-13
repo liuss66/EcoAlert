@@ -11,12 +11,17 @@ const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 
 const MOCK_PASSWORD = 'admin123';
 const MOCK_KEY = 'ecoalert_mock_sources';
+const MOCK_SOURCE_VERSION_KEY = 'ecoalert_mock_sources_version';
+const MOCK_SOURCE_VERSION = 'local-video-v2';
 const MOCK_GROUPS_KEY = 'ecoalert_mock_groups';
+const MOCK_GROUP_VERSION_KEY = 'ecoalert_mock_groups_version';
+const MOCK_GROUP_VERSION = 'local-video-v2';
 const MOCK_HISTORY_KEY = 'ecoalert_mock_history';
 const MOCK_PW_KEY = 'ecoalert_mock_pw';
 const MOCK_NTF_KEY = 'ecoalert_mock_notify_targets';
 const MOCK_NTF_HISTORY_KEY = 'ecoalert_mock_notify_history';
 const MOCK_ROI_KEY = 'ecoalert_mock_roi_config';
+const MOCK_ALGO_KEY = 'ecoalert_mock_algorithm_config';
 
 function normalizeSource(s) {
   if (!s) return s;
@@ -148,7 +153,8 @@ function mockLoad() {
   // 浏览器预览模式：优先读 localStorage（保留用户修改），否则返回默认数据
   try {
     const raw = localStorage.getItem(MOCK_KEY);
-    if (raw) {
+    const version = localStorage.getItem(MOCK_SOURCE_VERSION_KEY);
+    if (raw && version === MOCK_SOURCE_VERSION) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.length > 0) return arr;
     }
@@ -163,46 +169,40 @@ function mockDefaultSources() {
   // 启动推流器后生效：python -m push_streamer.cli --auto-scan
   const HLS = (n) => `http://127.0.0.1:8080/cam-${n}/index.m3u8`;
   return [
-    // —— A 栋办公 ——
-    { id: 'cam-a1', name: '大堂入口',     url: HLS(1), type: 'hls', location: 'A 栋 1F',     enabled: true,  groupId: 'grp-a',  order: 0, createdAt: Date.now() - 80000000 },
-    { id: 'cam-a2', name: '前台接待区',   url: HLS(2), type: 'hls', location: 'A 栋 1F',     enabled: true,  groupId: 'grp-a',  order: 1, createdAt: Date.now() - 80000000 },
-    { id: 'cam-a3', name: '电梯厅',       url: HLS(3), type: 'hls', location: 'A 栋 1F',     enabled: true,  groupId: 'grp-a',  order: 2, createdAt: Date.now() - 80000000 },
-    { id: 'cam-a4', name: '茶水间',       url: HLS(4), type: 'hls', location: 'A 栋 2F',     enabled: true,  groupId: 'grp-a',  order: 3, createdAt: Date.now() - 80000000 },
-    // —— B 栋车间 ——
-    { id: 'cam-b1', name: '生产线 1',     url: HLS(5), type: 'hls', location: 'B 栋 车间',   enabled: true,  groupId: 'grp-b',  order: 0, createdAt: Date.now() - 70000000 },
-    { id: 'cam-b2', name: '生产线 2',     url: HLS(5), type: 'hls', location: 'B 栋 车间',   enabled: true,  groupId: 'grp-b',  order: 1, createdAt: Date.now() - 70000000 },
-    { id: 'cam-b3', name: '原材料仓库',   url: HLS(6), type: 'hls', location: 'B 栋 仓库',   enabled: true,  groupId: 'grp-b',  order: 2, createdAt: Date.now() - 70000000 },
-    // —— 园区周界 ——
-    { id: 'cam-c1', name: '园区东门',     url: HLS(7), type: 'hls', location: '园区 周界',   enabled: true,  groupId: 'grp-c',  order: 0, createdAt: Date.now() - 60000000 },
-    { id: 'cam-c2', name: '园区西门',     url: HLS(7), type: 'hls', location: '园区 周界',   enabled: false, groupId: 'grp-c',  order: 1, createdAt: Date.now() - 60000000 },
-    { id: 'cam-c3', name: '停车场',       url: HLS(7), type: 'hls', location: '园区 停车',   enabled: false, groupId: 'grp-c',  order: 2, createdAt: Date.now() - 60000000 },
-    // —— 重点机房 ——
-    { id: 'cam-d1', name: '核心机房',     url: HLS(8), type: 'hls', location: '核心 机房',   enabled: true,  groupId: 'grp-default', order: 0, createdAt: Date.now() - 50000000 },
-    { id: 'cam-d2', name: 'UPS 配电室',   url: HLS(8), type: 'hls', location: '核心 机房',   enabled: false, groupId: 'grp-default', order: 1, createdAt: Date.now() - 50000000 },
+    { id: 'cam-domain-0424',  name: '4·24 域控', url: HLS(1), type: 'hls', location: 'Video/4·24域控.mp4', enabled: true, groupId: 'grp-domain',  order: 0, createdAt: Date.now() - 80000000 },
+    { id: 'cam-domain-0527',  name: '5·27 域控', url: HLS(5), type: 'hls', location: 'Video/5·27域控.mp4', enabled: true, groupId: 'grp-domain',  order: 1, createdAt: Date.now() - 70000000 },
+    { id: 'cam-domain-0528',  name: '5·28 域控', url: HLS(6), type: 'hls', location: 'Video/5·28域控.mp4', enabled: true, groupId: 'grp-domain',  order: 2, createdAt: Date.now() - 70000000 },
+    { id: 'cam-domain-0507',  name: '5·7 域控',  url: HLS(7), type: 'hls', location: 'Video/5·7域控.mp4',  enabled: true, groupId: 'grp-domain',  order: 3, createdAt: Date.now() - 60000000 },
+    { id: 'cam-chassis-0424', name: '4·24 底盘', url: HLS(2), type: 'hls', location: 'Video/4·24底盘.mp4', enabled: true, groupId: 'grp-chassis', order: 0, createdAt: Date.now() - 80000000 },
+    { id: 'cam-chassis-0515', name: '5·15 底盘', url: HLS(4), type: 'hls', location: 'Video/5·15底盘.mp4', enabled: true, groupId: 'grp-chassis', order: 1, createdAt: Date.now() - 80000000 },
+    { id: 'cam-chassis-0507', name: '5·7 底盘',  url: HLS(8), type: 'hls', location: 'Video/5·7底盘.mp4',  enabled: true, groupId: 'grp-chassis', order: 2, createdAt: Date.now() - 50000000 },
+    { id: 'cam-hardware-0514', name: '5·14 硬件', url: HLS(3), type: 'hls', location: 'Video/5·14硬件.mp4', enabled: true, groupId: 'grp-hardware', order: 0, createdAt: Date.now() - 80000000 },
   ];
 }
 function mockSave(arr) {
   localStorage.setItem(MOCK_KEY, JSON.stringify(arr));
+  localStorage.setItem(MOCK_SOURCE_VERSION_KEY, MOCK_SOURCE_VERSION);
 }
 function mockLoadGroups() {
   try {
     const raw = localStorage.getItem(MOCK_GROUPS_KEY);
-    if (raw) {
+    const version = localStorage.getItem(MOCK_GROUP_VERSION_KEY);
+    if (raw && version === MOCK_GROUP_VERSION) {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.length > 0) return arr;
     }
   } catch (e) { console.warn('[mock] mockLoadGroups 解析失败:', e); }
   const defaults = [
-    { id: 'grp-default', name: '默认分组',   order: 0, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-a',       name: 'A 栋办公',   order: 1, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-b',       name: 'B 栋车间',   order: 2, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-c',       name: '园区周界',   order: 3, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-domain',   name: '域控测试视频', order: 0, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-chassis',  name: '底盘测试视频', order: 1, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-hardware', name: '硬件测试视频', order: 2, collapsed: false, createdAt: Date.now() },
   ];
   mockSaveGroups(defaults);
   return defaults;
 }
 function mockSaveGroups(arr) {
   localStorage.setItem(MOCK_GROUPS_KEY, JSON.stringify(arr));
+  localStorage.setItem(MOCK_GROUP_VERSION_KEY, MOCK_GROUP_VERSION);
 }
 function mockLoadHistory(sourceId, limit) {
   try {
@@ -480,10 +480,10 @@ export async function resolveAlarm(alarmId, note = null) {
 
 export async function getAlgorithmConfig(sourceId = null) {
   if (isTauri) return invoke('get_algorithm_config', { sourceId });
-  return {
+  const defaults = {
     enabled: true,
-    scope: sourceId ? 'source' : 'global',
-    scopeId: sourceId,
+    scope: 'global',
+    scopeId: null,
     activeWindows: [{ weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' }],
     exceptionWindows: [],
     simpleIntervalSec: 10,
@@ -498,16 +498,41 @@ export async function getAlgorithmConfig(sourceId = null) {
     vlmHourlyLimit: 12,
     roiVersion: null,
   };
+  try {
+    const raw = localStorage.getItem(MOCK_ALGO_KEY);
+    const file = raw ? JSON.parse(raw) : {};
+    if (sourceId && file.sources?.[sourceId]) return file.sources[sourceId];
+    return file.global || defaults;
+  } catch (_) {
+    return defaults;
+  }
 }
 
 export async function updateAlgorithmConfig(sourceId, payload) {
   if (isTauri) return invoke('update_algorithm_config', { sourceId: sourceId ?? null, payload });
-  return { ...payload, scope: sourceId ? 'source' : 'global', scopeId: sourceId ?? null };
+  const saved = { ...payload, scope: sourceId ? 'source' : 'global', scopeId: sourceId ?? null };
+  const raw = localStorage.getItem(MOCK_ALGO_KEY);
+  const file = raw ? JSON.parse(raw) : { sources: {} };
+  file.sources = file.sources || {};
+  if (sourceId) file.sources[sourceId] = saved;
+  else file.global = saved;
+  localStorage.setItem(MOCK_ALGO_KEY, JSON.stringify(file));
+  return saved;
 }
 
 export async function getEffectiveAlgorithmConfig(sourceId) {
   if (isTauri) return invoke('get_effective_algorithm_config', { sourceId });
-  return { config: await getAlgorithmConfig(sourceId), scope: sourceId ? 'source' : 'global' };
+  const config = await getAlgorithmConfig(sourceId);
+  return { config, scope: config.scope || 'global' };
+}
+
+export async function deleteAlgorithmConfig(sourceId) {
+  if (isTauri) return invoke('delete_algorithm_config', { sourceId });
+  const raw = localStorage.getItem(MOCK_ALGO_KEY);
+  const file = raw ? JSON.parse(raw) : { sources: {} };
+  if (file.sources) delete file.sources[sourceId];
+  localStorage.setItem(MOCK_ALGO_KEY, JSON.stringify(file));
+  return { ok: true };
 }
 
 export async function getRoiConfig(sourceId) {

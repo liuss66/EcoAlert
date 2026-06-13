@@ -12,7 +12,7 @@ import {
   createSource, updateSource, deleteSource,
   reportSceneState, getStateHistory,
   listAlarms, ackAlarm, resolveAlarm,
-  getAlgorithmConfig, updateAlgorithmConfig,
+  getAlgorithmConfig, updateAlgorithmConfig, deleteAlgorithmConfig,
   getRoiConfig, updateRoiConfig, testRoiConfig,
   listNotificationTargets, createNotificationTarget, updateNotificationTarget, deleteNotificationTarget,
   listNotificationHistory, testNotificationTarget, resendNotification,
@@ -698,9 +698,24 @@ const mountVideo = (src) => {
   try {
     if (src.type === 'hls') {
       if (Hls.isSupported()) {
-        const hls = new Hls({ enableWorker: true });
+        const hls = new Hls({
+          enableWorker: true,
+          liveSyncDurationCount: 3,
+          liveMaxLatencyDurationCount: 10,
+        });
         hls.loadSource(src.url);
         hls.attachMedia(video);
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            hls.startLoad();
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError();
+          } else {
+            hls.destroy();
+            onError();
+          }
+        });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src.url;
       } else {
@@ -722,6 +737,14 @@ const mountVideo = (src) => {
       return;
     }
   } catch (_) { /* swallow */ }
+  video.addEventListener('waiting', () => {
+    if (src.type !== 'hls' || Number.isNaN(video.duration)) return;
+    const seekableEnd = video.seekable.length ? video.seekable.end(video.seekable.length - 1) : null;
+    if (seekableEnd && seekableEnd - video.currentTime > 12) {
+      video.currentTime = Math.max(0, seekableEnd - 3);
+      video.play().catch(() => {});
+    }
+  });
   const ph = wrap.querySelector('.placeholder');
   if (ph && src.type !== 'webcam' && src.type !== 'rtsp') ph.remove();
   wrap.insertBefore(video, wrap.firstChild);
@@ -1070,20 +1093,43 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-vlm-limit').value = cfg.vlmHourlyLimit ?? 12;
   $('#algo-vlm-enabled').checked = !!cfg.vlmEnabled;
   $('#algo-vlm-skip-person').checked = cfg.vlmSkipWhenPerson !== false;
-  $('#algo-scope').textContent = cfg.scope === 'source' ? '通道配置' : '全局配置';
+  const selectedSourceId = getSelectedAlgorithmSourceId();
+  const selectedSource = selectedSourceId ? sources.find((s) => s.id === selectedSourceId) : null;
+  $('#algo-scope').textContent = selectedSource
+    ? (cfg.scope === 'source' ? `通道配置 · ${selectedSource.name}` : `继承全局 · ${selectedSource.name}`)
+    : '全局配置';
+  const resetBtn = $('#btn-reset-algorithm-source');
+  if (resetBtn) resetBtn.style.display = selectedSourceId ? '' : 'none';
   // 同步 chip 选中态 + 刷新 slider 数字显示
   syncChipsFromHidden();
   $('#algo-person-threshold')?.dispatchEvent(new Event('input'));
   $('#algo-light-threshold')?.dispatchEvent(new Event('input'));
 };
 
+const getSelectedAlgorithmSourceId = () => {
+  const value = $('#algo-source')?.value || '';
+  return value === '__global__' ? null : value;
+};
+
+const populateAlgorithmSourceOptions = () => {
+  const sel = $('#algo-source');
+  if (!sel) return;
+  const current = sel.value || '__global__';
+  sel.innerHTML = [
+    '<option value="__global__">全局默认配置</option>',
+    ...sources.map((source) => `<option value="${source.id}">${escapeHtml(source.name)} · ${escapeHtml(source.location || '')}</option>`),
+  ].join('');
+  sel.value = [...sel.options].some((option) => option.value === current) ? current : '__global__';
+};
+
 const algorithmPayloadFromForm = () => {
   const weekdays = parseWeekdays($('#algo-weekdays').value);
+  const sourceId = getSelectedAlgorithmSourceId();
   return {
     ...(algorithmConfig || {}),
     enabled: $('#algo-enabled').checked,
-    scope: 'global',
-    scopeId: null,
+    scope: sourceId ? 'source' : 'global',
+    scopeId: sourceId,
     activeWindows: [{
       weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
       start: normalizeTimeText($('#algo-start').value, '18:30'),
@@ -1107,7 +1153,9 @@ const algorithmPayloadFromForm = () => {
 
 const renderAlgorithmSettings = async () => {
   try {
-    algorithmConfig = await getAlgorithmConfig();
+    populateAlgorithmSourceOptions();
+    const sourceId = getSelectedAlgorithmSourceId();
+    algorithmConfig = await getAlgorithmConfig(sourceId);
     fillAlgorithmForm(algorithmConfig);
   } catch (err) {
     addLog('warn', `算法配置加载失败: ${err.message || err}`);
@@ -1123,16 +1171,30 @@ const renderSettings = async () => {
 $('#algorithm-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
+    const sourceId = getSelectedAlgorithmSourceId();
     const payload = algorithmPayloadFromForm();
-    algorithmConfig = await updateAlgorithmConfig(null, payload);
+    algorithmConfig = await updateAlgorithmConfig(sourceId, payload);
     fillAlgorithmForm(algorithmConfig);
-    addLog('info', '算法配置已保存');
+    addLog('info', sourceId ? '通道算法配置已保存' : '全局算法配置已保存');
   } catch (err) {
     alert(err.message || '保存算法配置失败');
   }
 });
 
 $('#btn-reload-algorithm').addEventListener('click', renderAlgorithmSettings);
+$('#algo-source')?.addEventListener('change', renderAlgorithmSettings);
+$('#btn-reset-algorithm-source')?.addEventListener('click', async () => {
+  const sourceId = getSelectedAlgorithmSourceId();
+  if (!sourceId) return;
+  try {
+    await deleteAlgorithmConfig(sourceId);
+    algorithmConfig = await getAlgorithmConfig(sourceId);
+    fillAlgorithmForm(algorithmConfig);
+    addLog('info', '已恢复为全局算法配置');
+  } catch (err) {
+    alert(err.message || '恢复全局继承失败');
+  }
+});
 
 /* -------------------- ROI 标定 -------------------- */
 const clamp01 = (value, fallback = 0) => {

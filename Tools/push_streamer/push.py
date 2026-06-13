@@ -7,9 +7,7 @@
 """
 import asyncio
 import logging
-import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -55,9 +53,13 @@ def spawn_ffmpeg(cam: CameraConfig, hls_dir: Path) -> Optional[subprocess.Popen]
     cmd = [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "warning",
+        "-loglevel", "error",
         "-re",  # 按原始帧率读取（限速）
-        "-stream_loop", "-1",  # 无限循环输入
+    ]
+    if cam.loop:
+        cmd.extend(["-stream_loop", "-1"])
+    cmd.extend([
+        "-fflags", "+genpts",
         "-i", str(cam.source.resolve()),
         "-vf", vf_chain,
         "-c:v", "libx264",
@@ -70,19 +72,20 @@ def spawn_ffmpeg(cam: CameraConfig, hls_dir: Path) -> Optional[subprocess.Popen]
         "-b:a", "128k",
         "-f", "hls",
         "-hls_time", str(cam.segment_time),
-        "-hls_list_size", "10",
-        "-hls_flags", "delete_segments+append_list",
+        "-hls_list_size", "30",
+        "-hls_flags", "delete_segments+independent_segments+program_date_time+temp_file",
+        "-hls_delete_threshold", "10",
         "-hls_segment_filename", str(out_sub / "seg_%05d.ts"),
         str(playlist),
-    ]
+    ])
 
     logger.debug("ffmpeg cmd: %s", " ".join(cmd))
 
     try:
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW
             if sys.platform == "win32"
             else 0,
@@ -234,6 +237,9 @@ def auto_scan_videos(video_dir: Path) -> List[CameraConfig]:
 
 
 def setup_logging() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",

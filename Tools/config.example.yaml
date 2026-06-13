@@ -15,50 +15,49 @@ defaults:
 # 摄像头列表
 # name    = HLS 端点名（与 App 端 URL 对应）
 # source  = 视频文件路径（相对于本配置文件目录）
-# location = 安装位置描述
+# location = 测试视频分组 / 文件描述
 # bitrate = 推流码率（kbps）
 # ──────────────────────────────────────────────────────────
 cameras:
-  # —— A 栋办公 ——
+  # —— 域控测试视频 ——
   - name: cam-1
     source: ../Video/4·24域控.mp4
-    location: "A栋 · 大堂入口"
+    location: "域控测试视频 / 4·24域控"
     bitrate: 1500
 
-  - name: cam-2
-    source: ../Video/4·24底盘.mp4
-    location: "A栋 · 前台接待区"
-    bitrate: 1500
-
-  - name: cam-3
-    source: ../Video/5·14硬件.mp4
-    location: "A栋 · 电梯厅"
-    bitrate: 1500
-
-  - name: cam-4
-    source: ../Video/5·15底盘.mp4
-    location: "A栋 · 茶水间"
-    bitrate: 1500
-
-  # —— B 栋车间 ——
   - name: cam-5
     source: ../Video/5·27域控.mp4
-    location: "B栋 · 生产线 1"
+    location: "域控测试视频 / 5·27域控"
     bitrate: 2000
 
   - name: cam-6
     source: ../Video/5·28域控.mp4
-    location: "B栋 · 原材料仓库"
+    location: "域控测试视频 / 5·28域控"
     bitrate: 1500
 
-  # —— 园区周界 ——
   - name: cam-7
     source: ../Video/5·7域控.mp4
-    location: "园区 · 东门"
+    location: "域控测试视频 / 5·7域控"
     bitrate: 1000
 
-  # —— 核心机房 ——
+  # —— 底盘测试视频 ——
+  - name: cam-2
+    source: ../Video/4·24底盘.mp4
+    location: "底盘测试视频 / 4·24底盘"
+    bitrate: 1500
+
+  - name: cam-4
+    source: ../Video/5·15底盘.mp4
+    location: "底盘测试视频 / 5·15底盘"
+    bitrate: 1500
+
   - name: cam-8
     source: ../Video/5·7底盘.mp4
-    location: "核心机房"
+    location: "底盘测试视频 / 5·7底盘"
     bitrate: 2000
+
+  # —— 硬件测试视频 ——
+  - name: cam-3
+    source: ../Video/5·14硬件.mp4
+    location: "硬件测试视频 / 5·14硬件"
+    bitrate: 1500

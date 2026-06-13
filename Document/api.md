@@ -41,12 +41,12 @@
 
 ```json
 {
-  "name": "A栋办公室",
-  "url": "http://127.0.0.1:8080/cam1/index.m3u8",
+  "name": "4·24 域控",
+  "url": "http://127.0.0.1:8080/cam-1/index.m3u8",
   "type": "hls",
-  "location": "A栋 2F",
+  "location": "Video/4·24域控.mp4",
   "enabled": true,
-  "groupId": "grp-default",
+  "groupId": "grp-domain",
   "order": 0
 }
 ```
@@ -67,7 +67,7 @@
 
 ```json
 {
-  "name": "A栋办公",
+  "name": "域控测试视频",
   "order": 1,
   "collapsed": false
 }
@@ -106,6 +106,7 @@
 | --- | --- | --- |
 | `get_algorithm_config` | `{ sourceId? }` | `AlgorithmConfig` |
 | `update_algorithm_config` | `{ sourceId?, payload }` | `AlgorithmConfig` |
+| `delete_algorithm_config` | `{ sourceId }` | `{ ok }` |
 | `get_effective_algorithm_config` | `{ sourceId }` | `{ config, scope }` |
 
 ### 3.2 ROI（配置读写已实现，测试待实现）
@@ -195,12 +196,12 @@
 ```json
 {
   "id": "src-xxx",
-  "name": "A栋办公室",
-  "url": "http://127.0.0.1:8080/cam1/index.m3u8",
+  "name": "4·24 域控",
+  "url": "http://127.0.0.1:8080/cam-1/index.m3u8",
   "type": "hls",
-  "location": "A栋 2F",
+  "location": "Video/4·24域控.mp4",
   "enabled": true,
-  "groupId": "grp-default",
+  "groupId": "grp-domain",
   "order": 0,
   "createdAt": 1781270400000
 }
@@ -367,8 +368,8 @@ system < global < group < source
 {
   "event": "alarm_triggered",
   "source_id": "src-xxx",
-  "source_name": "A栋办公室",
-  "location": "A栋 2F",
+  "source_name": "4·24 域控",
+  "location": "Video/4·24域控.mp4",
   "person": false,
   "light": true,
   "alarm": true,

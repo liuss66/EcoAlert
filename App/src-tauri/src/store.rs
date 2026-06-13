@@ -675,6 +675,203 @@ pub fn backfill_groups(data: &mut DataFile) {
     }
 }
 
+/// 首次运行默认数据：与 Tools/push_streamer 的 cam-1 ~ cam-8 HLS 端点保持一致。
+pub fn seed_local_hls_sources_if_empty(data: &mut DataFile) {
+    if !data.sources.is_empty() {
+        return;
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let group_defs = [
+        ("grp-domain", "域控测试视频", 0),
+        ("grp-chassis", "底盘测试视频", 1),
+        ("grp-hardware", "硬件测试视频", 2),
+    ];
+    for (id, name, order) in group_defs {
+        if !data.groups.iter().any(|group| group.id == id) {
+            data.groups.push(SourceGroup {
+                id: id.into(),
+                name: name.into(),
+                order,
+                collapsed: false,
+                created_at: now,
+            });
+        }
+    }
+
+    let source_defs = [
+        (
+            "cam-domain-0424",
+            "4·24 域控",
+            1,
+            "Video/4·24域控.mp4",
+            true,
+            "grp-domain",
+            0,
+        ),
+        (
+            "cam-domain-0527",
+            "5·27 域控",
+            5,
+            "Video/5·27域控.mp4",
+            true,
+            "grp-domain",
+            1,
+        ),
+        (
+            "cam-domain-0528",
+            "5·28 域控",
+            6,
+            "Video/5·28域控.mp4",
+            true,
+            "grp-domain",
+            2,
+        ),
+        (
+            "cam-domain-0507",
+            "5·7 域控",
+            7,
+            "Video/5·7域控.mp4",
+            true,
+            "grp-domain",
+            3,
+        ),
+        (
+            "cam-chassis-0424",
+            "4·24 底盘",
+            2,
+            "Video/4·24底盘.mp4",
+            true,
+            "grp-chassis",
+            0,
+        ),
+        (
+            "cam-chassis-0515",
+            "5·15 底盘",
+            4,
+            "Video/5·15底盘.mp4",
+            true,
+            "grp-chassis",
+            1,
+        ),
+        (
+            "cam-chassis-0507",
+            "5·7 底盘",
+            8,
+            "Video/5·7底盘.mp4",
+            true,
+            "grp-chassis",
+            2,
+        ),
+        (
+            "cam-hardware-0514",
+            "5·14 硬件",
+            3,
+            "Video/5·14硬件.mp4",
+            true,
+            "grp-hardware",
+            0,
+        ),
+    ];
+    data.sources = source_defs
+        .into_iter()
+        .map(
+            |(id, name, cam_no, location, enabled, group_id, order)| VideoSource {
+                id: id.into(),
+                name: name.into(),
+                url: format!("http://127.0.0.1:8080/cam-{cam_no}/index.m3u8"),
+                source_type: "hls".into(),
+                location: location.into(),
+                enabled,
+                group_id: Some(group_id.into()),
+                order,
+                created_at: now,
+            },
+        )
+        .collect();
+}
+
+/// 兼容迁移：只修正旧版本内置 HLS 演示源，不改用户手动新增的视频源。
+pub fn migrate_local_hls_demo_names(data: &mut DataFile) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let group_defs = [
+        ("grp-domain", "域控测试视频", 0),
+        ("grp-chassis", "底盘测试视频", 1),
+        ("grp-hardware", "硬件测试视频", 2),
+    ];
+    for (id, name, order) in group_defs {
+        if let Some(group) = data.groups.iter_mut().find(|group| group.id == id) {
+            group.name = name.into();
+            group.order = order;
+        } else {
+            data.groups.push(SourceGroup {
+                id: id.into(),
+                name: name.into(),
+                order,
+                collapsed: false,
+                created_at: now,
+            });
+        }
+    }
+
+    let mappings = [
+        ("cam-a1", "4·24 域控", "Video/4·24域控.mp4", "grp-domain", 0),
+        ("cam-b1", "5·27 域控", "Video/5·27域控.mp4", "grp-domain", 1),
+        ("cam-b3", "5·28 域控", "Video/5·28域控.mp4", "grp-domain", 2),
+        ("cam-c1", "5·7 域控", "Video/5·7域控.mp4", "grp-domain", 3),
+        (
+            "cam-a2",
+            "4·24 底盘",
+            "Video/4·24底盘.mp4",
+            "grp-chassis",
+            0,
+        ),
+        (
+            "cam-a4",
+            "5·15 底盘",
+            "Video/5·15底盘.mp4",
+            "grp-chassis",
+            1,
+        ),
+        ("cam-d1", "5·7 底盘", "Video/5·7底盘.mp4", "grp-chassis", 2),
+        (
+            "cam-a3",
+            "5·14 硬件",
+            "Video/5·14硬件.mp4",
+            "grp-hardware",
+            0,
+        ),
+    ];
+    for (id, name, location, group_id, order) in mappings {
+        if let Some(source) = data
+            .sources
+            .iter_mut()
+            .find(|source| source.id == id && source.url.starts_with("http://127.0.0.1:8080/cam-"))
+        {
+            source.name = name.into();
+            source.location = location.into();
+            source.group_id = Some(group_id.into());
+            source.order = order;
+            source.enabled = true;
+        }
+    }
+
+    let old_demo_ids = ["cam-b2", "cam-c2", "cam-c3", "cam-d2"];
+    data.sources.retain(|source| {
+        !(old_demo_ids.contains(&source.id.as_str())
+            && source.url.starts_with("http://127.0.0.1:8080/cam-"))
+    });
+
+    let old_demo_group_ids = ["grp-a", "grp-b", "grp-c"];
+    data.groups.retain(|group| {
+        !old_demo_group_ids.contains(&group.id.as_str())
+            || data
+                .sources
+                .iter()
+                .any(|source| source.group_id.as_deref() == Some(group.id.as_str()))
+    });
+}
+
 /// 把 records 切成按 source_id 的 map（前端用）
 pub fn records_by_source<'a, I>(records: I) -> HashMap<String, Vec<StateRecord>>
 where

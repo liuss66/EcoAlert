@@ -1,6 +1,6 @@
 // 暴露给前端的 Tauri commands
 use crate::pipeline::{
-    decoder::DecodedFrame, detector::Detector, notifier, scheduler, PipelineConfig,
+    decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, PipelineConfig,
 };
 use crate::state::{log_event, AppState};
 use crate::store::{
@@ -573,6 +573,24 @@ pub fn update_algorithm_config(
 }
 
 #[tauri::command]
+pub fn delete_algorithm_config(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    source_id: String,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    {
+        let mut cfg = state.algorithm_config.lock();
+        cfg.sources.remove(&source_id);
+    }
+    state
+        .persist_algorithm_config()
+        .map_err(|e| e.to_string())?;
+    log_event(&app, "info", "通道算法配置已恢复为全局继承");
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
 pub fn get_roi_config(state: State<Arc<AppState>>, source_id: String) -> Result<RoiConfig, String> {
     require_login(&state)?;
     let cfg = state.roi_config.lock();
@@ -609,14 +627,13 @@ pub fn test_roi_config(
     payload: Option<RoiConfig>,
 ) -> Result<serde_json::Value, String> {
     require_login(&state)?;
-    if !state
+    let source = state
         .sources
         .lock()
         .iter()
-        .any(|source| source.id == source_id)
-    {
-        return Err("视频源不存在".into());
-    }
+        .find(|source| source.id == source_id)
+        .cloned()
+        .ok_or("视频源不存在")?;
     let roi_config = if let Some(mut payload) = payload {
         payload.source_id = source_id.clone();
         payload
@@ -627,7 +644,9 @@ pub fn test_roi_config(
             .cloned()
             .unwrap_or_else(|| RoiConfig::new(source_id.clone()))
     };
-    let frame = synthetic_roi_test_frame();
+    let frame =
+        extract_gray_frame_from_url(&source.url, 160, 90, std::time::Duration::from_secs(5))
+            .map_err(|err| format!("真实帧抽取失败: {err}"))?;
     let mut detector = Detector::new(PipelineConfig::default());
     let result = detector.analyze_scene(&frame, Some(&roi_config));
     Ok(serde_json::json!({
@@ -640,26 +659,6 @@ pub fn test_roi_config(
         "processMs": result.process_ms,
         "version": roi_config.version,
     }))
-}
-
-fn synthetic_roi_test_frame() -> DecodedFrame {
-    let width = 160u32;
-    let height = 90u32;
-    let mut data = vec![28u8; (width * height) as usize];
-    for y in 24..66 {
-        for x in 48..112 {
-            let idx = y * width as usize + x;
-            if let Some(pixel) = data.get_mut(idx) {
-                *pixel = 230;
-            }
-        }
-    }
-    DecodedFrame {
-        width,
-        height,
-        pts_ms: chrono::Utc::now().timestamp_millis(),
-        data,
-    }
 }
 
 #[tauri::command]

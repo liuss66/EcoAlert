@@ -1,13 +1,14 @@
 // 应用状态：登录态、视频源、分组、状态推送、算法接入点
 use crate::auth::AuthConfig;
 use crate::pipeline::{
-    decoder::DecodedFrame, detector::Detector, notifier, scheduler, PipelineConfig,
+    decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, PipelineConfig,
 };
 use crate::store::{
-    backfill_groups, load, load_history, load_json, save, save_history, save_json, AlarmRecord,
-    AlarmRecordFile, AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, HistoryFile,
-    NotificationConfigFile, NotificationHistoryFile, NotificationRecord, RoiConfigFile, SceneState,
-    SecurityConfig, SourceGroup, StateRecord, VideoSource,
+    backfill_groups, load, load_history, load_json, migrate_local_hls_demo_names, save,
+    save_history, save_json, seed_local_hls_sources_if_empty, AlarmRecord, AlarmRecordFile,
+    AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, HistoryFile, NotificationConfigFile,
+    NotificationHistoryFile, NotificationRecord, RoiConfigFile, SceneState, SecurityConfig,
+    SourceGroup, StateRecord, VideoSource,
 };
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -76,6 +77,10 @@ impl AppState {
 
         // 加载数据
         let mut data = load(&data_file);
+        // 首次运行预置本地 HLS 测试源，匹配 Tools/push_streamer 输出。
+        seed_local_hls_sources_if_empty(&mut data);
+        // 修正旧版内置演示源命名，只影响本地 HLS 默认源。
+        migrate_local_hls_demo_names(&mut data);
         // 向前兼容：补全 group_id
         backfill_groups(&mut data);
         // 首次运行把补全后的结果落盘
@@ -399,14 +404,56 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 if !decision.should_run_simple {
                     continue;
                 }
-                let id_seed = s.id.bytes().fold(0u64, |acc, item| {
-                    acc.wrapping_mul(31).wrapping_add(item as u64)
-                });
                 let (counter, prev_p, prev_l) =
                     seeds.entry(s.id.clone()).or_insert((0, false, false));
                 *counter += 1;
-                let t = (now / 4000).max(0) as u64;
-                let frame = synthetic_gray_frame(&s.id, id_seed, t, *counter, now);
+                let url = s.url.clone();
+                let source_id = s.id.clone();
+                let source_enabled = s.enabled;
+                let frame = match tokio::task::spawn_blocking(move || {
+                    extract_gray_frame_from_url(&url, 160, 120, Duration::from_secs(5))
+                })
+                .await
+                {
+                    Ok(Ok(frame)) => frame,
+                    Ok(Err(err)) => {
+                        let msg = format!("真实帧抽取失败: {err}");
+                        {
+                            let mut runtime = state.runtime_status.lock();
+                            let entry = runtime.entry(source_id.clone()).or_insert_with(|| {
+                                ChannelRuntimeStatus::new(source_id.clone(), source_enabled, now)
+                            });
+                            entry.algorithm_status = "error".into();
+                            entry.last_error = Some(msg.clone());
+                            entry.ts = now;
+                        }
+                        let _ = app.emit(
+                            "ecoalert://algorithm_schedule",
+                            serde_json::json!({
+                                "source_id": source_id,
+                                "action": "frame_error",
+                                "reason": msg,
+                                "latency_ms": null,
+                                "ts": now,
+                            }),
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        let msg = format!("抽帧任务异常: {err}");
+                        {
+                            let mut runtime = state.runtime_status.lock();
+                            let entry = runtime.entry(source_id.clone()).or_insert_with(|| {
+                                ChannelRuntimeStatus::new(source_id.clone(), source_enabled, now)
+                            });
+                            entry.algorithm_status = "error".into();
+                            entry.last_error = Some(msg.clone());
+                            entry.ts = now;
+                        }
+                        log::warn!("{msg}");
+                        continue;
+                    }
+                };
                 let roi_config = state.roi_config.lock().by_source.get(&s.id).cloned();
                 let detector = detectors
                     .entry(s.id.clone())
@@ -524,55 +571,6 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             }
         }
     });
-}
-
-fn synthetic_gray_frame(
-    source_id: &str,
-    seed: u64,
-    tick: u64,
-    counter: u64,
-    pts_ms: i64,
-) -> DecodedFrame {
-    let width = 160u32;
-    let height = 120u32;
-    let light_on = seed.wrapping_add(tick.wrapping_mul(3)) % 7 < 3;
-    let motion_on = seed.wrapping_add(tick.wrapping_mul(5)) % 5 < 2;
-    let base = if light_on { 205u8 } else { 35u8 };
-    let mut data = vec![base; (width * height) as usize];
-
-    // 给每路源增加稳定但不同的局部亮区，便于 ROI 算法在无配置时也有自然变化。
-    let band = (seed as usize % 32) + 16;
-    for y in 20..80 {
-        for x in band..(band + 28).min(width as usize) {
-            let idx = y * width as usize + x;
-            if let Some(pixel) = data.get_mut(idx) {
-                *pixel = pixel.saturating_add(if light_on { 35 } else { 8 });
-            }
-        }
-    }
-
-    // 运动块会在帧间移动，Detector 的低分辨率帧差据此产生 person=true。
-    if motion_on {
-        let max_x = width as usize - 24;
-        let max_y = height as usize - 24;
-        let x0 = (seed as usize + counter as usize * 11 + source_id.len()) % max_x;
-        let y0 = (seed as usize / 3 + counter as usize * 7) % max_y;
-        for y in y0..(y0 + 24) {
-            for x in x0..(x0 + 24) {
-                let idx = y * width as usize + x;
-                if let Some(pixel) = data.get_mut(idx) {
-                    *pixel = if light_on { 20 } else { 235 };
-                }
-            }
-        }
-    }
-
-    DecodedFrame {
-        width,
-        height,
-        pts_ms,
-        data,
-    }
 }
 
 /// 日志事件：emit + 写 stdout

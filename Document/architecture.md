@@ -23,8 +23,9 @@ EcoAlert 是本地桌面视频监控应用，核心目标是：
 ```mermaid
 flowchart LR
     Video["Video/*.mp4 测试视频"] --> WebUI["webui/src/main.js"]
-    Video --> Tools["Tools/push_streamer（占位）"]
-    Tools -.目标: HLS / RTMP.-> Stream["App/src-tauri/src/stream"]
+    Video --> Tools["Tools/push_streamer"]
+    Tools -- HLS --> WebUI
+    Tools -.后续接入.-> Stream["App/src-tauri/src/stream"]
     Camera["摄像头 / RTSP / HLS / MP4"] --> Stream
     Stream --> Scheduler["pipeline/scheduler"]
     Scheduler --> Decoder["pipeline/decoder"]
@@ -55,7 +56,7 @@ flowchart LR
 | 视频输入 | `App/src-tauri/src/stream/` | HLS / RTMP 接入骨架 | 部分占位 |
 | 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 待实现 |
 | 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、分析、告警 | 骨架完成，真实算法待接 |
-| 推流工具 | `Tools/push_streamer/` | 后续用本地视频模拟实时源 | 当前仅 CLI 占位 |
+| 推流工具 | `Tools/push_streamer/` | 用本地视频模拟实时 HLS 源，供 App 页面联调 | 已实现 ffmpeg + HLS |
 | 文档 | `Document/` | 需求、架构、接口、部署、ADR、变更日志 | 本文档集 |
 
 ### 3.1 目录设计原则
@@ -67,7 +68,7 @@ flowchart LR
 | `App/` | 唯一产品代码目录，包含前端、Tauri 后端和桌面配置 |
 | `Document/` | 集中放产品和工程设计文档，避免说明散落到代码目录 |
 | `Video/` | 测试视频平铺存放，方便开发时复制路径 |
-| `Tools/` | 放开发辅助工具；当前推流器未完成，因此只保留占位 CLI 和配置 |
+| `Tools/` | 放开发辅助工具；当前包含本地 HLS 推流器和联调配置 |
 
 不再维护 `Video/samples/long/benchmark` 这类多级目录；测试视频数量不大时，根目录平铺比分类目录更容易使用。测试目录、图片目录、工具子模块等只有在真实文件出现时再创建。
 

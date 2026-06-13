@@ -44,6 +44,7 @@ pub fn run() {
             commands::get_algorithm_config,
             commands::get_effective_algorithm_config,
             commands::update_algorithm_config,
+            commands::delete_algorithm_config,
             commands::get_roi_config,
             commands::update_roi_config,
             commands::test_roi_config,
