@@ -815,9 +815,7 @@ pub fn create_notification_target(
     payload: NotificationTargetPayload,
 ) -> Result<NotificationTarget, String> {
     require_login(&state)?;
-    if payload.name.trim().is_empty() || payload.url.trim().is_empty() {
-        return Err("通知名称和 URL 不能为空".into());
-    }
+    validate_notification_payload(&payload)?;
     let target = NotificationTarget::new(payload);
     {
         let mut cfg = state.notification_config.lock();
@@ -838,6 +836,7 @@ pub fn update_notification_target(
     payload: NotificationTargetPayload,
 ) -> Result<NotificationTarget, String> {
     require_login(&state)?;
+    validate_notification_payload(&payload)?;
     let updated = {
         let mut cfg = state.notification_config.lock();
         let idx = cfg
@@ -857,6 +856,27 @@ pub fn update_notification_target(
         .map_err(|e| e.to_string())?;
     log_event(&app, "info", format!("更新通知目标: {}", updated.name));
     Ok(updated)
+}
+
+fn validate_notification_payload(payload: &NotificationTargetPayload) -> Result<(), String> {
+    if payload.name.trim().is_empty() {
+        return Err("通知名称不能为空".into());
+    }
+    let is_api_mode = payload.channel_type != "webhook" && !payload.app_id.trim().is_empty();
+    if is_api_mode {
+        if payload.app_secret.trim().is_empty() {
+            return Err("API 模式下 App Secret 不能为空".into());
+        }
+        if payload.channel_type != "qqbot" && payload.chat_id.trim().is_empty() {
+            return Err("API 模式下接收目标不能为空".into());
+        }
+        if payload.channel_type == "wechat_work" && payload.agent_id.trim().is_empty() {
+            return Err("企业微信 API 模式下 Agent ID 不能为空".into());
+        }
+    } else if payload.url.trim().is_empty() {
+        return Err("Webhook URL 不能为空".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]

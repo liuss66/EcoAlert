@@ -1,7 +1,7 @@
 # EcoAlert 架构设计
 
-> 版本：v1.2  
-> 日期：2026-06-13  
+> 版本：v1.3
+> 日期：2026-06-14
 > 对应需求：[`requirements.md`](./requirements.md)
 
 ---
@@ -55,7 +55,7 @@ flowchart LR
 | 数据模型 | `App/src-tauri/src/store.rs` | 视频源、分组、状态历史、JSON 持久化 | 已实现基础模型 |
 | 视频输入 | `App/src-tauri/src/stream/` / `pipeline/decoder.rs` | HLS / MP4 单帧抽样，后续扩展常驻解码 | 已接 ffmpeg 抽帧 |
 | 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 已接简单模型周期和跳过原因 |
-| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、分析、告警 | 已接真实 RGB 抽样 + 彩色 / 红外灯光检测；人员仍是运动代理，真实人形模型待接 |
+| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、VLM 兜底、告警 | 已接真实 RGB 抽样 + 彩色 / 红外灯光检测；办公室固定摄像头场景下以 ROI 运动检测代理人员检测，并用 VLM 做无人兜底确认 |
 | 推流工具 | `Tools/push_streamer/` | 用本地视频模拟实时 HLS 源，供 App 页面联调 | 已实现 ffmpeg + HLS |
 | 文档 | `Document/` | 需求、架构、接口、部署、ADR、变更日志 | 本文档集 |
 
@@ -100,7 +100,7 @@ sequenceDiagram
     State->>File: state_history.json
 ```
 
-当前 `ecoalert://scene_state` 每次检测完成都会推送，前端实时卡片展示 `person / light`、色彩分数、运动分数、耗时和帧序号。`state_history.json` 只记录 `person / light` 变化，避免稳定画面持续写盘。
+当前 `ecoalert://scene_state` 每次检测完成都会推送，前端实时卡片展示常规模型人员判断、VLM 最近一次人员判断、灯光状态、色彩分数、运动分数、耗时和帧序号。`state_history.json` 只记录 `person / light` 变化，避免稳定画面持续写盘；开发者模式下额外写入 `detection_history.json` 供曲线诊断。
 其中 `light` 是最终开关状态，事件 payload 同时给出 `light_state=on/off`；`color_score` 是彩色 / 红外黑白判定依据，不等同于“关灯概率”。
 
 ### 4.2 目标算法路径
@@ -137,16 +137,18 @@ sequenceDiagram
 | 层级 | 频率 | 作用 | 输出 |
 | --- | --- | --- | --- |
 | 彩色 / 红外灯光规则 | 5-15 秒 | 判断灯亮 / 灯灭 | `light`, `light_confidence`, `color_score` |
-| 轻量人形检测 | 5-15 秒 | 判断是否有人 | `person`, `person_confidence` |
-| 动态目标识别 | 5-15 秒 | 变化触发器，不直接判断有人 | `motion`, `confidence` |
-| VLM 复核 | 2-10 分钟或按条件触发 | 修补简单模型漏检 | `person`, `light`, `reason` |
+| ROI 运动检测 | 5-15 秒 | 办公室固定摄像头下代理人员检测 | `simple_person`, `simple_person_confidence`, `motion_score` |
+| VLM 复核 | 条件触发 | 常规模型 5 分钟无人才做兜底确认 | `vlm_person`, `vlm_person_confidence`, `vlm_status` |
 | 融合 / 状态机 | 每次状态变化 | 报警生命周期、冷却、恢复 | `AlarmRecord` |
 
 关键规则：
 
-- 简单模型识别到有人时，不调用 VLM。
+- 一帧常规模型检测到有人，即将人员存在状态保持 5 分钟；保持期内不报警。
+- 常规模型连续 5 分钟未检测到人后，触发 VLM 兜底确认。
+- VLM 检测到人后同样保持 5 分钟；5 分钟后若常规模型仍无人，再次触发 VLM。
+- VLM 连续两次确认无人，且灯亮，才进入报警触发条件。
 - 灯光规则优先使用 ROI 内亮度加权色度分数，默认开灯阈值 `0.055`、关灯阈值 `0.025`；暗像素降权以降低红外近黑区域和压缩彩噪干扰，无 RGB 数据时才使用亮度兜底阈值。
-- VLM 只在无人 + 亮灯且需要复核时调用。
+- 运动检测尊重人员 ROI，ROI 外运动不会计入人员判断；小面积紧凑闪烁会被过滤。
 - 算法启用时段外不产生新报警。
 - 视频离线不能被解释为无人 + 亮灯。
 
@@ -189,14 +191,17 @@ system default < global < group < source
 ```mermaid
 stateDiagram-v2
     [*] --> normal
-    normal --> suspected: 无人 + 亮灯达到疑似阈值
-    suspected --> normal: 复核正常 / 灯灭 / 有人
-    suspected --> alarm_active: 持续达到 alarm_hold_sec
-    alarm_active --> acknowledged: 管理员确认
+normal --> vlm_checking: 常规模型5分钟无人 + 亮灯
+vlm_checking --> normal: VLM检测到人 / 灯灭
+vlm_checking --> suspected: VLM连续两次无人，进入报警倒计时
+suspected --> alarm_active: 倒计时达到 alarm_hold_sec
+alarm_active --> acknowledged: 管理员确认
     alarm_active --> resolved: 达到恢复条件
     acknowledged --> resolved: 达到恢复条件
     resolved --> normal: 归档
 ```
+
+实时卡片报警图标通过两层进度环展示确认过程：外层粉色表示 VLM 无人确认进度（0/2、1/2、2/2），内层红色表示 VLM 两次无人后的报警倒计时；进入正式报警后图标闪烁。
 
 ### 5.5 通知发送
 
@@ -206,6 +211,8 @@ stateDiagram-v2
 - `resolved` 时按配置发送 `alarm_resolved`。
 - 通知失败不影响本地报警、历史和 UI。
 - 同一通道同一报警遵守冷却时间。
+- 支持通用 Webhook、飞书、企业微信、QQ；飞书 / 企业微信 / QQ 可走平台 API 凭证模式，也可走机器人 Webhook 简单模式。
+- QQ 普通聊天机器人配置只需要 `App ID / Client Secret`；只有启用主动群消息推送时才需要群 `group_openid`。企业微信 API 模式需要 `CorpID / Secret / AgentID / touser`；飞书 API 模式优先使用 `tenant_access_token` 发送群消息。
 - 发送结果落入 `notification_history.json`。
 
 ---
@@ -217,6 +224,7 @@ stateDiagram-v2
 | `sources.json` | 视频源、分组 |
 | `auth.json` | 管理员密码哈希 |
 | `state_history.json` | 算法状态变化历史 |
+| `detection_history.json` | 开发者模式下的逐帧检测采样，用于曲线诊断 |
 | `algorithm_config.json` | 算法时段、周期、阈值、VLM 策略 |
 | `roi_config.json` | ROI、阈值、标定样本 |
 | `alarm_records.json` | 报警生命周期记录 |

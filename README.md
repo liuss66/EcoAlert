@@ -11,6 +11,7 @@
 | 目录 | 用途 |
 | --- | --- |
 | [`App/`](./App/) | 产品代码：Tauri 2 桌面端、Vite 前端、Rust 后端 |
+| [`Algo/`](./Algo/) | 算法调试代码；当前包含 MATLAB 版灯光 / 人员运动检测 |
 | [`Document/`](./Document/) | 产品需求、架构、接口、部署和 ADR |
 | [`Video/`](./Video/) | 本地测试视频，全部平铺在根目录 |
 | [`Tools/`](./Tools/) | 开发辅助脚本；当前包含 ffmpeg HLS 推流器 |
@@ -34,7 +35,7 @@ Video/*.mp4 ──► Tools/push_streamer（ffmpeg HLS 推流）
                   App/src-tauri/src/pipeline/decoder.rs  ← ffmpeg 单帧抽样
                             │
                             ▼
-                  App/src-tauri/src/pipeline/    ← ROI 灯光检测 / 报警状态机
+                  App/src-tauri/src/pipeline/    ← ROI 灯光检测 / ROI运动检测 / VLM兜底 / 报警状态机
                             │
                             ▼
                   App/webui                      ← UI 展示
@@ -62,6 +63,9 @@ python -m push_streamer.cli --config config.example.yaml
 - 浏览器预览只验证 UI、视频播放和 mock 数据，不运行 Rust 检测链路。
 - Tauri dev/release 才会运行 ffmpeg 抽帧、ROI 灯光检测、报警状态机和通知发送。
 - release 包播放本地 HLS 依赖 `tauri.conf.json` 中的本地 `127.0.0.1 / localhost` CSP 白名单，以及针对 WebView2 私网请求限制的 feature 配置。
-- 当前灯光检测可用于联调，优先使用“开灯彩色、关灯红外黑白”的亮度加权色度分数，并输出明确的开灯 / 关灯状态；人员存在仍是帧差运动代理，不是真实人形识别，实时卡片会显示开关状态、色彩分数、运动分数和耗时用于排查。
+- 当前灯光检测优先使用“开灯彩色、关灯红外黑白”的亮度加权色度分数，并输出明确的开灯 / 关灯状态。
+- 当前办公室固定摄像头场景下，人员检测使用 ROI 内帧间运动代理；一帧检测到人后保持 5 分钟。
+- 常规模型 5 分钟无人后触发 VLM 兜底；VLM 连续两次确认无人且灯亮才触发报警和通知。
+- 开发者模式提供检测历史曲线，实时卡片会分别显示常规模型人员结果、VLM 人员结果、灯光、报警进度、色彩分数、运动分数和耗时。
 
 详细文档看 [`Document/`](./Document/)。

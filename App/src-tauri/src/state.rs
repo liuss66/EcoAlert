@@ -746,9 +746,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let vlm_confirmed_no_person =
                     tracker.vlm_no_person_streak >= VLM_NO_PERSON_CONFIRMATIONS;
                 let raw_alarm = light && !person && vlm_confirmed_no_person;
-                let alarm_progress = if raw_alarm {
-                    1.0
-                } else if light && !person && decision.should_run_vlm {
+                let vlm_progress = if light && !person && decision.should_run_vlm {
                     (tracker.vlm_no_person_streak as f32 / VLM_NO_PERSON_CONFIRMATIONS as f32)
                         .clamp(0.0, 1.0)
                 } else {
@@ -760,9 +758,15 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     raw_alarm,
                     recover_condition,
                     now,
-                    0,
+                    decision.effective_config.alarm_hold_sec,
                     decision.effective_config.alarm_recover_sec,
                 );
+                let alarm_countdown_progress = alarm_timers
+                    .get(&s.id)
+                    .map(|timer| {
+                        timer.alarm_progress(now, decision.effective_config.alarm_hold_sec)
+                    })
+                    .unwrap_or(0.0);
                 let alarm_status = alarm_timers
                     .get(&s.id)
                     .map(|timer| {
@@ -809,7 +813,9 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "alarm": alarm_status == "alarm_active",
                     "alarm_record_active": alarm_timers.get(&s.id).map(|timer| timer.active).unwrap_or(false),
                     "alarm_status": alarm_status,
-                    "alarm_progress": alarm_progress,
+                    "alarm_progress": if raw_alarm { alarm_countdown_progress } else { vlm_progress },
+                    "vlm_progress": vlm_progress,
+                    "alarm_countdown_progress": alarm_countdown_progress,
                     "simple_person": simple_person,
                     "simple_person_confidence": simple_person_confidence,
                     "vlm_person": vlm_person,
@@ -1012,6 +1018,20 @@ impl AlarmTimer {
             self.recover_since = None;
         }
         None
+    }
+
+    fn alarm_progress(&self, now: i64, hold_sec: u32) -> f32 {
+        if self.active {
+            return 1.0;
+        }
+        let Some(since) = self.alarm_since else {
+            return 0.0;
+        };
+        let hold_ms = (hold_sec as i64).saturating_mul(1000);
+        if hold_ms <= 0 {
+            return 1.0;
+        }
+        (now.saturating_sub(since) as f32 / hold_ms as f32).clamp(0.0, 1.0)
     }
 }
 

@@ -81,6 +81,8 @@ function normalizeSceneState(payload) {
     vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
     vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
     alarmProgress: payload.alarmProgress ?? payload.alarm_progress ?? 0,
+    vlmProgress: payload.vlmProgress ?? payload.vlm_progress ?? 0,
+    alarmCountdownProgress: payload.alarmCountdownProgress ?? payload.alarm_countdown_progress ?? 0,
     source: payload.source ?? 'simple',
     modelLatencyMs: payload.modelLatencyMs ?? payload.model_latency_ms ?? null,
     frameSeq: payload.frameSeq ?? payload.frame_seq ?? 0,

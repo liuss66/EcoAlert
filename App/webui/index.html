@@ -667,9 +667,12 @@
           <div class="panel settings-notify" id="sec-notify">
             <div class="panel-header">
               <h3>通知配置</h3>
-              <button class="btn-ghost btn-refresh-notify" id="btn-refresh-notify" title="刷新列表"><span data-icon="refresh"></span>刷新</button>
+              <div class="panel-header-actions">
+                <button class="btn-primary btn-add-notify" id="btn-add-notify" type="button"><span data-icon="plus"></span>新增通知</button>
+                <button class="btn-ghost btn-refresh-notify" id="btn-refresh-notify" title="刷新列表"><span data-icon="refresh"></span>刷新</button>
+              </div>
             </div>
-            <form id="notify-form" class="settings-form">
+            <form id="notify-form" class="settings-form notify-form hidden">
               <input type="hidden" id="ntf-edit-id" />
               <div class="field-row">
                 <label class="field">
@@ -701,7 +704,7 @@
               <div id="ntf-webhook-url-section">
                 <label class="field full">
                   <span class="field-label">Webhook URL *</span>
-                  <input type="url" id="ntf-url" class="text-input" required maxlength="512" placeholder="https://example.com/webhook" />
+                  <input type="text" id="ntf-url" class="text-input" maxlength="512" placeholder="https://example.com/webhook" />
                   <span class="field-hint" id="ntf-url-hint">支持 mock://local 走本地测试通道</span>
                 </label>
               </div>
@@ -723,18 +726,15 @@
                     <input type="text" id="ntf-agent-id" class="text-input" maxlength="64" placeholder="企微应用的 AgentId" />
                   </label>
                 </div>
-                <div class="field-row">
+                <div class="field-row" id="ntf-chat-row">
                   <label class="field">
                     <span class="field-label" id="ntf-chatid-label">接收目标 *</span>
                     <input type="text" id="ntf-chat-id" class="text-input" maxlength="256" placeholder="" />
                     <span class="field-hint" id="ntf-chatid-hint"></span>
                   </label>
-                  <div class="field" id="ntf-oauth-section" style="display:none">
-                    <span class="field-label">&nbsp;</span>
-                    <button type="button" class="btn-ghost" id="btn-oauth-bind"><span data-icon="qr"></span>扫码绑定</button>
-                  </div>
                 </div>
-                <div class="form-actions" style="margin-top:8px">
+                <div class="notify-credential-actions">
+                  <button type="button" class="btn-ghost" id="btn-oauth-bind" style="display:none"><span data-icon="qr"></span>扫码绑定</button>
                   <button type="button" class="btn-ghost" id="btn-verify-credentials">验证凭证</button>
                   <span class="verify-result" id="verify-result"></span>
                 </div>
@@ -770,15 +770,19 @@
                 <label class="field full">
                   <span class="field-label">Body 模板</span>
                   <textarea id="ntf-body" class="text-input" rows="6" placeholder='留空则发送原始 JSON，或自定义模板'></textarea>
-                  <span class="field-hint">支持占位符：<code>{{event}}</code> <code>{{source_name}}</code> <code>{{location}}</code> <code>{{ts}}</code></span>
+                  <span class="field-hint">支持占位符：<code>{{event}}</code> <code>{{source_name}}</code> <code>{{location}}</code> <code>{{source_url}}</code> <code>{{person}}</code> <code>{{light}}</code> <code>{{ts}}</code></span>
                 </label>
+              </div>
+              <div class="notify-image-note">
+                图片通知需平台媒体上传能力：通用 Webhook 可在自定义服务侧按视频源抓图；飞书、企微、QQ 文本机器人默认发送文字报警。
               </div>
               <label class="check-row">
                 <input type="checkbox" id="ntf-enabled" checked />
                 <span class="check-text">启用该通知目标</span>
               </label>
-              <div class="form-actions">
+              <div class="form-actions notify-form-actions">
                 <button type="button" class="btn-ghost" id="btn-test-notify-form">发送测试</button>
+                <button type="button" class="btn-ghost" id="btn-cancel-notify-form">取消</button>
                 <button type="submit" class="btn-primary">保存通知目标</button>
               </div>
             </form>

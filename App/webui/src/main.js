@@ -764,13 +764,17 @@ function applyStateIcons() {
     }
     if (alarm) {
       const isAlarm = !!s.alarm;
-      const progress = Math.max(0, Math.min(1, Number(s.alarmProgress ?? 0)));
+      const vlmProgress = Math.max(0, Math.min(1, Number(s.vlmProgress ?? s.alarmProgress ?? 0)));
+      const countdownProgress = Math.max(0, Math.min(1, Number(s.alarmCountdownProgress ?? 0)));
       alarm.classList.toggle('is-active', isAlarm);
-      alarm.classList.toggle('has-progress', progress > 0 && !isAlarm);
-      alarm.style.setProperty('--alarm-progress', progress.toFixed(3));
+      alarm.classList.toggle('has-progress', (vlmProgress > 0 || countdownProgress > 0) && !isAlarm);
+      alarm.style.setProperty('--vlm-progress', vlmProgress.toFixed(3));
+      alarm.style.setProperty('--alarm-countdown-progress', countdownProgress.toFixed(3));
       alarm.title = isAlarm
         ? '报警：无人 + 亮灯'
-        : (progress > 0 ? `报警确认进度：${Math.round(progress * 100)}%` : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常'));
+        : (countdownProgress > 0
+          ? `报警倒计时：${Math.round(countdownProgress * 100)}%`
+          : (vlmProgress > 0 ? `VLM无人确认进度：${Math.round(vlmProgress * 100)}%` : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常')));
     }
     renderVlmIcon(el, id);
   });
@@ -837,6 +841,8 @@ function updateLiveState(payload) {
     alarm: !!payload.alarm,
     alarmStatus: payload.alarmStatus || payload.alarm_status || 'normal',
     alarmProgress: payload.alarmProgress ?? payload.alarm_progress ?? 0,
+    vlmProgress: payload.vlmProgress ?? payload.vlm_progress ?? 0,
+    alarmCountdownProgress: payload.alarmCountdownProgress ?? payload.alarm_countdown_progress ?? 0,
     ts: payload.ts || Date.now(),
     personConfidence: payload.personConfidence ?? 0,
     lightConfidence: payload.lightConfidence ?? 0,
@@ -1817,6 +1823,25 @@ const renderDeveloperSettings = async () => {
   }
 };
 
+const ensureDeveloperNotificationTarget = async () => {
+  try {
+    const targets = await listNotificationTargets();
+    const exists = (targets || []).some((target) => {
+      const name = target.name || '';
+      const url = target.url || '';
+      return name === DEFAULT_DEV_NOTIFY_TARGET.name || url === DEFAULT_DEV_NOTIFY_TARGET.url;
+    });
+    if (exists) return;
+    await createNotificationTarget(DEFAULT_DEV_NOTIFY_TARGET);
+    if (!$('#view-notification-settings')?.classList.contains('hidden')) {
+      await renderNotificationSettings();
+    }
+    addLog('info', '开发者模式已添加默认企业内部通知渠道');
+  } catch (err) {
+    addLog('warn', `默认通知渠道添加失败: ${err.message || err}`);
+  }
+};
+
 $('#developer-mode')?.addEventListener('change', async (e) => {
   try {
     const cfg = await getAlgorithmConfig(null);
@@ -1830,6 +1855,7 @@ $('#developer-mode')?.addEventListener('change', async (e) => {
     setDeveloperMode(!!(saved.developerMode ?? saved.developer_mode));
     e.target.checked = developerMode;
     $('#developer-ok').textContent = '开发者模式已保存';
+    if (developerMode) await ensureDeveloperNotificationTarget();
     renderLive();
     addLog('info', developerMode ? '开发者模式已开启' : '开发者模式已关闭');
   } catch (err) {
@@ -2266,6 +2292,69 @@ const CHANNEL_URL_PLACEHOLDERS = {
   qqbot: 'https://api.sgroup.qq.com/...',
 };
 
+const DEFAULT_NOTIFY_BODY_TEMPLATE = JSON.stringify({
+  title: '[EcoAlert] {{event}}',
+  video_source: '{{source_name}}',
+  area: '{{location}}',
+  source_url: '{{source_url}}',
+  alarm: '{{alarm}}',
+  person: '{{person}}',
+  light: '{{light}}',
+  time: '{{ts}}',
+}, null, 2);
+
+const CHANNEL_DEFAULT_BODY_TEMPLATES = {
+  webhook: DEFAULT_NOTIFY_BODY_TEMPLATE,
+  feishu: JSON.stringify({
+    msg_type: 'text',
+    content: {
+      text: '[EcoAlert] {{event}}\n视频源: {{source_name}}\n区域: {{location}}\n有人: {{person}}\n亮灯: {{light}}\n时间: {{ts}}',
+    },
+  }, null, 2),
+  wechat_work: JSON.stringify({
+    msgtype: 'text',
+    text: {
+      content: '[EcoAlert] {{event}}\n视频源: {{source_name}}\n区域: {{location}}\n有人: {{person}}\n亮灯: {{light}}\n时间: {{ts}}',
+    },
+  }, null, 2),
+  qqbot: JSON.stringify({
+    msg_type: 0,
+    content: '[EcoAlert] {{event}}\n视频源: {{source_name}}\n区域: {{location}}\n有人: {{person}}\n亮灯: {{light}}\n时间: {{ts}}',
+  }, null, 2),
+};
+
+const getDefaultNotifyBodyTemplate = (channelType) =>
+  CHANNEL_DEFAULT_BODY_TEMPLATES[channelType] || DEFAULT_NOTIFY_BODY_TEMPLATE;
+
+const isDefaultNotifyBodyTemplate = (value) =>
+  Object.values(CHANNEL_DEFAULT_BODY_TEMPLATES).includes(String(value || '').trim());
+
+const DEFAULT_DEV_NOTIFY_TARGET = {
+  name: '企业内部通知（开发调试）',
+  enabled: true,
+  channelType: 'webhook',
+  url: 'https://biz.hirain.com/synergy/notice/545B6B5FEF17',
+  method: 'POST',
+  headers: [
+    { name: 'Content-Type', value: 'application/json' },
+    { name: 'Cookie', value: 'JSESSIONID=1D6DEE38ECAC44223748CE0B062F8CC0' },
+  ],
+  bodyTemplate: JSON.stringify({
+    touser: 'ai_challenge',
+    msgtype: 'text',
+    agentcode: 'ai_challenge',
+    text: { content: '{{event}}：{{source_name}} / {{location}} / 有人={{person}} / 亮灯={{light}} / {{ts}}' },
+  }, null, 2),
+  eventTypes: ['alarm_triggered', 'alarm_resolved'],
+  cooldownSec: 1800,
+  timeoutSec: 10,
+  retryCount: 2,
+  appId: '',
+  appSecret: '',
+  agentId: '',
+  chatId: '',
+};
+
 // API 模式各字段的 label 和 placeholder
 const CHANNEL_API_CONFIG = {
   feishu: {
@@ -2275,7 +2364,7 @@ const CHANNEL_API_CONFIG = {
     secretPlaceholder: '飞书 App Secret',
     chatIdLabel: '接收群 Chat ID *',
     chatIdPlaceholder: 'oc_ 开头，可通过扫码绑定自动获取',
-    chatIdHint: '点右侧「扫码绑定」自动获取群列表',
+    chatIdHint: 'App 需有群消息权限；点右侧「扫码绑定」可获取机器人所在群 chat_id',
     showAgent: false,
     showOAuth: true,
   },
@@ -2284,9 +2373,9 @@ const CHANNEL_API_CONFIG = {
     appIdPlaceholder: '企业微信管理后台的 CorpID',
     secretLabel: 'Secret *',
     secretPlaceholder: '应用 Secret',
-    chatIdLabel: '接收人 / 部门 *',
-    chatIdPlaceholder: 'user1|user2 或 @all',
-    chatIdHint: '多人用 | 分隔，@all 表示全员',
+    chatIdLabel: '接收人 UserID *',
+    chatIdPlaceholder: '@all 或 user1|user2',
+    chatIdHint: '企业微信应用消息使用 touser；多人用 | 分隔，@all 表示全员',
     showAgent: true,
     showOAuth: false,
   },
@@ -2295,11 +2384,12 @@ const CHANNEL_API_CONFIG = {
     appIdPlaceholder: 'QQ 开放平台的 AppID',
     secretLabel: 'Client Secret *',
     secretPlaceholder: 'QQ Bot ClientSecret',
-    chatIdLabel: '群 OpenID *',
-    chatIdPlaceholder: '群机器人的 group_openid',
-    chatIdHint: '需手动填写',
+    chatIdLabel: '接收目标',
+    chatIdPlaceholder: '',
+    chatIdHint: '',
     showAgent: false,
     showOAuth: false,
+    showChatTarget: false,
   },
 };
 
@@ -2327,15 +2417,43 @@ const toggleNotifyChannelFields = () => {
   const apiFields = $('#ntf-api-fields');
   if (apiFields) apiFields.style.display = isApiMode ? '' : 'none';
 
-  // Webhook 专属字段（Method、Body 模板）
+  // 简单模式 / 通用 Webhook 字段（Method、Body 模板）
   const webhookFields = $('#ntf-webhook-fields');
-  if (webhookFields) webhookFields.style.display = isWebhookType ? '' : 'none';
+  if (webhookFields) webhookFields.style.display = isApiMode ? 'none' : '';
 
   // URL hint / placeholder
   const hint = $('#ntf-url-hint');
   if (hint) hint.textContent = CHANNEL_URL_HINTS[type] || CHANNEL_URL_HINTS.webhook;
   const urlInput = $('#ntf-url');
-  if (urlInput) urlInput.placeholder = CHANNEL_URL_PLACEHOLDERS[type] || CHANNEL_URL_PLACEHOLDERS.webhook;
+  if (urlInput) {
+    urlInput.placeholder = CHANNEL_URL_PLACEHOLDERS[type] || CHANNEL_URL_PLACEHOLDERS.webhook;
+    urlInput.required = !isApiMode;
+    urlInput.disabled = isApiMode;
+  }
+  const appIdInput = $('#ntf-app-id');
+  const secretInput = $('#ntf-app-secret');
+  const agentInput = $('#ntf-agent-id');
+  const chatInput = $('#ntf-chat-id');
+  if (appIdInput) {
+    appIdInput.required = isApiMode;
+    appIdInput.disabled = !isApiMode;
+  }
+  if (secretInput) {
+    secretInput.required = isApiMode;
+    secretInput.disabled = !isApiMode;
+  }
+  if (agentInput) {
+    agentInput.required = isApiMode && type === 'wechat_work';
+    agentInput.disabled = !isApiMode;
+  }
+  if (chatInput) {
+    chatInput.required = isApiMode && type !== 'qqbot';
+    chatInput.disabled = !isApiMode;
+  }
+  const bodyInput = $('#ntf-body');
+  if (bodyInput && !isApiMode && (!bodyInput.value.trim() || isDefaultNotifyBodyTemplate(bodyInput.value))) {
+    bodyInput.value = getDefaultNotifyBodyTemplate(type);
+  }
 
   // API 字段配置
   if (isApiMode) {
@@ -2351,15 +2469,20 @@ const toggleNotifyChannelFields = () => {
       if (secretInput) secretInput.placeholder = cfg.secretPlaceholder;
       const agentRow = $('#ntf-agent-row');
       if (agentRow) agentRow.style.display = cfg.showAgent ? '' : 'none';
+      const chatRow = $('#ntf-chat-row');
+      if (chatRow) chatRow.style.display = cfg.showChatTarget === false ? 'none' : '';
       const chatIdLabel = $('#ntf-chatid-label');
       if (chatIdLabel) chatIdLabel.textContent = cfg.chatIdLabel;
       const chatIdInput = $('#ntf-chat-id');
       if (chatIdInput) chatIdInput.placeholder = cfg.chatIdPlaceholder;
       const chatIdHint = $('#ntf-chatid-hint');
       if (chatIdHint) chatIdHint.textContent = cfg.chatIdHint;
-      const oauthSection = $('#ntf-oauth-section');
-      if (oauthSection) oauthSection.style.display = cfg.showOAuth ? '' : 'none';
+      const oauthButton = $('#btn-oauth-bind');
+      if (oauthButton) oauthButton.style.display = cfg.showOAuth ? '' : 'none';
     }
+  } else {
+    const oauthButton = $('#btn-oauth-bind');
+    if (oauthButton) oauthButton.style.display = 'none';
   }
 };
 
@@ -2375,9 +2498,11 @@ const notifyPayloadFromForm = () => {
     enabled: $('#ntf-enabled').checked,
     channelType,
     url: isApi ? '' : $('#ntf-url').value.trim(),
-    method: isWebhookType ? ($('#ntf-method').value || 'POST') : 'POST',
+    method: isApi ? 'POST' : ($('#ntf-method').value || 'POST'),
     headers: [{ name: 'Content-Type', value: 'application/json' }],
-    bodyTemplate: isWebhookType ? ($('#ntf-body').value.trim()) : '',
+    bodyTemplate: isApi || (channelType !== 'webhook' && isDefaultNotifyBodyTemplate($('#ntf-body').value))
+      ? ''
+      : ($('#ntf-body').value.trim() || getDefaultNotifyBodyTemplate(channelType)),
     timeoutSec: 10,
     retryCount: 2,
     eventTypes: eventType ? [eventType] : [],
@@ -2398,7 +2523,7 @@ const clearNotifyForm = () => {
   $('#ntf-method').value = 'POST';
   $('#ntf-event').value = 'alarm_triggered';
   $('#ntf-cooldown').value = '1800';
-  $('#ntf-body').value = '';
+  $('#ntf-body').value = getDefaultNotifyBodyTemplate('webhook');
   $('#ntf-enabled').checked = true;
   $('#ntf-app-id').value = '';
   $('#ntf-app-secret').value = '';
@@ -2410,7 +2535,24 @@ const clearNotifyForm = () => {
   toggleNotifyChannelFields();
 };
 
+const showNotifyForm = (mode = 'create') => {
+  const form = $('#notify-form');
+  if (form) form.classList.remove('hidden');
+  $('#btn-add-notify')?.classList.add('hidden');
+  const submitBtn = $('#notify-form button[type="submit"]');
+  if (submitBtn) submitBtn.textContent = mode === 'edit' ? '保存修改' : '保存通知目标';
+  setTimeout(() => $('#ntf-name')?.focus(), 0);
+};
+
+const hideNotifyForm = () => {
+  const form = $('#notify-form');
+  if (form) form.classList.add('hidden');
+  $('#btn-add-notify')?.classList.remove('hidden');
+  $('#verify-result').textContent = '';
+};
+
 const fillNotifyForm = (target) => {
+  showNotifyForm('edit');
   $('#ntf-edit-id').value = target.id || '';
   const channelType = target.channelType || target.channel_type || 'webhook';
   $('#ntf-channel').value = channelType;
@@ -2420,7 +2562,7 @@ const fillNotifyForm = (target) => {
   const evts = target.eventTypes || target.event_types || [];
   $('#ntf-event').value = evts.length === 1 ? evts[0] : '';
   $('#ntf-cooldown').value = target.cooldownSec || target.cooldown_sec || 1800;
-  $('#ntf-body').value = target.bodyTemplate || target.body_template || '';
+  $('#ntf-body').value = target.bodyTemplate || target.body_template || getDefaultNotifyBodyTemplate(channelType);
   $('#ntf-enabled').checked = target.enabled !== false;
   // API 凭证
   $('#ntf-app-id').value = target.appId || target.app_id || '';
@@ -2457,6 +2599,7 @@ const renderNotificationTargets = () => {
     const channelType = target.channelType || target.channel_type || 'webhook';
     const channelLabel = CHANNEL_LABELS[channelType] || channelType;
     const events = (target.eventTypes || []).length ? target.eventTypes.join(', ') : '全部';
+    const endpoint = target.url || target.chatId || target.chat_id || target.appId || target.app_id || '-';
     return `
       <tr>
         <td><span class="badge badge-channel">${escapeHtml(channelLabel)}</span></td>
@@ -2464,7 +2607,7 @@ const renderNotificationTargets = () => {
         <td>${escapeHtml(events)}</td>
         <td>${target.cooldownSec || target.cooldown_sec || 0}s</td>
         <td>${target.enabled ? '是' : '否'}</td>
-        <td title="${escapeHtml(target.url)}">${escapeHtml(target.url).slice(0, 48)}</td>
+        <td title="${escapeHtml(endpoint)}">${escapeHtml(endpoint).slice(0, 48)}</td>
         <td>
           <button class="btn-ghost" data-edit-ntf="${target.id}">编辑</button>
           <button class="btn-ghost" data-test-ntf="${target.id}">测试</button>
@@ -2476,7 +2619,10 @@ const renderNotificationTargets = () => {
   $$('[data-edit-ntf]', tbody).forEach((btn) => {
     btn.addEventListener('click', () => {
       const t = notificationTargets.find((x) => x.id === btn.dataset.editNtf);
-      if (t) fillNotifyForm(t);
+      if (t) {
+        fillNotifyForm(t);
+        $('#notify-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     });
   });
   $$('[data-test-ntf]', tbody).forEach((btn) => {
@@ -2518,7 +2664,7 @@ $('#notify-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
     const payload = notifyPayloadFromForm();
-    const isApi = !!(payload.appId && payload.appSecret);
+    const isApi = payload.channelType !== 'webhook' && getApiMode() === 'api';
     if (!payload.name) {
       alert('通知名称不能为空');
       return;
@@ -2527,8 +2673,16 @@ $('#notify-form').addEventListener('submit', async (e) => {
       alert('Webhook URL 不能为空（或切换到 API 凭证模式填写凭证）');
       return;
     }
-    if (isApi && !payload.chatId) {
+    if (isApi && (!payload.appId || !payload.appSecret)) {
+      alert('API 模式下 App ID 和 Secret 不能为空');
+      return;
+    }
+    if (isApi && payload.channelType !== 'qqbot' && !payload.chatId) {
       alert('API 模式下接收目标不能为空');
+      return;
+    }
+    if (isApi && payload.channelType === 'wechat_work' && !payload.agentId) {
+      alert('企业微信 API 模式下 Agent ID 不能为空');
       return;
     }
     const editId = $('#ntf-edit-id').value.trim();
@@ -2538,6 +2692,7 @@ $('#notify-form').addEventListener('submit', async (e) => {
       await createNotificationTarget(payload);
     }
     clearNotifyForm();
+    hideNotifyForm();
     await renderNotificationSettings();
     addLog('info', editId ? '通知目标已更新' : '通知目标已创建');
   } catch (err) {
@@ -2545,6 +2700,14 @@ $('#notify-form').addEventListener('submit', async (e) => {
   }
 });
 
+$('#btn-add-notify')?.addEventListener('click', () => {
+  clearNotifyForm();
+  showNotifyForm('create');
+});
+$('#btn-cancel-notify-form')?.addEventListener('click', () => {
+  clearNotifyForm();
+  hideNotifyForm();
+});
 $('#btn-refresh-notify').addEventListener('click', renderNotificationSettings);
 $('#btn-refresh-ntf-history')?.addEventListener('click', renderNotificationHistory);
 $('#ntf-channel').addEventListener('change', toggleNotifyChannelFields);
@@ -2553,6 +2716,7 @@ $('#ntf-channel').addEventListener('change', toggleNotifyChannelFields);
 $$('input[name="ntf-mode"]').forEach((radio) => {
   radio.addEventListener('change', toggleNotifyChannelFields);
 });
+toggleNotifyChannelFields();
 
 // 验证凭证
 $('#btn-verify-credentials')?.addEventListener('click', async () => {
@@ -2656,7 +2820,7 @@ $('#btn-cancel-oauth')?.addEventListener('click', closeOAuthModal);
 $('#btn-test-notify-form').addEventListener('click', async () => {
   try {
     const payload = notifyPayloadFromForm();
-    const isApi = !!(payload.appId && payload.appSecret);
+    const isApi = payload.channelType !== 'webhook' && getApiMode() === 'api';
     if (!payload.name) {
       alert('通知名称不能为空');
       return;
@@ -2665,8 +2829,16 @@ $('#btn-test-notify-form').addEventListener('click', async () => {
       alert('Webhook URL 不能为空（或切换到 API 凭证模式）');
       return;
     }
-    if (isApi && !payload.chatId) {
+    if (isApi && (!payload.appId || !payload.appSecret)) {
+      alert('API 模式下 App ID 和 Secret 不能为空');
+      return;
+    }
+    if (isApi && payload.channelType !== 'qqbot' && !payload.chatId) {
       alert('API 模式下接收目标不能为空');
+      return;
+    }
+    if (isApi && payload.channelType === 'wechat_work' && !payload.agentId) {
+      alert('企业微信 API 模式下 Agent ID 不能为空');
       return;
     }
     const record = await testNotificationTarget({ payload });

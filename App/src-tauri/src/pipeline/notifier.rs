@@ -70,8 +70,9 @@ pub async fn send_test(
     let payload = serde_json::json!({
         "event": "test",
         "source_id": null,
-        "source_name": "测试通道",
-        "location": "EcoAlert",
+        "source_name": "测试视频源",
+        "location": "测试区域",
+        "source_url": "",
         "person": false,
         "light": true,
         "alarm": true,
@@ -194,6 +195,7 @@ fn build_alarm_payload(state: &AppState, event: &str, alarm: &AlarmRecord) -> Va
         "source_id": alarm.source_id,
         "source_name": source.as_ref().map(|s| s.name.as_str()).unwrap_or(""),
         "location": source.as_ref().map(|s| s.location.as_str()).unwrap_or(""),
+        "source_url": source.as_ref().map(|s| s.url.as_str()).unwrap_or(""),
         "person": scene.as_ref().map(|s| s.person).unwrap_or(false),
         "light": scene.as_ref().map(|s| s.light).unwrap_or(false),
         "alarm": alarm.status == "alarm_active" || alarm.status == "acknowledged",
@@ -289,6 +291,9 @@ async fn send_platform_message(target: &mut NotificationTarget, body: &str) -> R
                 .map_err(|e| format!("企微 API 请求失败: {e}"))?
         }
         "qqbot" => {
+            if target.chat_id.trim().is_empty() {
+                return Ok(204);
+            }
             let url = format!(
                 "https://api.sgroup.qq.com/v2/groups/{}/messages",
                 target.chat_id
@@ -398,7 +403,7 @@ fn format_message(payload: &Value) -> String {
 
     let alarm_icon = if alarm { "🚨" } else { "✅" };
     format!(
-        "{icon} [EcoAlert] {event}\n通道: {source}\n位置: {location}\n有人: {person}\n亮灯: {light}\n时间: {time}",
+        "{icon} [EcoAlert] {event}\n视频源: {source}\n区域: {location}\n有人: {person}\n亮灯: {light}\n时间: {time}",
         icon = alarm_icon,
         event = event_label(event),
         source = source,

@@ -74,8 +74,8 @@ async fn fetch_feishu_token(app_id: &str, app_secret: &str) -> Result<(String, i
         ));
     }
     let token = body
-        .app_access_token
-        .or(body.tenant_access_token)
+        .tenant_access_token
+        .or(body.app_access_token)
         .or(body.access_token)
         .ok_or("飞书返回中无 access_token")?;
     let expires = body.expire.or(body.expires_in).unwrap_or(7200);
