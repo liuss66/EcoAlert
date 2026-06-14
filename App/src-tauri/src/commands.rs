@@ -5,9 +5,9 @@ use crate::pipeline::{
 };
 use crate::state::{log_event, AppState};
 use crate::store::{
-    records_by_source, AlarmRecord, AlgorithmConfig, ChannelRuntimeStatus, NotificationRecord,
-    NotificationTarget, NotificationTargetPayload, RoiConfig, SceneState, SecurityConfig,
-    SourceGroup, StateRecord, VideoSource, GLOBAL_ROI_SOURCE_ID,
+    records_by_source, AlarmRecord, AlgorithmConfig, ChannelRuntimeStatus, DetectionSampleRecord,
+    NotificationRecord, NotificationTarget, NotificationTargetPayload, RoiConfig, SceneState,
+    SecurityConfig, SourceGroup, StateRecord, VideoSource, GLOBAL_ROI_SOURCE_ID,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -345,6 +345,18 @@ pub fn report_scene_state(
     };
     let rec = StateRecord::from_change(&source_id, &scene);
     state.record_state_change(rec).map_err(|e| e.to_string())?;
+    state
+        .record_detection_sample(DetectionSampleRecord::from_scene(
+            &source_id,
+            &scene,
+            if !person && light {
+                "suspected"
+            } else {
+                "normal"
+            },
+            chrono::Utc::now().timestamp_millis(),
+        ))
+        .map_err(|e| e.to_string())?;
     let _ = app.emit(
         "ecoalert://scene_state",
         serde_json::json!({
@@ -356,6 +368,30 @@ pub fn report_scene_state(
         }),
     );
     Ok(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub fn list_detection_history(
+    state: State<Arc<AppState>>,
+    source_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let h = state.detection_history.lock();
+    let mut out: Vec<DetectionSampleRecord> = h
+        .records
+        .iter()
+        .rev()
+        .filter(|r| source_id.as_deref().map_or(true, |id| r.source_id == id))
+        .take(limit)
+        .cloned()
+        .collect();
+    out.reverse();
+    Ok(serde_json::json!({
+        "ok": true,
+        "records": out,
+    }))
 }
 
 /// 查询历史：每个源最近 N 条
@@ -616,18 +652,21 @@ pub async fn test_vlm_config(
     payload: AlgorithmConfig,
 ) -> Result<serde_json::Value, String> {
     require_login(&state)?;
-    let (reply, usage) = vlm::test_connection(&payload)
+    let result = vlm::test_connection(&payload)
         .await
         .map_err(|err| err.to_string())?;
-    let cost = usage
+    let cost = result
+        .usage
         .as_ref()
         .map(|usage| calculate_vlm_cost(usage, &payload))
         .unwrap_or(0.0);
     Ok(serde_json::json!({
         "ok": true,
-        "reply": reply,
-        "usage": usage,
+        "reply": result.reply,
+        "usage": result.usage,
         "cost": cost,
+        "requestUrl": result.request_url,
+        "requestBody": result.request_body,
     }))
 }
 

@@ -10,7 +10,7 @@ import {
   login, logout, checkAuth,
   listSources, listGroups, createGroup, updateGroup, deleteGroup, reorder,
   createSource, updateSource, deleteSource,
-  reportSceneState, getStateHistory,
+  reportSceneState, getStateHistory, listDetectionHistory,
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
   testVlmConfig,
@@ -19,7 +19,7 @@ import {
   listNotificationHistory, testNotificationTarget, resendNotification,
   changePassword, getDataDir,
   startOAuthBinding, checkOAuthStatus, verifyChannelCredentials,
-  onEvent, onStatus, onRuntimeStatus, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
+  onEvent, onStatus, onRuntimeStatus, onAlgorithmSchedule, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
   openDevtools, probeUrl,
 } from './api.js';
 
@@ -52,6 +52,7 @@ const ICONS = {
   alert: '<path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4M12 17h.01"/>',
   qr: '<rect width="6" height="6" x="3" y="3" rx="1"/><rect width="6" height="6" x="15" y="3" rx="1"/><rect width="6" height="6" x="3" y="15" rx="1"/><path d="M15 15h2v2h-2zM19 15h2M15 19h2M19 19h2v2h-2z"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
 };
 
 const icon = (name, extraClass = '') =>
@@ -189,13 +190,12 @@ function setupSettingsEnhancements() {
     const l = $(labelId);
     if (!s || !l || s.dataset.bound) return;
     s.dataset.bound = '1';
-    const fmt = (v) => (Math.round(Number(v) * 100) / 100).toFixed(2);
+    const fmt = (v) => Number(v).toFixed(3);
     const update = () => (l.textContent = fmt(s.value));
     s.addEventListener('input', update);
     update();
   };
   syncSlider('#algo-person-threshold', '#algo-person-threshold-val');
-  syncSlider('#algo-light-threshold', '#algo-light-threshold-val');
 
   setupRoiPreviewDrag();
 }
@@ -339,10 +339,13 @@ const VIEW_META = {
   'basic-settings': { title: '基础设置', sub: '账号安全、数据目录与调试开关' },
   'detection-settings': { title: '检测配置', sub: '算法调度、阈值和 ROI 标定' },
   'notification-settings': { title: '通知管理', sub: '通知渠道配置与发送历史' },
+  'detection-history': { title: '检测历史', sub: '按视频源查看灯光、人员、报警和算法参数曲线' },
   console: { title: '系统日志', sub: '服务端与客户端事件流' },
+  about: { title: '关于', sub: '项目信息与作者' },
 };
 const switchView = (name) => {
   if (!VIEW_META[name]) return;
+  if (name === 'detection-history' && !developerMode) return;
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   $$('.view').forEach((v) => v.classList.toggle('hidden', v.id !== `view-${name}`));
   $('#view-title').textContent = VIEW_META[name].title;
@@ -351,6 +354,7 @@ const switchView = (name) => {
   if (name === 'basic-settings') renderBasicSettings();
   if (name === 'detection-settings') renderDetectionSettings();
   if (name === 'notification-settings') renderNotificationSettings();
+  if (name === 'detection-history') renderDetectionHistory();
   if (name !== 'detection-settings') destroyRoiVideo();
 };
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
@@ -368,10 +372,15 @@ let developerMode = false;
 /** 实时状态：sourceId -> { person, light, alarm, confidence, brightness, motion, ts } */
 let sceneStates = new Map();
 let runtimeStatuses = new Map();
+let vlmStates = new Map();
 
 const setDeveloperMode = (enabled) => {
   developerMode = !!enabled;
   document.body?.classList.toggle('developer-mode', developerMode);
+  $$('.developer-only').forEach((el) => el.classList.toggle('hidden', !developerMode));
+  if (!developerMode && !$('#view-detection-history')?.classList.contains('hidden')) {
+    switchView('live');
+  }
 };
 
 const loadSources = async () => {
@@ -653,6 +662,85 @@ async function addNewGroup() {
 }
 
 /* -------------------- 状态图标（人/灯/报警）实时更新 -------------------- */
+const isVlmEnabledForSource = (sourceId) => {
+  const rt = runtimeStatuses.get(sourceId);
+  return !!(rt?.vlmEnabled ?? rt?.vlm_enabled);
+};
+
+const vlmStateFromScene = (scene) => {
+  const vlmStatus = scene?.vlmStatus || scene?.vlm_status;
+  if (vlmStatus && vlmStatus !== 'none') {
+    if (vlmStatus === 'error') {
+      return {
+        status: 'error',
+        label: '失败',
+        confidence: null,
+        latencyMs: scene.modelLatencyMs ?? scene.processMs ?? null,
+        ts: scene.ts || Date.now(),
+        reason: scene.reason || 'vlm_error',
+      };
+    }
+    const hasPerson = vlmStatus === 'person' || scene.vlmPerson === true;
+    return {
+      status: hasPerson ? 'person' : 'no_person',
+      label: hasPerson ? '有人' : '无人',
+      confidence: scene.vlmPersonConfidence ?? null,
+      latencyMs: scene.modelLatencyMs ?? scene.processMs ?? null,
+      ts: scene.ts || Date.now(),
+      reason: scene.reason || vlmStatus,
+    };
+  }
+  const reason = String(scene?.reason || '');
+  if (reason === 'vlm_person_detected') {
+    return {
+      status: 'person',
+      label: '有人',
+      confidence: Number(scene.personConfidence ?? scene.confidence ?? 0),
+      latencyMs: scene.modelLatencyMs ?? scene.processMs ?? null,
+      ts: scene.ts || Date.now(),
+      reason,
+    };
+  }
+  if (reason.startsWith('vlm_no_person')) {
+    return {
+      status: 'no_person',
+      label: '无人',
+      confidence: 1 - Number(scene.personConfidence ?? 0),
+      latencyMs: scene.modelLatencyMs ?? scene.processMs ?? null,
+      ts: scene.ts || Date.now(),
+      reason,
+    };
+  }
+  return null;
+};
+
+const renderVlmIcon = (el, sourceId) => {
+  const vlm = el.querySelector('.vlm');
+  if (!vlm) return;
+  const enabled = isVlmEnabledForSource(sourceId);
+  vlm.classList.toggle('hidden', !enabled);
+  if (!enabled) return;
+  const state = vlmStates.get(sourceId);
+  vlm.classList.remove('is-active', 'is-negative', 'is-error', 'is-pending');
+  if (!state) {
+    vlm.classList.add('is-negative');
+    vlm.title = 'VLM：无人/0（暂无 VLM 判断结果）';
+    return;
+  }
+  if (state.status === 'person') {
+    vlm.classList.add('is-active');
+  } else if (state.status === 'no_person') {
+    vlm.classList.add('is-negative');
+  } else if (state.status === 'error') {
+    vlm.classList.add('is-error');
+  } else {
+    vlm.classList.add('is-pending');
+  }
+  const conf = state.confidence == null ? '' : ` · 置信度 ${(Number(state.confidence) * 100).toFixed(0)}%`;
+  const latency = state.latencyMs == null ? '' : ` · ${Number(state.latencyMs).toFixed(0)}ms`;
+  vlm.title = `VLM：${state.label || '等待'}${conf}${latency} · ${fmtTime(state.ts)} · ${state.reason || '-'}`;
+};
+
 function applyStateIcons() {
   $$('.state-icons').forEach((el) => {
     const id = el.dataset.state;
@@ -661,10 +749,12 @@ function applyStateIcons() {
     const light = el.querySelector('.light');
     const alarm = el.querySelector('.alarm');
     if (person) {
-      person.classList.toggle('is-active', !!s.person);
-      person.title = s.person
-        ? `人：在场 (置信度 ${(s.personConfidence * 100).toFixed(0)}%)`
-        : '人：不在';
+      const simplePerson = s.simplePerson ?? s.person;
+      const simpleConfidence = s.simplePersonConfidence ?? s.personConfidence ?? 0;
+      person.classList.toggle('is-active', !!simplePerson);
+      person.title = simplePerson
+        ? `常规模型：有人 (置信度 ${(simpleConfidence * 100).toFixed(0)}%)`
+        : `常规模型：无人 (置信度 ${(simpleConfidence * 100).toFixed(0)}%)`;
     }
     if (light) {
       light.classList.toggle('is-active', !!s.light);
@@ -674,9 +764,15 @@ function applyStateIcons() {
     }
     if (alarm) {
       const isAlarm = !!s.alarm;
+      const progress = Math.max(0, Math.min(1, Number(s.alarmProgress ?? 0)));
       alarm.classList.toggle('is-active', isAlarm);
-      alarm.title = isAlarm ? '报警：无人 + 亮灯' : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常');
+      alarm.classList.toggle('has-progress', progress > 0 && !isAlarm);
+      alarm.style.setProperty('--alarm-progress', progress.toFixed(3));
+      alarm.title = isAlarm
+        ? '报警：无人 + 亮灯'
+        : (progress > 0 ? `报警确认进度：${Math.round(progress * 100)}%` : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常'));
     }
+    renderVlmIcon(el, id);
   });
   $$('.scene-readout').forEach((el) => {
     if (!developerMode) {
@@ -711,26 +807,36 @@ function applyStateIcons() {
       }
       return;
     }
-    const personPct = s.personConfidence == null ? '-' : `${(s.personConfidence * 100).toFixed(0)}%`;
+    const personPct = s.simplePersonConfidence == null ? '-' : `${(s.simplePersonConfidence * 100).toFixed(0)}%`;
     const brightnessText = s.lightBrightness == null ? '-' : `${Number(s.lightBrightness).toFixed(0)}`;
     const colorText = s.colorScore == null ? '-' : `${Number(s.colorScore).toFixed(3)}`;
     const motionPct  = s.motionScore == null ? '-' : `${(Number(s.motionScore) * 100).toFixed(0)}%`;
     const cost = s.processMs ?? s.modelLatencyMs;
     const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
-    el.textContent = `有人:${personPct}  亮度:${brightnessText}  色彩:${colorText}  运动:${motionPct}`;
+    const vlm = vlmStates.get(id);
+    const vlmText = isVlmEnabledForSource(id)
+      ? `  VLM:${vlm?.label || '等待'}`
+      : '';
+    el.textContent = `常规:${s.simplePerson ? '有人' : '无人'}(${personPct})  亮度:${brightnessText}  色彩:${colorText}  运动:${motionPct}${vlmText}`;
     el.dataset.brightness = s.lightBrightness ?? '';
-    el.title = `有人:${personPct} · 亮度:${brightnessText} · 色彩:${colorText} · 运动:${motionPct} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
+    el.title = `常规模型:${s.simplePerson ? '有人' : '无人'}(${personPct}) · 融合:${s.person ? '有人' : '无人'} · 亮度:${brightnessText} · 色彩:${colorText} · 运动:${motionPct} · VLM:${vlm?.label || '-'} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
   });
 }
 
 function updateLiveState(payload) {
   if (!payload || !payload.sourceId) return;
-  sceneStates.set(payload.sourceId, {
+  const next = {
     person: !!payload.person,
     light: !!payload.light,
     lightState: payload.lightState || payload.light_state || (payload.light ? 'on' : 'off'),
+    simplePerson: payload.simplePerson ?? payload.simple_person ?? payload.person,
+    simplePersonConfidence: payload.simplePersonConfidence ?? payload.simple_person_confidence ?? payload.personConfidence ?? payload.person_confidence ?? 0,
+    vlmPerson: payload.vlmPerson ?? payload.vlm_person ?? null,
+    vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
+    vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
     alarm: !!payload.alarm,
     alarmStatus: payload.alarmStatus || payload.alarm_status || 'normal',
+    alarmProgress: payload.alarmProgress ?? payload.alarm_progress ?? 0,
     ts: payload.ts || Date.now(),
     personConfidence: payload.personConfidence ?? 0,
     lightConfidence: payload.lightConfidence ?? 0,
@@ -743,9 +849,39 @@ function updateLiveState(payload) {
     colorScore: payload.colorScore ?? null,
     motionScore: payload.motionScore ?? null,
     processMs: payload.processMs ?? null,
-  });
+  };
+  sceneStates.set(payload.sourceId, next);
+  const vlmState = vlmStateFromScene(next);
+  if (vlmState) vlmStates.set(payload.sourceId, vlmState);
   applyStateIcons();
   updateAlarmBanner();
+}
+
+function updateVlmStateFromSchedule(payload) {
+  if (!payload?.sourceId) return;
+  if (payload.action === 'vlm_error') {
+    vlmStates.set(payload.sourceId, {
+      status: 'error',
+      label: '失败',
+      confidence: null,
+      latencyMs: payload.latencyMs ?? null,
+      ts: payload.ts || Date.now(),
+      reason: payload.reason || 'vlm_error',
+    });
+    applyStateIcons();
+    return;
+  }
+  if (payload.action !== 'run_vlm') return;
+  const hasPerson = payload.reason === 'vlm_person_detected';
+  vlmStates.set(payload.sourceId, {
+    status: hasPerson ? 'person' : 'no_person',
+    label: hasPerson ? '有人' : '无人',
+    confidence: null,
+    latencyMs: payload.latencyMs ?? null,
+    ts: payload.ts || Date.now(),
+    reason: payload.reason || 'run_vlm',
+  });
+  applyStateIcons();
 }
 
 function updateRuntimeStatuses(payload) {
@@ -785,6 +921,7 @@ function updateAlarmBanner() {
 const videoCardHtml = (s) => {
   const st = stats.find((x) => x.id === s.id) || {};
   const scene = sceneStates.get(s.id) || { person: false, light: false };
+  const simplePerson = scene.simplePerson ?? scene.person;
   const alarm = !!scene.alarm;
   return `
     <div class="video-card" draggable="true" data-id="${s.id}" data-group-id="${s.groupId || 'grp-default'}">
@@ -798,7 +935,8 @@ const videoCardHtml = (s) => {
         <div class="card-row card-row-top">
           <span class="card-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
           <span class="state-icons" data-state="${s.id}">
-            <span class="state-icon person ${scene.person ? 'is-active' : ''}" title="人 ${scene.person ? '在场' : '不在'}">${icon('user')}</span>
+            <span class="state-icon vlm hidden" title="VLM：等待判断">${icon('user')}</span>
+            <span class="state-icon person ${simplePerson ? 'is-active' : ''}" title="常规模型 ${simplePerson ? '有人' : '无人'}">${icon('user')}</span>
             <span class="state-icon light ${scene.light ? 'is-active' : ''}" title="灯 ${scene.light ? '亮' : '关'}">${icon('bulb')}</span>
             <span class="state-icon alarm ${alarm ? 'is-active' : ''}" title="${alarm ? '报警：无人但亮灯' : '正常'}">${icon('alarm')}</span>
           </span>
@@ -823,8 +961,30 @@ const mountVideo = (src) => {
   const video = document.createElement('video');
   video.controls = true;
   video.muted = true;
+  video.defaultMuted = true;
   video.playsInline = true;
   video.autoplay = true;
+  video.preload = 'auto';
+  const mountedAt = Date.now();
+  let userInteracted = false;
+  let playRetryTimer = null;
+  const requestAutoPlay = (delay = 0) => {
+    if (userInteracted || document.hidden) return;
+    clearTimeout(playRetryTimer);
+    playRetryTimer = setTimeout(() => {
+      if (userInteracted || document.hidden || video.ended || !video.isConnected) return;
+      video.play().catch(() => {});
+    }, delay);
+  };
+  video.addEventListener('pointerdown', () => { userInteracted = true; });
+  video.addEventListener('keydown', () => { userInteracted = true; });
+  video.addEventListener('canplay', () => requestAutoPlay());
+  video.addEventListener('loadedmetadata', () => requestAutoPlay());
+  video.addEventListener('pause', () => {
+    if (Date.now() - mountedAt < 12000 && !userInteracted) {
+      requestAutoPlay(300);
+    }
+  });
   const onError = () => {
     const ph = wrap.querySelector('.placeholder');
     if (ph) ph.remove();
@@ -834,6 +994,10 @@ const mountVideo = (src) => {
     wrap.appendChild(e);
   };
   video.addEventListener('error', onError);
+
+  const ph = wrap.querySelector('.placeholder');
+  if (ph && src.type !== 'webcam' && src.type !== 'rtsp') ph.remove();
+  wrap.insertBefore(video, wrap.firstChild);
 
   try {
     if (src.type === 'hls') {
@@ -845,12 +1009,16 @@ const mountVideo = (src) => {
         });
         hls.loadSource(src.url);
         hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => requestAutoPlay());
+        hls.on(Hls.Events.LEVEL_LOADED, () => requestAutoPlay());
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             hls.startLoad();
+            requestAutoPlay(500);
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls.recoverMediaError();
+            requestAutoPlay(500);
           } else {
             hls.destroy();
             onError();
@@ -858,14 +1026,19 @@ const mountVideo = (src) => {
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src.url;
+        requestAutoPlay();
       } else {
         throw new Error('浏览器不支持 HLS');
       }
     } else if (src.type === 'mp4') {
       video.src = src.url;
+      requestAutoPlay();
     } else if (src.type === 'webcam') {
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        .then((stream) => { video.srcObject = stream; })
+        .then((stream) => {
+          video.srcObject = stream;
+          requestAutoPlay();
+        })
         .catch(() => onError());
     } else if (src.type === 'rtsp') {
       const ph = wrap.querySelector('.placeholder');
@@ -885,9 +1058,7 @@ const mountVideo = (src) => {
       video.play().catch(() => {});
     }
   });
-  const ph = wrap.querySelector('.placeholder');
-  if (ph && src.type !== 'webcam' && src.type !== 'rtsp') ph.remove();
-  wrap.insertBefore(video, wrap.firstChild);
+  requestAutoPlay(200);
 };
 
 $('#btn-add-source-live')?.addEventListener('click', () => openModal(null));
@@ -1052,7 +1223,9 @@ const renderOverview = async () => {
 
 const alarmStatusText = (status) => ({
   suspected: '疑似',
+  vlm_checking: 'VLM确认中',
   alarm_active: '报警中',
+  recovering: '恢复中',
   acknowledged: '已确认',
   resolved: '已恢复',
 }[status] || status || '-');
@@ -1119,6 +1292,208 @@ const resolveAlarmRecord = async (id) => {
 };
 
 $('#btn-refresh-alarms')?.addEventListener('click', renderAlarmRecords);
+
+/* -------------------- 开发者检测历史 -------------------- */
+let detectionHistoryRecords = [];
+
+const fmtNum = (value, digits = 3) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : '-';
+};
+
+const populateDetectionHistorySources = () => {
+  const sel = $('#det-history-source');
+  if (!sel) return;
+  const current = sel.value || sources[0]?.id || '';
+  sel.innerHTML = sources.length
+    ? sources.map((s) => `<option value="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(s.location || '')}</option>`).join('')
+    : '<option value="">暂无视频源</option>';
+  sel.value = sources.some((s) => s.id === current) ? current : (sources[0]?.id || '');
+};
+
+const drawDetectionHistoryChart = (records) => {
+  const canvas = $('#det-history-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cssWidth = canvas.clientWidth || 900;
+  const cssHeight = canvas.clientHeight || 520;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(cssWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(cssHeight * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, cssWidth, cssHeight);
+  ctx.font = '12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+  const outer = { left: 58, right: 18, top: 16, bottom: 30 };
+  const gap = 18;
+  const plotCount = 4;
+  const plotW = cssWidth - outer.left - outer.right;
+  const plotH = (cssHeight - outer.top - outer.bottom - gap * (plotCount - 1)) / plotCount;
+  const plots = [
+    { title: '灯光检测', top: outer.top, min: 0, max: 1, ticks: ['1.00', '0.50', '0.00'] },
+    { title: '人员/运动', top: outer.top + (plotH + gap), min: 0, max: 1, ticks: ['1.00', '0.50', '0.00'] },
+    { title: '亮度', top: outer.top + (plotH + gap) * 2, min: 0, max: 255, ticks: ['255', '128', '0'] },
+    { title: '报警/耗时', top: outer.top + (plotH + gap) * 3, min: 0, max: 1, ticks: ['1.00', '0.50', '0.00'] },
+  ];
+
+  if (!records.length) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('暂无检测采样', outer.left + 12, outer.top + 28);
+    return;
+  }
+
+  const tsMin = records[0].ts || 0;
+  const tsMax = records[records.length - 1].ts || tsMin + 1;
+  const span = Math.max(1, tsMax - tsMin);
+  const xOf = (r) => outer.left + (((r.ts || tsMin) - tsMin) / span) * plotW;
+  const processMax = Math.max(1, ...records.map((r) => Number(r.processMs) || 0));
+
+  const drawPlotFrame = (plot) => {
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1;
+    [0, 0.5, 1].forEach((ratio, idx) => {
+      const y = plot.top + plotH * ratio;
+      ctx.beginPath();
+      ctx.moveTo(outer.left, y);
+      ctx.lineTo(outer.left + plotW, y);
+      ctx.stroke();
+      ctx.fillStyle = '#64748b';
+      ctx.fillText(plot.ticks[idx], 8, y + 4);
+    });
+    ctx.strokeStyle = '#94a3b8';
+    ctx.strokeRect(outer.left, plot.top, plotW, plotH);
+    ctx.fillStyle = '#334155';
+    ctx.font = '600 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    ctx.fillText(plot.title, outer.left + 8, plot.top + 16);
+    ctx.font = '12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  };
+
+  const yOf = (plot, value) => {
+    const v = Number(value) || 0;
+    const norm = plot.max === plot.min ? 0 : (v - plot.min) / (plot.max - plot.min);
+    return plot.top + (1 - Math.max(0, Math.min(1, norm))) * plotH;
+  };
+
+  const drawBands = (plot, predicate, color) => {
+    ctx.fillStyle = color;
+    let start = null;
+    records.forEach((r, i) => {
+      if (predicate(r) && start === null) start = i;
+      const ending = start !== null && (!predicate(r) || i === records.length - 1);
+      if (ending) {
+        const end = predicate(r) && i === records.length - 1 ? i : i - 1;
+        const x1 = xOf(records[start]);
+        const x2 = xOf(records[end]);
+        ctx.fillRect(x1, plot.top, Math.max(2, x2 - x1), plotH);
+        start = null;
+      }
+    });
+  };
+
+  const drawLine = (plot, getter, color) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    records.forEach((r, i) => {
+      const x = xOf(r);
+      const y = yOf(plot, getter(r));
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
+
+  plots.forEach(drawPlotFrame);
+  drawBands(plots[0], (r) => r.light, 'rgba(245, 158, 11, 0.12)');
+  drawBands(plots[1], (r) => r.person, 'rgba(34, 197, 94, 0.10)');
+  drawBands(plots[3], (r) => r.alarm || r.alarmStatus === 'alarm_active', 'rgba(239, 68, 68, 0.14)');
+
+  drawLine(plots[0], (r) => r.colorScore, '#2563eb');
+  drawLine(plots[0], (r) => r.lightConfidence, '#d97706');
+  drawLine(plots[1], (r) => r.motionScore, '#16a34a');
+  drawLine(plots[1], (r) => r.personConfidence, '#7c3aed');
+  drawLine(plots[2], (r) => r.lightBrightness, '#0891b2');
+  drawLine(plots[3], (r) => (Number(r.processMs) || 0) / processMax, '#475569');
+
+  ctx.fillStyle = '#64748b';
+  ctx.fillText(fmtTime(tsMin), outer.left, cssHeight - 10);
+  ctx.fillText(fmtTime(tsMax), Math.max(outer.left, outer.left + plotW - 58), cssHeight - 10);
+  ctx.fillText(`耗时归一化，max=${processMax.toFixed(1)}ms`, outer.left + plotW - 178, plots[3].top + 16);
+};
+
+const renderDetectionHistorySummary = (records) => {
+  const last = records[records.length - 1];
+  $('#det-history-count').textContent = `${records.length} 条`;
+  $('#det-history-range').textContent = records.length
+    ? `${fmtDate(records[0].ts)} - ${fmtDate(last.ts)}`
+    : '—';
+  $('#det-last-light').textContent = last ? (last.light ? '开灯' : '关灯') : '—';
+  $('#det-last-person').textContent = last ? (last.person ? '有人' : '无人') : '—';
+  $('#det-last-alarm').textContent = last ? alarmStatusText(last.alarmStatus) : '—';
+  $('#det-last-color').textContent = last ? fmtNum(last.colorScore) : '—';
+  $('#det-last-motion').textContent = last ? fmtNum(last.motionScore) : '—';
+  $('#det-last-process').textContent = last ? `${fmtNum(last.processMs, 1)} ms` : '—';
+};
+
+const renderDetectionHistoryTable = (records) => {
+  const tb = $('#det-history-tbody');
+  if (!tb) return;
+  if (!records.length) {
+    tb.innerHTML = '<tr><td colspan="11" class="muted center">暂无检测采样</td></tr>';
+    return;
+  }
+  const byId = new Map(sources.map((s) => [s.id, s.name]));
+  tb.innerHTML = [...records].reverse().map((r) => `
+    <tr>
+      <td>${fmtDate(r.ts)}</td>
+      <td>${escapeHtml(byId.get(r.sourceId) || r.sourceId || '-')}</td>
+      <td>${stateMarker(r.light, r.light ? '亮' : '关')}</td>
+      <td>${stateMarker(r.person, r.person ? '在' : '不在')}</td>
+      <td>${r.alarm || r.alarmStatus === 'alarm_active' ? `<span class="status-pill alarm">${icon('alarm')}报警</span>` : escapeHtml(alarmStatusText(r.alarmStatus))}</td>
+      <td>${fmtNum(r.colorScore)}</td>
+      <td>${fmtNum(r.motionScore)}</td>
+      <td>${fmtNum(r.lightBrightness, 1)}</td>
+      <td>灯 ${fmtNum(r.lightConfidence, 2)} / 人 ${fmtNum(r.personConfidence, 2)}</td>
+      <td>${fmtNum(r.processMs, 1)}ms</td>
+      <td class="mono-cell">${escapeHtml(r.reason || '')}</td>
+    </tr>
+  `).join('');
+};
+
+const renderDetectionHistory = async () => {
+  if (!developerMode) return;
+  populateDetectionHistorySources();
+  const sourceId = $('#det-history-source')?.value || sources[0]?.id || null;
+  const limit = Number($('#det-history-limit')?.value || 500);
+  if (!sourceId) {
+    detectionHistoryRecords = [];
+    renderDetectionHistorySummary([]);
+    renderDetectionHistoryTable([]);
+    drawDetectionHistoryChart([]);
+    return;
+  }
+  try {
+    detectionHistoryRecords = await listDetectionHistory(sourceId, limit);
+    renderDetectionHistorySummary(detectionHistoryRecords);
+    renderDetectionHistoryTable(detectionHistoryRecords);
+    drawDetectionHistoryChart(detectionHistoryRecords);
+  } catch (err) {
+    $('#det-history-tbody').innerHTML = `<tr><td colspan="11" class="muted center">加载失败: ${escapeHtml(err.message || err)}</td></tr>`;
+    addLog('warn', `检测历史加载失败: ${err.message || err}`);
+  }
+};
+
+$('#btn-refresh-det-history')?.addEventListener('click', renderDetectionHistory);
+$('#det-history-source')?.addEventListener('change', renderDetectionHistory);
+$('#det-history-limit')?.addEventListener('change', renderDetectionHistory);
+window.addEventListener('resize', () => {
+  if (!$('#view-detection-history')?.classList.contains('hidden')) {
+    drawDetectionHistoryChart(detectionHistoryRecords);
+  }
+});
 
 /* -------------------- 模态框 / 增删改 -------------------- */
 const modal = $('#modal-mask');
@@ -1244,6 +1619,14 @@ const toFloat = (value, fallback, min = 0, max = 1) => {
   return Math.min(max, Math.max(min, n));
 };
 
+const normalizePersonMotionThreshold = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0.006;
+  if (n > 0.2) return Math.max(0.001, Math.min(1, n) * 0.03);
+  if (Math.abs(n - 0.020) < 0.0005) return 0.006;
+  return Math.min(0.20, Math.max(0.001, n));
+};
+
 const parseWeekdays = (value) => {
   const items = String(value)
     .split(',')
@@ -1265,8 +1648,7 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-end').value = win.end || '08:30';
   $('#algo-simple-interval').value = cfg.simpleIntervalSec ?? 10;
   $('#algo-vlm-interval').value = cfg.vlmIntervalSec ?? 300;
-  $('#algo-person-threshold').value = cfg.personThreshold ?? 0.65;
-  $('#algo-light-threshold').value = cfg.lightThreshold ?? 0.70;
+  $('#algo-person-threshold').value = normalizePersonMotionThreshold(cfg.personThreshold ?? 0.006).toFixed(3);
   $('#algo-hold-sec').value = cfg.alarmHoldSec ?? 300;
   $('#algo-recover-sec').value = cfg.alarmRecoverSec ?? 60;
   $('#algo-recover-policy').value = cfg.recoverPolicy || 'either';
@@ -1297,7 +1679,6 @@ const fillAlgorithmForm = (cfg) => {
   // 同步 chip 选中态 + 刷新 slider 数字显示
   syncChipsFromHidden();
   $('#algo-person-threshold')?.dispatchEvent(new Event('input'));
-  $('#algo-light-threshold')?.dispatchEvent(new Event('input'));
 };
 
 const getSelectedAlgorithmSourceId = () => {
@@ -1356,8 +1737,7 @@ const algorithmPayloadFromForm = () => {
     vlmPriceInputCache: toFloat($('#algo-vlm-price-input-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
     vlmPriceOutput: toFloat($('#algo-vlm-price-output').value, 0, 0, Number.MAX_SAFE_INTEGER),
     vlmPriceOutputCache: toFloat($('#algo-vlm-price-output-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
-    personThreshold: toFloat($('#algo-person-threshold').value, 0.65),
-    lightThreshold: toFloat($('#algo-light-threshold').value, 0.70),
+    personThreshold: toFloat($('#algo-person-threshold').value, 0.006, 0.001, 0.20),
     alarmHoldSec: toInt($('#algo-hold-sec').value, 300, 0),
     alarmRecoverSec: toInt($('#algo-recover-sec').value, 60, 0),
     recoverPolicy: $('#algo-recover-policy').value,
@@ -1397,6 +1777,8 @@ const renderVlmTestResult = (result) => {
       ? `<div>缓存命中：输入 ${promptCached}，输出 ${completionCached}</div>`
       : '',
     `<div>估算费用：¥${cost.toFixed(6)}</div>`,
+    result.requestUrl ? `<div>请求地址：${escapeHtml(result.requestUrl)}</div>` : '',
+    result.requestBody ? `<pre class="inline-pre">${escapeHtml(JSON.stringify(result.requestBody, null, 2))}</pre>` : '',
     result.reply ? `<pre class="inline-pre">${escapeHtml(result.reply)}</pre>` : '',
   ].filter(Boolean).join('');
 };
@@ -1498,7 +1880,7 @@ $('#btn-test-vlm')?.addEventListener('click', async () => {
   } catch (err) {
     if (el) {
       el.classList.remove('success');
-      el.textContent = err.message || '模型测试失败';
+      el.innerHTML = `模型测试失败：<pre class="inline-pre">${escapeHtml(err.message || err || '未知错误')}</pre>`;
     }
   } finally {
     if (btn) btn.disabled = false;
@@ -1593,9 +1975,32 @@ const mountRoiVideo = (src) => {
   video.playsInline = true;
   video.autoplay = true;
 
+  const mountedAt = Date.now();
+  const requestAutoPlay = (delay = 0) => {
+    clearTimeout(video._roiPlayTimer);
+    video._roiPlayTimer = setTimeout(() => {
+      if (video.ended || !video.isConnected) return;
+      video.play().catch(() => {});
+    }, delay);
+  };
   const showPlaceholder = () => {
     preview?.classList.remove('has-video');
   };
+
+  // 先把 video 插进去（CSS 透明背景，loading 阶段不会突兀），并尽早隐藏占位符
+  wrap.insertBefore(video, wrap.firstChild);
+  video.addEventListener('playing', () => {
+    preview?.classList.add('has-video');
+  }, { once: true });
+  video.addEventListener('canplay', () => {
+    preview?.classList.add('has-video');
+    requestAutoPlay();
+  });
+  video.addEventListener('loadedmetadata', () => requestAutoPlay());
+  video.addEventListener('pause', () => {
+    if (Date.now() - mountedAt < 12000) requestAutoPlay(300);
+  });
+  video.addEventListener('error', () => showPlaceholder());
 
   try {
     if (src.type === 'hls') {
@@ -1607,12 +2012,16 @@ const mountRoiVideo = (src) => {
         });
         hls.loadSource(src.url);
         hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => requestAutoPlay());
+        hls.on(Hls.Events.LEVEL_LOADED, () => requestAutoPlay());
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             hls.startLoad();
+            requestAutoPlay(500);
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
             hls.recoverMediaError();
+            requestAutoPlay(500);
           } else {
             hls.destroy();
             roiHls = null;
@@ -1622,15 +2031,17 @@ const mountRoiVideo = (src) => {
         roiHls = hls;
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src.url;
+        requestAutoPlay();
       } else {
         showPlaceholder();
         return;
       }
     } else if (src.type === 'mp4') {
       video.src = src.url;
+      requestAutoPlay();
     } else if (src.type === 'webcam') {
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        .then((stream) => { video.srcObject = stream; })
+        .then((stream) => { video.srcObject = stream; requestAutoPlay(); })
         .catch(() => showPlaceholder());
     } else {
       showPlaceholder();
@@ -1640,12 +2051,6 @@ const mountRoiVideo = (src) => {
     showPlaceholder();
     return;
   }
-
-  video.addEventListener('playing', () => {
-    preview?.classList.add('has-video');
-  }, { once: true });
-
-  wrap.insertBefore(video, wrap.firstChild);
 };
 
 const populateRoiSourceOptions = () => {
@@ -1693,7 +2098,9 @@ const updateRoiPreview = () => {
 };
 
 const fillRoiForm = (cfg) => {
-  const roi = (cfg.lightRois || cfg.light_rois || [])[0] || { x: 0, y: 0, w: 1, h: 1 };
+  const roi = (cfg.personRois || cfg.person_rois || [])[0]
+    || (cfg.lightRois || cfg.light_rois || [])[0]
+    || { x: 0, y: 0, w: 1, h: 1 };
   $('#roi-x').value = roi.x ?? 0;
   $('#roi-y').value = roi.y ?? 0;
   $('#roi-w').value = roi.w ?? 1;
@@ -1723,7 +2130,7 @@ const roiPayloadFromForm = () => {
     version: roiConfig?.version || `roi-${Date.now()}`,
     lightRois: [{ id: 'light-main', label: '主灯光区域', x, y, w, h }],
     excludeRois: roiConfig?.excludeRois || [],
-    personRois: roiConfig?.personRois || [],
+    personRois: [{ id: 'person-main', label: '人员运动检测区域', x, y, w, h }],
     lightOnThreshold: on,
     lightOffThreshold: off,
     updatedAt: Date.now(),
@@ -1732,10 +2139,13 @@ const roiPayloadFromForm = () => {
 
 const loadSelectedRoi = async () => {
   const sourceId = getSelectedRoiSourceId();
-  const src = sourceId ? sources.find((s) => s.id === sourceId) : null;
+  // 全局模式：使用第一个可用视频源作为预览；单独配置模式：使用被选中的视频源
+  const previewSource = sourceId
+    ? sources.find((s) => s.id === sourceId)
+    : sources[0];
   const resetBtn = $('#btn-reset-roi-source');
   if (resetBtn) resetBtn.style.display = sourceId ? '' : 'none';
-  if (src) mountRoiVideo(src);
+  if (previewSource) mountRoiVideo(previewSource);
   else destroyRoiVideo();
   try {
     roiConfig = await getRoiConfig(sourceId);
@@ -2337,9 +2747,13 @@ const subscribeEvents = async () => {
   await onRuntimeStatus((payload) => {
     updateRuntimeStatuses(payload);
   });
+  await onAlgorithmSchedule((payload) => {
+    updateVlmStateFromSchedule(payload);
+  });
   await onSceneState((payload) => {
     updateLiveState(payload);
     if (!$('#view-overview').classList.contains('hidden')) renderOverview();
+    if (!$('#view-detection-history')?.classList.contains('hidden')) renderDetectionHistory();
   });
   await onAlarm(async (payload) => {
     addLog('warn', `报警事件: ${payload.event || payload.status || '-'}`);
@@ -2358,6 +2772,7 @@ const subscribeEvents = async () => {
     await loadGroups();
     renderLive();
     renderSourcesTable();
+    if (!$('#view-detection-history')?.classList.contains('hidden')) renderDetectionHistory();
   });
 };
 

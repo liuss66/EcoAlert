@@ -1,8 +1,8 @@
 //! 轻量视觉检测
 //!
 //! 第一版先提供纯 CPU 简单算法：
-//! - RGB 彩色程度判断开灯 / 红外黑白关灯，ROI 灰度亮度兜底
-//! - 低分辨率帧差判断画面运动，只作为任务触发 / 复核信号
+//! - RGB 彩色程度判断开灯 / 红外黑白关灯
+//! - 低分辨率帧差 + 连通域过滤判断画面运动，只作为人员代理信号
 //!
 //! 注意：帧差只能作为快速任务识别 / VLM 复核触发信号，不能替代正式人形检测。
 
@@ -13,8 +13,14 @@ use std::time::Instant;
 
 const MOTION_WIDTH: u32 = 160;
 const MOTION_HEIGHT: u32 = 120;
-const MOTION_PIXEL_THRESHOLD: u8 = 20;
-const MOTION_AREA_THRESHOLD: f32 = 0.03;
+const MOTION_PIXEL_THRESHOLD: u8 = 16;
+const LEGACY_MOTION_AREA_SCALE: f32 = 0.03;
+const DEFAULT_PERSON_AREA_THRESHOLD: f32 = 0.006;
+const MIN_MOTION_COMPONENT_AREA: usize = 10;
+const MIN_MOTION_COMPONENT_SPAN: usize = 3;
+const BLINK_COMPONENT_MAX_AREA: usize = 140;
+const BLINK_COMPONENT_MAX_SPAN: usize = 10;
+const MICRO_MOTION_BBOX_WEIGHT: f32 = 5.0;
 const EMA_ALPHA: f32 = 0.3;
 const COLOR_ON_THRESHOLD: f32 = 0.055;
 const COLOR_OFF_THRESHOLD: f32 = 0.025;
@@ -39,9 +45,9 @@ pub struct Detector {
     color_ema: Option<f32>,
     motion_ema: f32,
     frame_counter: u64,
-    /// 人员检测阈值（来自 AlgorithmConfig.person_threshold，0..1）
+    /// 人员检测阈值，表示稳定运动面积比例。旧版 0..1 系数会自动转换。
     person_threshold: f32,
-    /// 无 RGB 数据时的亮度兜底阈值（来自 AlgorithmConfig.light_threshold，0..1）
+    /// 兼容旧配置；当前正常抽帧始终有 RGB，灯光判断使用 ROI 色彩阈值。
     light_threshold: f32,
 }
 
@@ -55,7 +61,7 @@ pub struct SimpleSceneResult {
 
 impl Detector {
     pub fn new(config: PipelineConfig) -> Self {
-        Self::with_thresholds(config, 0.65, 0.70)
+        Self::with_thresholds(config, DEFAULT_PERSON_AREA_THRESHOLD, 0.70)
     }
 
     pub fn with_thresholds(
@@ -83,10 +89,16 @@ impl Detector {
         self.light_threshold = light_threshold;
     }
 
-    /// 将 person_threshold（0..1）映射为运动面积阈值。
-    /// 当前没有真人模型，person 只是运动代理；阈值越高越严格。
+    /// 当前没有真人模型，person 是运动代理；阈值越高越严格。
+    /// 旧版配置常见为 0.65，需要乘以 0.03 才是实际运动面积阈值。
     fn effective_person_threshold(&self) -> f32 {
-        (self.person_threshold.clamp(0.05, 1.0) * MOTION_AREA_THRESHOLD).max(0.001)
+        if self.person_threshold > 0.2 {
+            (self.person_threshold.clamp(0.05, 1.0) * LEGACY_MOTION_AREA_SCALE).max(0.001)
+        } else if (self.person_threshold - 0.020).abs() < 0.0005 {
+            DEFAULT_PERSON_AREA_THRESHOLD
+        } else {
+            self.person_threshold.clamp(0.001, 0.20)
+        }
     }
 
     pub fn analyze_scene(
@@ -111,7 +123,7 @@ impl Detector {
         self.color_ema = Some(smoothed_color);
 
         // 优先使用摄像头模式特征：开灯为彩色图像，关灯红外为黑白图像。
-        // 无 RGB 数据时回退到 ROI / 全帧亮度阈值。
+        // 正常 ffmpeg 抽帧始终提供 RGB；灰度兜底只保留给单元测试和异常输入。
         let has_color_signal = !frame.rgb.is_empty();
         let (color_on_threshold, color_off_threshold) = color_thresholds(roi_config);
         let (brightness_on_threshold, brightness_off_threshold) =
@@ -131,7 +143,7 @@ impl Detector {
             }
         }
 
-        let motion_raw = self.motion_score(frame);
+        let motion_raw = self.motion_score(frame, roi_config);
         self.motion_ema = self.motion_ema * (1.0 - EMA_ALPHA) + motion_raw * EMA_ALPHA;
 
         // 基于运动得分的近似人员检测
@@ -234,16 +246,16 @@ impl Detector {
         dets
     }
 
-    fn motion_score(&mut self, frame: &DecodedFrame) -> f32 {
+    fn motion_score(&mut self, frame: &DecodedFrame, roi_config: Option<&RoiConfig>) -> f32 {
         let low = downsample_gray(frame, MOTION_WIDTH, MOTION_HEIGHT);
         let score = if let Some(prev) = &self.prev_low_res {
             if prev.len() == low.len() && !low.is_empty() {
-                let changed = low
-                    .iter()
-                    .zip(prev.iter())
-                    .filter(|(a, b)| a.abs_diff(**b) > MOTION_PIXEL_THRESHOLD)
-                    .count();
-                changed as f32 / low.len() as f32
+                let width = MOTION_WIDTH.min(frame.width) as usize;
+                let height = MOTION_HEIGHT.min(frame.height) as usize;
+                let rois = roi_config
+                    .map(|cfg| cfg.person_rois.as_slice())
+                    .filter(|items| !items.is_empty());
+                filtered_motion_area(prev, &low, width, height, rois)
             } else {
                 0.0
             }
@@ -253,6 +265,118 @@ impl Detector {
         self.prev_low_res = Some(low);
         score
     }
+}
+
+fn filtered_motion_area(
+    prev: &[u8],
+    current: &[u8],
+    width: usize,
+    height: usize,
+    rois: Option<&[RoiRect]>,
+) -> f32 {
+    if prev.len() != current.len() || current.is_empty() || width == 0 {
+        return 0.0;
+    }
+    let height = height.min(current.len() / width);
+    if height == 0 || width * height > current.len() {
+        return 0.0;
+    }
+    let roi_mask = motion_roi_mask(width, height, rois);
+    let roi_pixels = roi_mask.iter().filter(|enabled| **enabled).count().max(1);
+    let mut changed = vec![false; current.len()];
+    for (idx, (a, b)) in current.iter().zip(prev.iter()).enumerate() {
+        changed[idx] =
+            roi_mask.get(idx).copied().unwrap_or(false) && a.abs_diff(*b) > MOTION_PIXEL_THRESHOLD;
+    }
+
+    let mut visited = vec![false; current.len()];
+    let mut score = 0.0f32;
+    let mut stack = Vec::new();
+    for idx in 0..changed.len() {
+        if !changed[idx] || visited[idx] {
+            continue;
+        }
+        visited[idx] = true;
+        stack.push(idx);
+        let mut area = 0usize;
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+        while let Some(p) = stack.pop() {
+            area += 1;
+            let x = p % width;
+            let y = p / width;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+            let mut neighbors = [None; 4];
+            if x > 0 {
+                neighbors[0] = Some(p - 1);
+            }
+            if x + 1 < width {
+                neighbors[1] = Some(p + 1);
+            }
+            if y > 0 {
+                neighbors[2] = Some(p - width);
+            }
+            if y + 1 < height {
+                neighbors[3] = Some(p + width);
+            }
+            for next in neighbors.into_iter().flatten() {
+                if changed.get(next).copied().unwrap_or(false) && !visited[next] {
+                    visited[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        let span_x = max_x.saturating_sub(min_x) + 1;
+        let span_y = max_y.saturating_sub(min_y) + 1;
+        let compact_blink = area <= BLINK_COMPONENT_MAX_AREA
+            && span_x <= BLINK_COMPONENT_MAX_SPAN
+            && span_y <= BLINK_COMPONENT_MAX_SPAN;
+        let human_like_micro_motion = area >= MIN_MOTION_COMPONENT_AREA
+            && span_x >= MIN_MOTION_COMPONENT_SPAN
+            && span_y >= MIN_MOTION_COMPONENT_SPAN
+            && (span_x >= BLINK_COMPONENT_MAX_SPAN || span_y >= BLINK_COMPONENT_MAX_SPAN);
+        let larger_motion = area >= BLINK_COMPONENT_MAX_AREA
+            && span_x >= MIN_MOTION_COMPONENT_SPAN
+            && span_y >= MIN_MOTION_COMPONENT_SPAN;
+        if !compact_blink && (human_like_micro_motion || larger_motion) {
+            let area_ratio = area as f32 / roi_pixels as f32;
+            let bbox_ratio = (span_x * span_y) as f32 / roi_pixels as f32;
+            score += area_ratio.max(bbox_ratio * MICRO_MOTION_BBOX_WEIGHT);
+        }
+    }
+    score.clamp(0.0, 1.0)
+}
+
+fn motion_roi_mask(width: usize, height: usize, rois: Option<&[RoiRect]>) -> Vec<bool> {
+    let mut mask = vec![false; width * height];
+    let Some(rois) = rois else {
+        mask.fill(true);
+        return mask;
+    };
+    let mut any = false;
+    for roi in rois {
+        let Some((x1, y1, x2, y2)) = roi_bounds(width as u32, height as u32, roi) else {
+            continue;
+        };
+        for y in y1..y2 {
+            let row = y * width;
+            for x in x1..x2 {
+                if let Some(item) = mask.get_mut(row + x) {
+                    *item = true;
+                    any = true;
+                }
+            }
+        }
+    }
+    if !any {
+        mask.fill(true);
+    }
+    mask
 }
 
 fn average_light_brightness(frame: &DecodedFrame, roi_config: Option<&RoiConfig>) -> f32 {
@@ -604,7 +728,7 @@ mod tests {
         let second = detector.analyze_scene(&frame(64, 48, 255), None);
         assert!(second.scene.person, "大帧差应触发 person 检测");
         assert!(second.scene.person_confidence > 0.5);
-        assert!(second.motion_score > MOTION_AREA_THRESHOLD);
+        assert!(second.motion_score > DEFAULT_PERSON_AREA_THRESHOLD);
     }
 
     #[test]
@@ -616,6 +740,106 @@ mod tests {
             assert!(!result.scene.person, "低运动场景不应触发 person");
             assert!(result.scene.person_confidence < 0.5);
         }
+    }
+
+    #[test]
+    fn person_not_detected_for_small_blinking_device() {
+        let mut detector = Detector::new(PipelineConfig::default());
+        let base = frame(160, 120, 80);
+        detector.analyze_scene(&base, None);
+
+        let mut data = vec![80u8; 160 * 120];
+        for y in 20..25 {
+            for x in 20..25 {
+                data[y * 160 + x] = 180;
+            }
+        }
+        let blink = DecodedFrame {
+            width: 160,
+            height: 120,
+            pts_ms: 0,
+            data,
+            rgb: vec![],
+        };
+        let result = detector.analyze_scene(&blink, None);
+        assert!(!result.scene.person);
+        assert_eq!(result.scene.motion_score, 0.0);
+    }
+
+    #[test]
+    fn person_detected_for_subtle_desk_motion() {
+        let mut detector = Detector::new(PipelineConfig::default());
+        let base = frame(160, 120, 80);
+        detector.analyze_scene(&base, None);
+
+        let mut data = vec![80u8; 160 * 120];
+        for y in 40..44 {
+            for x in 40..52 {
+                data[y * 160 + x] = 108;
+            }
+        }
+        let moved = DecodedFrame {
+            width: 160,
+            height: 120,
+            pts_ms: 0,
+            data,
+            rgb: vec![],
+        };
+        detector.analyze_scene(&moved, None);
+        let result = detector.analyze_scene(&base, None);
+        assert!(result.scene.person, "工位微动应能触发人员代理");
+    }
+
+    #[test]
+    fn motion_detector_respects_person_roi() {
+        let mut cfg = RoiConfig::new("src-test".into());
+        cfg.person_rois.push(RoiRect {
+            id: "person-roi".into(),
+            label: "desk".into(),
+            x: 0.25,
+            y: 0.25,
+            w: 0.5,
+            h: 0.5,
+        });
+
+        let mut detector = Detector::new(PipelineConfig::default());
+        let base = frame(160, 120, 80);
+        detector.analyze_scene(&base, Some(&cfg));
+
+        let mut outside_data = vec![80u8; 160 * 120];
+        for y in 0..30 {
+            for x in 0..30 {
+                outside_data[y * 160 + x] = 130;
+            }
+        }
+        let outside = DecodedFrame {
+            width: 160,
+            height: 120,
+            pts_ms: 0,
+            data: outside_data,
+            rgb: vec![],
+        };
+        let outside_result = detector.analyze_scene(&outside, Some(&cfg));
+        assert!(!outside_result.scene.person);
+        assert_eq!(outside_result.scene.motion_score, 0.0);
+
+        let mut detector = Detector::new(PipelineConfig::default());
+        detector.analyze_scene(&base, Some(&cfg));
+        let mut inside_data = vec![80u8; 160 * 120];
+        for y in 50..56 {
+            for x in 60..76 {
+                inside_data[y * 160 + x] = 130;
+            }
+        }
+        let inside = DecodedFrame {
+            width: 160,
+            height: 120,
+            pts_ms: 0,
+            data: inside_data,
+            rgb: vec![],
+        };
+        let inside_result = detector.analyze_scene(&inside, Some(&cfg));
+        assert!(inside_result.scene.person);
     }
 
     #[test]
@@ -637,19 +861,19 @@ mod tests {
     #[test]
     fn threshold_update_affects_person_decision() {
         // 低阈值：更容易触发 person 运动代理
-        let mut detector_low = Detector::with_thresholds(PipelineConfig::default(), 0.2, 0.7);
+        let mut detector_low = Detector::with_thresholds(PipelineConfig::default(), 0.006, 0.7);
         // 第一帧建立基线
         detector_low.analyze_scene(&frame(64, 48, 100), None);
         // 第二帧：中等运动（差值 30 > MOTION_PIXEL_THRESHOLD=20，所有像素变化）
         // motion_raw=1.0, motion_ema=0.3
-        // effective = 0.2 * 0.03 = 0.006, 0.3 >= 0.006 -> person=true
+        // direct threshold = 0.006, 0.3 >= 0.006 -> person=true
         let result_low = detector_low.analyze_scene(&frame(64, 48, 130), None);
         assert!(result_low.scene.person, "低阈值下中等运动应触发 person");
 
         // 高阈值：同样的低运动不触发
-        let mut detector_high = Detector::with_thresholds(PipelineConfig::default(), 0.999, 0.7);
+        let mut detector_high = Detector::with_thresholds(PipelineConfig::default(), 0.08, 0.7);
         detector_high.analyze_scene(&frame(64, 48, 100), None);
-        let mut detector_high2 = Detector::with_thresholds(PipelineConfig::default(), 0.999, 0.7);
+        let mut detector_high2 = Detector::with_thresholds(PipelineConfig::default(), 0.08, 0.7);
         detector_high2.analyze_scene(&frame(64, 48, 100), None);
         let result_high = detector_high2.analyze_scene(&frame(64, 48, 105), None);
         assert!(!result_high.scene.person, "极高阈值+低运动不应触发 person");

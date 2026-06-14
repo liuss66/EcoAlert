@@ -36,6 +36,7 @@ pub fn run() {
             commands::delete_group,
             commands::reorder,
             commands::report_scene_state,
+            commands::list_detection_history,
             commands::get_state_history,
             commands::get_channel_runtime_status,
             commands::list_alarms,

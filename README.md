@@ -2,6 +2,10 @@
 
 视频监控应用：Tauri 桌面 app + 本地测试视频 + ffmpeg HLS 推流器 + 本地算法处理流水线。
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-red.svg)](./LICENSE)
+
+> Author: **jinsheng.liu1**  ·  License: **PolyForm Noncommercial 1.0.0**（禁止商业使用）  ·  Copyright © 2026
+
 ## 目录
 
 | 目录 | 用途 |

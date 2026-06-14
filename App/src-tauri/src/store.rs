@@ -135,6 +135,8 @@ pub struct ChannelRuntimeStatus {
     pub online_status: String,
     pub algorithm_status: String,
     pub alarm_status: String,
+    #[serde(default)]
+    pub vlm_enabled: bool,
     pub last_frame_at: Option<i64>,
     pub last_algorithm_at: Option<i64>,
     pub last_error: Option<String>,
@@ -198,6 +200,7 @@ impl ChannelRuntimeStatus {
             online_status: if enabled { "online" } else { "offline" }.into(),
             algorithm_status: if enabled { "idle" } else { "disabled" }.into(),
             alarm_status: "normal".into(),
+            vlm_enabled: false,
             last_frame_at: enabled.then_some(ts),
             last_algorithm_at: None,
             last_error: None,
@@ -235,6 +238,67 @@ pub struct HistoryFile {
     /// 每个源最近 N 条变更，按时间倒序
     #[serde(with = "vecdeque_serde")]
     pub records: VecDeque<StateRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionSampleRecord {
+    pub source_id: String,
+    pub ts: i64,
+    pub frame_seq: u64,
+    pub person: bool,
+    pub light: bool,
+    pub alarm: bool,
+    pub alarm_status: String,
+    #[serde(default)]
+    pub confidence: f32,
+    #[serde(default)]
+    pub person_confidence: f32,
+    #[serde(default)]
+    pub light_confidence: f32,
+    #[serde(default)]
+    pub light_brightness: f32,
+    #[serde(default)]
+    pub color_score: f32,
+    #[serde(default)]
+    pub motion_score: f32,
+    #[serde(default)]
+    pub process_ms: f32,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl DetectionSampleRecord {
+    pub fn from_scene(source_id: &str, state: &SceneState, alarm_status: &str, ts: i64) -> Self {
+        Self {
+            source_id: source_id.to_string(),
+            ts,
+            frame_seq: state.frame_seq,
+            person: state.person,
+            light: state.light,
+            alarm: alarm_status == "alarm_active",
+            alarm_status: alarm_status.to_string(),
+            confidence: state.confidence,
+            person_confidence: state.person_confidence,
+            light_confidence: state.light_confidence,
+            light_brightness: state.light_brightness,
+            color_score: state.color_score,
+            motion_score: state.motion_score,
+            process_ms: state.process_ms,
+            source: state.source.clone(),
+            reason: state.reason.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionHistoryFile {
+    pub schema_version: u32,
+    #[serde(default, with = "vecdeque_serde")]
+    pub records: VecDeque<DetectionSampleRecord>,
 }
 
 pub fn load(path: &Path) -> DataFile {
@@ -361,7 +425,7 @@ impl Default for AlgorithmConfig {
             vlm_price_input_cache: 0.0,
             vlm_price_output: 0.0,
             vlm_price_output_cache: 0.0,
-            person_threshold: 0.65,
+            person_threshold: 0.006,
             light_threshold: 0.70,
             alarm_hold_sec: 300,
             alarm_recover_sec: 60,

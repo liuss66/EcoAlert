@@ -1,5 +1,0 @@
-# Test 依赖
-# 算法测试用，轻量图像处理
-
-opencv-python>=4.8
-numpy>=1.24

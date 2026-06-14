@@ -28,6 +28,14 @@ pub struct VlmUsage {
     pub completion_cached_tokens: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VlmTestResult {
+    pub reply: String,
+    pub usage: Option<VlmUsage>,
+    pub request_url: String,
+    pub request_body: serde_json::Value,
+}
+
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
@@ -42,7 +50,7 @@ struct ChatChoice {
 
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
-    content: String,
+    content: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,25 +99,14 @@ pub async fn analyze_person(
     }
 
     let image_url = frame_to_jpeg_data_url(frame)?;
-    let body = serde_json::json!({
-        "model": model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                { "type": "image_url", "image_url": { "url": image_url } },
-                { "type": "text", "text": config.vlm_prompt },
-            ],
-        }],
-        "max_tokens": config.vlm_max_tokens.max(16),
-        "temperature": config.vlm_temperature.clamp(0.0, 2.0),
-    });
+    let body = build_vision_request_body(config, model, image_url);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let url = format!("{api_base}/chat/completions");
+    let url = chat_completions_url(api_base);
     let response = client
-        .post(url)
+        .post(&url)
         .bearer_auth(api_key)
         .json(&body)
         .send()
@@ -118,7 +115,7 @@ pub async fn analyze_person(
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("VLM 请求失败 HTTP {status}: {text}");
+        anyhow::bail!("{}", format_vlm_http_error(status, &text, &url, &body));
     }
 
     let parsed: ChatCompletionResponse =
@@ -126,33 +123,35 @@ pub async fn analyze_person(
     let content = parsed
         .choices
         .first()
-        .map(|choice| choice.message.content.trim().to_string())
+        .map(|choice| message_content_to_string(&choice.message.content))
         .ok_or_else(|| anyhow!("VLM 响应缺少 choices[0].message.content"))?;
     parse_detection_content(&content)
 }
 
-pub async fn test_connection(
-    config: &AlgorithmConfig,
-) -> anyhow::Result<(String, Option<VlmUsage>)> {
+pub async fn test_connection(config: &AlgorithmConfig) -> anyhow::Result<VlmTestResult> {
     let body = serde_json::json!({
         "model": config.vlm_model.trim(),
         "messages": [{ "role": "user", "content": "Hi" }],
         "max_tokens": 16,
-        "temperature": 0.0,
     });
-    let parsed = call_chat_completion(config, body).await?;
+    let (parsed, request_url, request_body) = call_chat_completion(config, body).await?;
     let content = parsed
         .choices
         .first()
-        .map(|choice| choice.message.content.trim().to_string())
+        .map(|choice| message_content_to_string(&choice.message.content))
         .unwrap_or_default();
-    Ok((content, parsed.usage.map(Into::into)))
+    Ok(VlmTestResult {
+        reply: content,
+        usage: parsed.usage.map(Into::into),
+        request_url,
+        request_body,
+    })
 }
 
 async fn call_chat_completion(
     config: &AlgorithmConfig,
     body: serde_json::Value,
-) -> anyhow::Result<ChatCompletionResponse> {
+) -> anyhow::Result<(ChatCompletionResponse, String, serde_json::Value)> {
     let api_base = config.vlm_api_base.trim().trim_end_matches('/');
     let api_key = config.vlm_api_key.trim();
     let model = config.vlm_model.trim();
@@ -163,7 +162,9 @@ async fn call_chat_completion(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let url = format!("{api_base}/chat/completions");
+    let url = chat_completions_url(api_base);
+    let request_url = url.clone();
+    let request_body = body.clone();
     let response = client
         .post(url)
         .bearer_auth(api_key)
@@ -174,9 +175,92 @@ async fn call_chat_completion(
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("VLM 请求失败 HTTP {status}: {text}");
+        anyhow::bail!(
+            "{}",
+            format_vlm_http_error(status, &text, &request_url, &request_body)
+        );
     }
-    serde_json::from_str(&text).context("VLM 响应不是 OpenAI-compatible JSON")
+    let parsed = serde_json::from_str(&text).context("VLM 响应不是 OpenAI-compatible JSON")?;
+    Ok((parsed, request_url, request_body))
+}
+
+fn chat_completions_url(api_base: &str) -> String {
+    if api_base.ends_with("/chat/completions") {
+        api_base.to_string()
+    } else {
+        format!("{api_base}/chat/completions")
+    }
+}
+
+fn build_vision_request_body(
+    config: &AlgorithmConfig,
+    model: &str,
+    image_url: String,
+) -> serde_json::Value {
+    let prompt = config.vlm_prompt.trim();
+    let max_tokens = config.vlm_max_tokens.max(16);
+    let temperature = config.vlm_temperature.clamp(0.0, 2.0);
+    if is_minimax_config(config, model) {
+        serde_json::json!({
+            "model": model,
+            "thinking": { "type": "disabled" },
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": prompt },
+                    { "type": "image_url", "image_url": { "url": image_url, "detail": "default" } },
+                ],
+            }],
+            "max_completion_tokens": max_tokens,
+            "temperature": temperature,
+        })
+    } else {
+        serde_json::json!({
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": image_url } },
+                    { "type": "text", "text": prompt },
+                ],
+            }],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        })
+    }
+}
+
+fn is_minimax_config(config: &AlgorithmConfig, model: &str) -> bool {
+    let api_base = config.vlm_api_base.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    api_base.contains("minimax") || api_base.contains("minimaxi") || model.starts_with("minimax-")
+}
+
+fn format_vlm_http_error(
+    status: reqwest::StatusCode,
+    text: &str,
+    request_url: &str,
+    request_body: &serde_json::Value,
+) -> String {
+    let detail = text.trim();
+    let request = format_request_debug(request_url, request_body);
+    if status.as_u16() == 405 && detail.contains("Coding Plan is currently only available") {
+        return format!(
+            "VLM 请求失败 HTTP {status}: 服务端返回 Coding Plan 限制。当前请求已按 Algo/vlm-detector 的文本测试格式发送。请把下面的请求地址和请求体与 standalone 工具配置逐字对照。\n{request}\n原始响应: {detail}"
+        );
+    }
+    if status.as_u16() == 404 && detail.contains("Not Found") {
+        return format!(
+            "VLM 请求失败 HTTP {status}: API Base 可能不是 OpenAI-compatible base URL。请填写到 /v1 为止，或直接填写完整 /chat/completions URL。\n{request}\n原始响应: {detail}"
+        );
+    }
+    format!("VLM 请求失败 HTTP {status}: {detail}\n{request}")
+}
+
+fn format_request_debug(request_url: &str, request_body: &serde_json::Value) -> String {
+    let body =
+        serde_json::to_string_pretty(request_body).unwrap_or_else(|_| request_body.to_string());
+    format!("请求地址: {request_url}\n请求体: {body}")
 }
 
 impl From<RawUsage> for VlmUsage {
@@ -217,6 +301,24 @@ fn frame_to_jpeg_data_url(frame: &DecodedFrame) -> anyhow::Result<String> {
         "data:image/jpeg;base64,{}",
         base64_encode(encoded.get_ref())
     ))
+}
+
+fn message_content_to_string(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.trim().to_string(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                item.get("text")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| item.get("content").and_then(|value| value.as_str()))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn parse_detection_content(content: &str) -> anyhow::Result<VlmDetection> {
@@ -302,5 +404,27 @@ mod tests {
         let parsed = parse_detection_content("{\"has_person\":false,\"detections\":[]}").unwrap();
         assert!(!parsed.has_person);
         assert_eq!(parsed.confidence, 0.0);
+    }
+
+    #[test]
+    fn minimax_vision_body_uses_provider_parameters() {
+        let cfg = AlgorithmConfig {
+            vlm_api_base: "https://api.minimaxi.com/v1/chat/completions".into(),
+            vlm_model: "MiniMax-M3".into(),
+            vlm_prompt: "detect".into(),
+            vlm_max_tokens: 64,
+            vlm_temperature: 0.1,
+            ..AlgorithmConfig::default()
+        };
+        let body =
+            build_vision_request_body(&cfg, &cfg.vlm_model, "data:image/jpeg;base64,abc".into());
+        assert_eq!(body["max_completion_tokens"], 64);
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["detail"],
+            "default"
+        );
     }
 }

@@ -65,8 +65,14 @@
         <button class="nav-item" data-view="notification-settings">
           <span class="nav-icon" data-icon="bell"></span><span>通知管理</span>
         </button>
+        <button class="nav-item developer-only hidden" data-view="detection-history">
+          <span class="nav-icon" data-icon="chart"></span><span>检测历史</span>
+        </button>
         <button class="nav-item" data-view="console">
           <span class="nav-icon" data-icon="terminal"></span><span>系统日志</span>
+        </button>
+        <button class="nav-item" data-view="about">
+          <span class="nav-icon" data-icon="info"></span><span>关于</span>
         </button>
       </nav>
       <div class="sidebar-footer">
@@ -231,6 +237,7 @@
         <nav class="settings-tabs">
           <a href="#sec-account" class="settings-tab" data-target="sec-account">账号与安全</a>
           <a href="#sec-storage" class="settings-tab" data-target="sec-storage">数据存储</a>
+          <a href="#sec-debug" class="settings-tab" data-target="sec-debug">调试</a>
         </nav>
         <div class="settings-grid">
 
@@ -272,16 +279,22 @@
             <div class="settings-form">
               <p class="muted hint">视频源、密码、状态历史都保存在这个目录：</p>
               <code id="data-dir" class="data-path"></code>
+            </div>
+          </div>
 
-              <div class="form-section">
-                <div class="form-section-title">调试</div>
-                <label class="check-row">
-                  <input type="checkbox" id="developer-mode" />
-                  <span class="check-text">开发者模式</span>
-                  <span class="check-hint">忽略算法生效时段，并在视频卡片显示检测读数</span>
-                </label>
-                <div class="form-msg success" id="developer-ok"></div>
-              </div>
+          <!-- 调试 -->
+          <div class="panel settings-debug hidden" id="sec-debug">
+            <div class="panel-header">
+              <h3>调试</h3>
+              <span class="panel-sub">开发者诊断开关</span>
+            </div>
+            <div class="settings-form">
+              <label class="check-row">
+                <input type="checkbox" id="developer-mode" />
+                <span class="check-text">开发者模式</span>
+                <span class="check-hint">忽略算法生效时段，并在视频卡片显示检测读数和检测历史菜单</span>
+              </label>
+              <div class="form-msg success" id="developer-ok"></div>
             </div>
           </div>
 
@@ -386,20 +399,12 @@
                 <div class="form-section-title">阈值与保持</div>
                 <div class="field-row">
                   <label class="field">
-                    <span class="field-label">人员检测阈值</span>
+                    <span class="field-label">人员运动面积阈值</span>
                     <div class="threshold-row">
-                      <input type="range" id="algo-person-threshold" min="0" max="1" step="0.05" value="0.65" />
-                      <span class="threshold-value" id="algo-person-threshold-val">0.65</span>
+                      <input type="range" id="algo-person-threshold" min="0.001" max="0.04" step="0.001" value="0.006" />
+                      <span class="threshold-value" id="algo-person-threshold-val">0.006</span>
                     </div>
-                    <span class="field-hint">越低越容易判定"有人"，误报↑ 漏报↓</span>
-                  </label>
-                  <label class="field">
-                    <span class="field-label">亮度兜底阈值</span>
-                    <div class="threshold-row">
-                      <input type="range" id="algo-light-threshold" min="0" max="1" step="0.05" value="0.70" />
-                      <span class="threshold-value" id="algo-light-threshold-val">0.70</span>
-                    </div>
-                    <span class="field-hint">仅在没有 RGB 彩色帧时使用；正常灯光判断以 ROI 色彩阈值为准</span>
+                    <span class="field-hint">工位场景建议 0.004-0.010；越低越容易捕捉坐姿微动</span>
                   </label>
                 </div>
                 <div class="field-row">
@@ -487,10 +492,12 @@
                   <label class="field">
                     <span class="field-label">API 地址</span>
                     <input type="text" id="algo-vlm-api-base" class="text-input" placeholder="https://api.openai.com/v1" />
+                    <span class="field-hint">填写 OpenAI-compatible base URL；也可直接填写完整 /chat/completions 地址</span>
                   </label>
                   <label class="field">
                     <span class="field-label">模型名称</span>
-                    <input type="text" id="algo-vlm-model" class="text-input" placeholder="gpt-4o-mini / qwen-vl-plus" />
+                    <input type="text" id="algo-vlm-model" class="text-input" placeholder="gpt-4o-mini / qwen-vl-plus / qwen2.5-vl" />
+                    <span class="field-hint">请选择支持图片输入的多模态模型</span>
                   </label>
                 </div>
                 <label class="field full">
@@ -565,7 +572,7 @@
           <div class="panel settings-roi" id="sec-roi">
             <div class="panel-header">
               <h3>ROI 标定</h3>
-              <span class="panel-sub">灯光区域与彩色 / 红外阈值</span>
+              <span class="panel-sub">灯光区域、人员运动检测窗口与彩色 / 红外阈值</span>
             </div>
             <form id="roi-form" class="settings-form">
               <div class="field-row">
@@ -620,6 +627,7 @@
                       <input type="number" id="roi-h" class="text-input" min="0.01" max="1" step="0.01" value="1.00" />
                     </label>
                   </div>
+                  <span class="field-hint">当前窗口会同时用于灯光检测和人员运动检测；窗口外运动不会计入人员判断</span>
                   <div class="field-row">
                     <label class="field">
                       <span class="field-label">开灯色彩阈值</span>
@@ -810,6 +818,77 @@
         </div>
       </section>
 
+      <!-- 检测历史（开发者模式） -->
+      <section class="view hidden" id="view-detection-history">
+        <div class="view-toolbar">
+          <div class="toolbar-left">
+            <label class="field inline-field">
+              <span class="field-label">视频源</span>
+              <select id="det-history-source" class="text-input"></select>
+            </label>
+            <label class="field inline-field small">
+              <span class="field-label">记录数</span>
+              <select id="det-history-limit" class="text-input">
+                <option value="200">200</option>
+                <option value="500" selected>500</option>
+                <option value="1000">1000</option>
+                <option value="2000">2000</option>
+              </select>
+            </label>
+            <button class="btn-ghost" id="btn-refresh-det-history"><span data-icon="refresh"></span>刷新</button>
+          </div>
+          <div class="toolbar-right">
+            <span class="muted" id="det-history-count">0 条</span>
+          </div>
+        </div>
+        <div class="diagnostics-grid">
+          <div class="panel diagnostics-chart-panel">
+            <div class="panel-header">
+              <h3>检测参数子图</h3>
+              <span class="muted" id="det-history-range">—</span>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="det-history-chart" width="1200" height="560"></canvas>
+            </div>
+            <div class="chart-legend">
+              <span><i class="legend-line color-score"></i>色彩分数</span>
+              <span><i class="legend-line motion-score"></i>运动分数</span>
+              <span><i class="legend-line light-confidence"></i>灯光置信度</span>
+              <span><i class="legend-line person-confidence"></i>人员置信度</span>
+              <span><i class="legend-line brightness-score"></i>亮度</span>
+              <span><i class="legend-line process-score"></i>耗时归一化</span>
+              <span><i class="legend-band light-on"></i>开灯区间</span>
+              <span><i class="legend-band person-on"></i>有人区间</span>
+              <span><i class="legend-band alarm-on"></i>报警区间</span>
+            </div>
+          </div>
+          <div class="panel diagnostics-side">
+            <div class="panel-header"><h3>当前样本摘要</h3></div>
+            <div class="diag-metric-grid">
+              <div class="diag-metric"><span>最近开灯</span><strong id="det-last-light">—</strong></div>
+              <div class="diag-metric"><span>最近人员</span><strong id="det-last-person">—</strong></div>
+              <div class="diag-metric"><span>报警状态</span><strong id="det-last-alarm">—</strong></div>
+              <div class="diag-metric"><span>色彩分数</span><strong id="det-last-color">—</strong></div>
+              <div class="diag-metric"><span>运动分数</span><strong id="det-last-motion">—</strong></div>
+              <div class="diag-metric"><span>耗时</span><strong id="det-last-process">—</strong></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h3>采样明细</h3></div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr><th>时间</th><th>视频源</th><th>灯光</th><th>人员</th><th>报警</th><th>色彩</th><th>运动</th><th>亮度</th><th>置信度</th><th>耗时</th><th>原因</th></tr>
+              </thead>
+              <tbody id="det-history-tbody">
+                <tr><td colspan="11" class="muted center">暂无检测采样</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- 系统日志 -->
       <section class="view hidden" id="view-console">
         <div class="view-toolbar">
@@ -822,6 +901,37 @@
           </div>
         </div>
         <div class="console-box" id="console-box"></div>
+      </section>
+
+      <!-- 关于 -->
+      <section class="view hidden" id="view-about">
+        <div class="panel about-panel">
+          <div class="panel-header">
+            <h3>关于</h3>
+            <span class="panel-sub">视频监控管理平台</span>
+          </div>
+          <div class="about-body">
+            <div class="about-logo">
+              <div class="logo-circle"><span class="logo-e">E</span><span class="logo-a">A</span></div>
+            </div>
+            <dl class="about-meta">
+              <dt>项目名称</dt>
+              <dd>EcoAlert</dd>
+
+              <dt>作者</dt>
+              <dd>jinsheng.liu1</dd>
+
+              <dt>项目简介</dt>
+              <dd>基于 Tauri 2 的桌面端视频监控应用：本地 HLS 视频流、ffmpeg 抽帧、ROI 灯光检测、报警状态机与多通道通知。</dd>
+
+              <dt>主要技术栈</dt>
+              <dd>Tauri 2 / Rust / Vite / Vanilla JS / HLS.js / ffmpeg</dd>
+
+              <dt>反馈与贡献</dt>
+              <dd>欢迎提交 Issue 与 Pull Request，共同完善功能与文档。</dd>
+            </dl>
+          </div>
+        </div>
       </section>
     </main>
   </section>

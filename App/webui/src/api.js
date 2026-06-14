@@ -75,6 +75,12 @@ function normalizeSceneState(payload) {
     personConfidence: payload.personConfidence ?? payload.person_confidence ?? 0,
     lightConfidence: payload.lightConfidence ?? payload.light_confidence ?? 0,
     lightState: payload.lightState ?? payload.light_state ?? (payload.light ? 'on' : 'off'),
+    simplePerson: payload.simplePerson ?? payload.simple_person ?? payload.person,
+    simplePersonConfidence: payload.simplePersonConfidence ?? payload.simple_person_confidence ?? payload.person_confidence ?? 0,
+    vlmPerson: payload.vlmPerson ?? payload.vlm_person ?? null,
+    vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
+    vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
+    alarmProgress: payload.alarmProgress ?? payload.alarm_progress ?? 0,
     source: payload.source ?? 'simple',
     modelLatencyMs: payload.modelLatencyMs ?? payload.model_latency_ms ?? null,
     frameSeq: payload.frameSeq ?? payload.frame_seq ?? 0,
@@ -87,6 +93,21 @@ function normalizeSceneState(payload) {
   };
 }
 
+function normalizeDetectionSample(payload) {
+  const s = normalizeSceneState(payload);
+  return {
+    ...s,
+    sourceId: payload.sourceId ?? payload.source_id,
+    frameSeq: payload.frameSeq ?? payload.frame_seq ?? 0,
+    alarmStatus: payload.alarmStatus ?? payload.alarm_status ?? 'normal',
+    lightBrightness: payload.lightBrightness ?? payload.light_brightness ?? 0,
+    colorScore: payload.colorScore ?? payload.color_score ?? 0,
+    motionScore: payload.motionScore ?? payload.motion_score ?? 0,
+    processMs: payload.processMs ?? payload.process_ms ?? 0,
+    ts: payload.ts,
+  };
+}
+
 function normalizeRuntimeStatus(payload) {
   if (!payload) return payload;
   return {
@@ -95,6 +116,7 @@ function normalizeRuntimeStatus(payload) {
     onlineStatus: payload.onlineStatus ?? payload.online_status,
     algorithmStatus: payload.algorithmStatus ?? payload.algorithm_status,
     alarmStatus: payload.alarmStatus ?? payload.alarm_status,
+    vlmEnabled: payload.vlmEnabled ?? payload.vlm_enabled ?? false,
     lastFrameAt: payload.lastFrameAt ?? payload.last_frame_at,
     lastAlgorithmAt: payload.lastAlgorithmAt ?? payload.last_algorithm_at,
     lastError: payload.lastError ?? payload.last_error,
@@ -488,6 +510,14 @@ export async function getStateHistory(sourceId, limit) {
   return mockLoadHistory(sourceId, limit);
 }
 
+export async function listDetectionHistory(sourceId = null, limit = 500) {
+  if (isTauri) {
+    const res = await invoke('list_detection_history', { sourceId, limit });
+    return (res.records || []).map(normalizeDetectionSample);
+  }
+  return [];
+}
+
 export async function getChannelRuntimeStatus(sourceId = null) {
   if (isTauri) {
     const list = await invoke('get_channel_runtime_status', { sourceId });
@@ -550,7 +580,7 @@ export async function getAlgorithmConfig(sourceId = null) {
     vlmPriceInputCache: 0,
     vlmPriceOutput: 0,
     vlmPriceOutputCache: 0,
-    personThreshold: 0.65,
+    personThreshold: 0.006,
     lightThreshold: 0.7,
     alarmHoldSec: 300,
     alarmRecoverSec: 60,
