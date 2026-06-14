@@ -13,7 +13,7 @@
     <div class="login-bg"></div>
     <div class="login-card">
       <div class="login-brand">
-        <div class="logo-circle">EA</div>
+        <div class="logo-circle"><span class="logo-e">E</span><span class="logo-a">A</span></div>
         <h1>EcoAlert</h1>
         <p class="muted">视频监控管理平台</p>
       </div>
@@ -21,9 +21,9 @@
         <label class="field">
           <span class="field-label">登录密码</span>
           <div class="field-input">
-            <span class="field-icon">🔒</span>
+            <span class="field-icon" data-icon="lock"></span>
             <input type="password" id="login-password" placeholder="请输入登录密码" required />
-            <button type="button" class="toggle-eye" id="toggle-pw" aria-label="显示密码">👁</button>
+            <button type="button" class="toggle-eye" id="toggle-pw" aria-label="显示密码"><span data-icon="eye"></span></button>
           </div>
         </label>
         <div class="login-error" id="login-error"></div>
@@ -40,7 +40,7 @@
   <section id="app-page" class="app-page hidden">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <div class="logo-circle small">EA</div>
+        <div class="logo-circle small"><span class="logo-e">E</span><span class="logo-a">A</span></div>
         <div class="brand-text">
           <div class="brand-name">EcoAlert</div>
           <div class="brand-sub">节流监控</div>
@@ -48,28 +48,25 @@
       </div>
       <nav class="nav">
         <button class="nav-item active" data-view="live">
-          <span class="nav-icon">📺</span><span>实时监控</span>
+          <span class="nav-icon" data-icon="monitor"></span><span>实时监控</span>
         </button>
         <button class="nav-item" data-view="overview">
-          <span class="nav-icon">📊</span><span>监控总览</span>
+          <span class="nav-icon" data-icon="chart"></span><span>监控总览</span>
         </button>
         <button class="nav-item" data-view="sources">
-          <span class="nav-icon">⚙️</span><span>视频管理</span>
+          <span class="nav-icon" data-icon="camera"></span><span>视频管理</span>
         </button>
         <button class="nav-item" data-view="basic-settings">
-          <span class="nav-icon">🔐</span><span>基础设置</span>
+          <span class="nav-icon" data-icon="shield"></span><span>基础设置</span>
         </button>
         <button class="nav-item" data-view="detection-settings">
-          <span class="nav-icon">🎯</span><span>检测配置</span>
+          <span class="nav-icon" data-icon="target"></span><span>检测配置</span>
         </button>
         <button class="nav-item" data-view="notification-settings">
-          <span class="nav-icon">🔔</span><span>通知配置</span>
-        </button>
-        <button class="nav-item" data-view="notify-history">
-          <span class="nav-icon">📜</span><span>通知历史</span>
+          <span class="nav-icon" data-icon="bell"></span><span>通知管理</span>
         </button>
         <button class="nav-item" data-view="console">
-          <span class="nav-icon">🖥️</span><span>系统日志</span>
+          <span class="nav-icon" data-icon="terminal"></span><span>系统日志</span>
         </button>
       </nav>
       <div class="sidebar-footer">
@@ -100,10 +97,10 @@
       <section class="view" id="view-live">
         <div class="view-toolbar">
           <div class="toolbar-left">
-            <button class="btn-secondary" id="btn-add-source-live">+ 添加视频源</button>
-            <button class="btn-ghost" id="btn-add-group">+ 新增分组</button>
-            <button class="btn-ghost" id="btn-refresh-status">刷新状态</button>
-            <button class="btn-ghost" id="btn-probe" title="诊断推流是否可达 + 打开 devtools">🔧 诊断</button>
+            <button class="btn-secondary" id="btn-add-source-live"><span data-icon="plus"></span>添加视频源</button>
+            <button class="btn-ghost" id="btn-add-group"><span data-icon="folder-plus"></span>新增分组</button>
+            <button class="btn-ghost" id="btn-refresh-status"><span data-icon="refresh"></span>刷新状态</button>
+            <button class="btn-ghost" id="btn-probe" title="诊断推流是否可达 + 打开 devtools"><span data-icon="wrench"></span>诊断</button>
           </div>
           <div class="toolbar-right">
             <span class="muted" id="live-count">0 路</span>
@@ -112,7 +109,7 @@
         <div class="alarm-banner hidden" id="alarm-banner"></div>
         <div class="video-grid" id="video-grid"></div>
         <div class="empty-state" id="live-empty">
-          <div class="empty-illu">📹</div>
+          <div class="empty-illu" data-icon="video"></div>
           <h3>暂无视频源</h3>
           <p class="muted">点击右上角"+ 添加视频源"开始配置你的第一个监控点</p>
         </div>
@@ -206,7 +203,7 @@
       <section class="view hidden" id="view-sources">
         <div class="view-toolbar">
           <div class="toolbar-left">
-            <button class="btn-secondary" id="btn-add-source">+ 新增视频源</button>
+            <button class="btn-secondary" id="btn-add-source"><span data-icon="plus"></span>新增视频源</button>
           </div>
           <div class="toolbar-right">
             <input type="text" class="input-search" id="src-search" placeholder="搜索名称或位置…" />
@@ -295,6 +292,7 @@
       <section class="view hidden" id="view-detection-settings">
         <nav class="settings-tabs">
           <a href="#sec-algo" class="settings-tab" data-target="sec-algo">算法配置</a>
+          <a href="#sec-vlm" class="settings-tab" data-target="sec-vlm">VLM 配置</a>
           <a href="#sec-roi" class="settings-tab" data-target="sec-roi">ROI 标定</a>
         </nav>
         <div class="settings-grid">
@@ -304,7 +302,7 @@
             <div class="panel-header">
               <h3>算法配置</h3>
               <span class="panel-sub">
-                <span class="badge" id="algo-scope">全局配置</span>
+                <span class="badge" id="algo-scope">全局默认设置</span>
                 <span class="panel-sub-divider">·</span>
                 <span class="panel-sub-text">简单模型 + VLM 低频补漏</span>
               </span>
@@ -313,8 +311,20 @@
               <div class="field-row">
                 <label class="field full">
                   <span class="field-label">配置范围</span>
-                  <select id="algo-source" class="text-input"></select>
-                  <span class="field-hint">选择具体视频源后，保存会覆盖该通道的算法时段、周期和阈值</span>
+                  <div class="input-with-action">
+                    <select id="algo-source" class="text-input"></select>
+                    <button type="button" class="btn-add-config" id="btn-add-algorithm-source" title="添加通道独立配置"><span data-icon="plus"></span><span>添加配置</span></button>
+                  </div>
+                  <span class="field-hint">未添加独立配置的通道默认继承全局默认设置</span>
+                </label>
+              </div>
+              <div class="field-row hidden" id="algo-add-row">
+                <label class="field full">
+                  <span class="field-label">添加通道配置</span>
+                  <div class="input-with-action">
+                    <select id="algo-add-source" class="text-input"></select>
+                    <button type="button" class="btn-confirm-add" id="btn-confirm-add-algorithm-source"><span data-icon="plus"></span><span>添加</span></button>
+                  </div>
                 </label>
               </div>
 
@@ -361,31 +371,13 @@
               <div class="form-section">
                 <div class="form-section-title">推理周期</div>
                 <div class="field-row">
-                  <label class="field">
+                  <label class="field full">
                     <span class="field-label">简单模型</span>
                     <div class="input-with-suffix">
                       <input type="number" id="algo-simple-interval" class="text-input" value="10" min="1" max="3600" step="1" />
                       <span class="suffix">秒/次</span>
                     </div>
                     <span class="field-hint">检测人/灯的轻量模型，频率越高越灵敏</span>
-                  </label>
-                  <label class="field">
-                    <span class="field-label">VLM 大模型</span>
-                    <div class="input-with-suffix">
-                      <input type="number" id="algo-vlm-interval" class="text-input" value="300" min="30" max="86400" step="10" />
-                      <span class="suffix">秒/次</span>
-                    </div>
-                    <span class="field-hint">视觉语言模型，用于复杂场景补充</span>
-                  </label>
-                </div>
-                <div class="field-row">
-                  <label class="field">
-                    <span class="field-label">VLM 每小时上限</span>
-                    <div class="input-with-suffix">
-                      <input type="number" id="algo-vlm-limit" class="text-input" value="12" min="0" max="100" step="1" />
-                      <span class="suffix">次</span>
-                    </div>
-                    <span class="field-hint">防止突发告警打满配额</span>
                   </label>
                 </div>
               </div>
@@ -439,8 +431,27 @@
                 </label>
               </div>
 
+              <div class="form-actions">
+                <button type="button" class="btn-delete-config" id="btn-reset-algorithm-source"><span data-icon="trash"></span><span>删除配置</span></button>
+                <button type="button" class="btn-ghost" id="btn-reload-algorithm">放弃修改</button>
+                <button type="submit" class="btn-primary">保存算法配置</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- VLM 配置 -->
+          <div class="panel settings-vlm hidden" id="sec-vlm">
+            <div class="panel-header">
+              <h3>VLM 配置</h3>
+              <span class="panel-sub">
+                <span class="badge" id="vlm-scope">全局默认设置</span>
+                <span class="panel-sub-divider">·</span>
+                <span class="panel-sub-text">OpenAI-compatible Vision API</span>
+              </span>
+            </div>
+            <form id="vlm-form" class="settings-form">
               <div class="form-section">
-                <div class="form-section-title">VLM 高级</div>
+                <div class="form-section-title">调用策略</div>
                 <label class="check-row">
                   <input type="checkbox" id="algo-vlm-enabled" />
                   <span class="check-text">启用 VLM 低频补漏</span>
@@ -451,12 +462,101 @@
                   <span class="check-text">简单模型识别到"有人"时跳过 VLM</span>
                   <span class="check-hint">节省 VLM 配额，常规情况无需复核</span>
                 </label>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">调用周期</span>
+                    <div class="input-with-suffix">
+                      <input type="number" id="algo-vlm-interval" class="text-input" value="300" min="30" max="86400" step="10" />
+                      <span class="suffix">秒/次</span>
+                    </div>
+                    <span class="field-hint">视觉语言模型，用于复杂场景补充</span>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">每小时上限</span>
+                    <div class="input-with-suffix">
+                      <input type="number" id="algo-vlm-limit" class="text-input" value="12" min="0" max="100" step="1" />
+                      <span class="suffix">次</span>
+                    </div>
+                    <span class="field-hint">防止突发告警打满配额</span>
+                  </label>
+                </div>
               </div>
-
+              <div class="form-section">
+                <div class="form-section-title">模型连接</div>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">API 地址</span>
+                    <input type="text" id="algo-vlm-api-base" class="text-input" placeholder="https://api.openai.com/v1" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">模型名称</span>
+                    <input type="text" id="algo-vlm-model" class="text-input" placeholder="gpt-4o-mini / qwen-vl-plus" />
+                  </label>
+                </div>
+                <label class="field full">
+                  <span class="field-label">API Key</span>
+                  <input type="password" id="algo-vlm-api-key" class="text-input" autocomplete="off" placeholder="sk-..." />
+                </label>
+                <button type="button" class="btn-ghost" id="btn-test-vlm">测试模型</button>
+                <div class="form-msg" id="vlm-test-result"></div>
+              </div>
+              <div class="form-section">
+                <div class="form-section-title">资费统计</div>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">输入单价</span>
+                    <div class="input-with-suffix">
+                      <input type="number" id="algo-vlm-price-input" class="text-input" min="0" step="0.1" value="0" />
+                      <span class="suffix">元/百万</span>
+                    </div>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">输入缓存命中</span>
+                    <div class="input-with-suffix">
+                      <input type="number" id="algo-vlm-price-input-cache" class="text-input" min="0" step="0.1" value="0" />
+                      <span class="suffix">元/百万</span>
+                    </div>
+                  </label>
+                </div>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">输出单价</span>
+                    <div class="input-with-suffix">
+                      <input type="number" id="algo-vlm-price-output" class="text-input" min="0" step="0.1" value="0" />
+                      <span class="suffix">元/百万</span>
+                    </div>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">输出缓存命中</span>
+                    <div class="input-with-suffix">
+                      <input type="number" id="algo-vlm-price-output-cache" class="text-input" min="0" step="0.1" value="0" />
+                      <span class="suffix">元/百万</span>
+                    </div>
+                  </label>
+                </div>
+                <span class="field-hint">测试模型和实际调用返回 usage 时，会按这里的单价估算费用</span>
+              </div>
+              <div class="form-section">
+                <div class="form-section-title">生成参数</div>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">温度</span>
+                    <input type="number" id="algo-vlm-temperature" class="text-input" min="0" max="2" step="0.1" value="0.1" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">最大输出 Token</span>
+                    <input type="number" id="algo-vlm-max-tokens" class="text-input" min="16" max="8192" step="16" value="2048" />
+                  </label>
+                </div>
+                <label class="field full">
+                  <span class="field-label">提示词</span>
+                  <textarea id="algo-vlm-prompt" class="text-input" rows="10"></textarea>
+                  <span class="field-hint">模型必须返回 JSON：has_person 与 detections，用于融合人员检测结果</span>
+                </label>
+              </div>
               <div class="form-actions">
-                <button type="button" class="btn-ghost" id="btn-reset-algorithm-source">恢复全局继承</button>
-                <button type="button" class="btn-ghost" id="btn-reload-algorithm">放弃修改</button>
-                <button type="submit" class="btn-primary">保存算法配置</button>
+                <button type="button" class="btn-ghost" id="btn-reload-vlm">放弃修改</button>
+                <button type="submit" class="btn-primary">保存 VLM 配置</button>
               </div>
             </form>
           </div>
@@ -470,16 +570,28 @@
             <form id="roi-form" class="settings-form">
               <div class="field-row">
                 <label class="field full">
-                  <span class="field-label">通道</span>
-                  <select id="roi-source" class="text-input"></select>
-                  <span class="field-hint">ROI 坐标使用 0-1 归一化，后续接真实画面时不受分辨率影响</span>
+                  <span class="field-label">配置范围</span>
+                  <div class="input-with-action">
+                    <select id="roi-source" class="text-input"></select>
+                    <button type="button" class="btn-add-config" id="btn-add-roi-source" title="添加通道独立配置"><span data-icon="plus"></span><span>添加配置</span></button>
+                  </div>
+                  <span class="field-hint">未添加独立配置的通道默认继承全局默认设置</span>
+                </label>
+              </div>
+              <div class="field-row hidden" id="roi-add-row">
+                <label class="field full">
+                  <span class="field-label">添加通道配置</span>
+                  <div class="input-with-action">
+                    <select id="roi-add-source" class="text-input"></select>
+                    <button type="button" class="btn-confirm-add" id="btn-confirm-add-roi-source"><span data-icon="plus"></span><span>添加</span></button>
+                  </div>
                 </label>
               </div>
               <div class="roi-editor">
                 <div class="roi-preview" id="roi-preview">
                   <div class="roi-video-wrap" id="roi-video-wrap">
                     <div class="roi-video-placeholder" id="roi-video-placeholder">
-                      <div class="illu">📡</div>
+                      <div class="illu" data-icon="satellite"></div>
                       <div>选择通道后显示实时画面</div>
                     </div>
                   </div>
@@ -524,6 +636,7 @@
               </div>
               <div class="form-actions">
                 <button type="button" class="btn-ghost" id="btn-reload-roi">重新加载</button>
+                <button type="button" class="btn-delete-config" id="btn-reset-roi-source"><span data-icon="trash"></span><span>删除配置</span></button>
                 <button type="button" class="btn-ghost" id="btn-test-roi">测试 ROI</button>
                 <button type="submit" class="btn-primary">保存 ROI</button>
               </div>
@@ -534,10 +647,11 @@
         </div>
       </section>
 
-      <!-- 通知配置 -->
+      <!-- 通知管理 -->
       <section class="view hidden" id="view-notification-settings">
         <nav class="settings-tabs">
-          <a href="#sec-notify" class="settings-tab" data-target="sec-notify">通知渠道</a>
+          <a href="#sec-notify" class="settings-tab active" data-target="sec-notify">通知渠道</a>
+          <a href="#sec-notify-history" class="settings-tab" data-target="sec-notify-history">通知历史</a>
         </nav>
         <div class="settings-grid">
 
@@ -545,7 +659,7 @@
           <div class="panel settings-notify" id="sec-notify">
             <div class="panel-header">
               <h3>通知配置</h3>
-              <button class="btn-ghost btn-refresh-notify" id="btn-refresh-notify" title="刷新列表">↻ 刷新</button>
+              <button class="btn-ghost btn-refresh-notify" id="btn-refresh-notify" title="刷新列表"><span data-icon="refresh"></span>刷新</button>
             </div>
             <form id="notify-form" class="settings-form">
               <input type="hidden" id="ntf-edit-id" />
@@ -609,7 +723,7 @@
                   </label>
                   <div class="field" id="ntf-oauth-section" style="display:none">
                     <span class="field-label">&nbsp;</span>
-                    <button type="button" class="btn-ghost" id="btn-oauth-bind">📱 扫码绑定</button>
+                    <button type="button" class="btn-ghost" id="btn-oauth-bind"><span data-icon="qr"></span>扫码绑定</button>
                   </div>
                 </div>
                 <div class="form-actions" style="margin-top:8px">
@@ -672,30 +786,27 @@
             </div>
           </div>
 
-        </div>
-      </section>
+          <!-- 通知历史 -->
+          <div class="panel hidden" id="sec-notify-history">
+            <div class="panel-header">
+              <h3>通知历史</h3>
+              <div class="panel-header-actions">
+                <span class="muted" id="ntf-history-count">0 条</span>
+                <button class="btn-ghost" id="btn-refresh-ntf-history"><span data-icon="refresh"></span>刷新</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr><th>时间</th><th>目标</th><th>事件</th><th>通道</th><th>结果</th><th>耗时</th><th>操作</th></tr>
+                </thead>
+                <tbody id="ntf-history-tbody">
+                  <tr><td colspan="7" class="muted center">暂无通知历史</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-      <!-- 通知历史（独立视图，从侧边栏进入） -->
-      <section class="view hidden" id="view-notify-history">
-        <div class="view-toolbar">
-          <div class="toolbar-left">
-            <span class="muted" id="ntf-history-count">0 条</span>
-          </div>
-          <div class="toolbar-right">
-            <button class="btn-ghost" id="btn-refresh-ntf-history">↻ 刷新</button>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr><th>时间</th><th>目标</th><th>事件</th><th>通道</th><th>结果</th><th>耗时</th><th>操作</th></tr>
-              </thead>
-              <tbody id="ntf-history-tbody">
-                <tr><td colspan="7" class="muted center">暂无通知历史</td></tr>
-              </tbody>
-            </table>
-          </div>
         </div>
       </section>
 
@@ -766,7 +877,7 @@
   <div class="modal-overlay hidden" id="oauth-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>📱 飞书扫码绑定</h3>
+        <h3><span class="heading-icon" data-icon="qr"></span>飞书扫码绑定</h3>
         <button class="modal-close" id="btn-close-oauth">&times;</button>
       </div>
       <div class="modal-body">

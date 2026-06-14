@@ -1,12 +1,13 @@
 // 暴露给前端的 Tauri commands
 use crate::pipeline::{
-    decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, PipelineConfig,
+    decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, vlm,
+    PipelineConfig,
 };
 use crate::state::{log_event, AppState};
 use crate::store::{
     records_by_source, AlarmRecord, AlgorithmConfig, ChannelRuntimeStatus, NotificationRecord,
     NotificationTarget, NotificationTargetPayload, RoiConfig, SceneState, SecurityConfig,
-    SourceGroup, StateRecord, VideoSource,
+    SourceGroup, StateRecord, VideoSource, GLOBAL_ROI_SOURCE_ID,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -533,6 +534,15 @@ pub fn get_algorithm_config(
 }
 
 #[tauri::command]
+pub fn list_algorithm_config_sources(state: State<Arc<AppState>>) -> Result<Vec<String>, String> {
+    require_login(&state)?;
+    let cfg = state.algorithm_config.lock();
+    let mut ids: Vec<String> = cfg.sources.keys().cloned().collect();
+    ids.sort();
+    Ok(ids)
+}
+
+#[tauri::command]
 pub fn get_effective_algorithm_config(
     state: State<Arc<AppState>>,
     source_id: String,
@@ -596,38 +606,119 @@ pub fn delete_algorithm_config(
     state
         .persist_algorithm_config()
         .map_err(|e| e.to_string())?;
-    log_event(&app, "info", "通道算法配置已恢复为全局继承");
+    log_event(&app, "info", "通道算法配置已恢复为全局默认设置");
     Ok(serde_json::json!({ "ok": true }))
 }
 
 #[tauri::command]
-pub fn get_roi_config(state: State<Arc<AppState>>, source_id: String) -> Result<RoiConfig, String> {
+pub async fn test_vlm_config(
+    state: State<'_, Arc<AppState>>,
+    payload: AlgorithmConfig,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    let (reply, usage) = vlm::test_connection(&payload)
+        .await
+        .map_err(|err| err.to_string())?;
+    let cost = usage
+        .as_ref()
+        .map(|usage| calculate_vlm_cost(usage, &payload))
+        .unwrap_or(0.0);
+    Ok(serde_json::json!({
+        "ok": true,
+        "reply": reply,
+        "usage": usage,
+        "cost": cost,
+    }))
+}
+
+fn calculate_vlm_cost(usage: &vlm::VlmUsage, config: &AlgorithmConfig) -> f32 {
+    let normal_input = usage
+        .prompt_tokens
+        .saturating_sub(usage.prompt_cached_tokens) as f32;
+    let cached_input = usage.prompt_cached_tokens as f32;
+    let normal_output = usage
+        .completion_tokens
+        .saturating_sub(usage.completion_cached_tokens) as f32;
+    let cached_output = usage.completion_cached_tokens as f32;
+    (normal_input * config.vlm_price_input
+        + cached_input * config.vlm_price_input_cache
+        + normal_output * config.vlm_price_output
+        + cached_output * config.vlm_price_output_cache)
+        / 1_000_000.0
+}
+
+#[tauri::command]
+pub fn get_roi_config(
+    state: State<Arc<AppState>>,
+    source_id: Option<String>,
+) -> Result<RoiConfig, String> {
     require_login(&state)?;
     let cfg = state.roi_config.lock();
-    Ok(cfg
-        .by_source
-        .get(&source_id)
-        .cloned()
-        .unwrap_or_else(|| RoiConfig::new(source_id)))
+    let Some(source_id) = source_id.filter(|id| id != GLOBAL_ROI_SOURCE_ID) else {
+        return Ok(cfg.global.clone());
+    };
+    Ok(cfg.effective_for_source(&source_id))
+}
+
+#[tauri::command]
+pub fn list_roi_config_sources(state: State<Arc<AppState>>) -> Result<Vec<String>, String> {
+    require_login(&state)?;
+    let cfg = state.roi_config.lock();
+    let mut ids: Vec<String> = cfg.by_source.keys().cloned().collect();
+    ids.sort();
+    Ok(ids)
 }
 
 #[tauri::command]
 pub fn update_roi_config(
     app: AppHandle,
     state: State<Arc<AppState>>,
-    source_id: String,
+    source_id: Option<String>,
     mut payload: RoiConfig,
 ) -> Result<RoiConfig, String> {
     require_login(&state)?;
-    payload.source_id = source_id.clone();
+    let is_global = source_id
+        .as_deref()
+        .map(|id| id == GLOBAL_ROI_SOURCE_ID)
+        .unwrap_or(true);
+    let saved_source_id = source_id.unwrap_or_else(|| GLOBAL_ROI_SOURCE_ID.into());
+    payload.source_id = saved_source_id.clone();
     payload.updated_at = chrono::Utc::now().timestamp_millis();
     {
         let mut cfg = state.roi_config.lock();
-        cfg.by_source.insert(source_id, payload.clone());
+        if is_global {
+            cfg.global = payload.clone();
+        } else {
+            cfg.by_source.insert(saved_source_id, payload.clone());
+        }
     }
     state.persist_roi_config().map_err(|e| e.to_string())?;
-    log_event(&app, "info", "ROI 配置已保存");
+    log_event(
+        &app,
+        "info",
+        if is_global {
+            "全局默认设置已保存"
+        } else {
+            "通道 ROI 配置已保存"
+        },
+    );
     Ok(payload)
+}
+
+#[tauri::command]
+pub fn delete_roi_config(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    source_id: String,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    {
+        let mut cfg = state.roi_config.lock();
+        cfg.by_source.remove(&source_id);
+    }
+    state.persist_roi_config().map_err(|e| e.to_string())?;
+    log_event(&app, "info", "通道 ROI 配置已恢复为全局默认设置");
+    Ok(serde_json::json!({ "ok": true }))
 }
 
 #[tauri::command]
@@ -649,10 +740,7 @@ pub fn test_roi_config(
         payload
     } else {
         let cfg = state.roi_config.lock();
-        cfg.by_source
-            .get(&source_id)
-            .cloned()
-            .unwrap_or_else(|| RoiConfig::new(source_id.clone()))
+        cfg.effective_for_source(&source_id)
     };
     let frame =
         extract_gray_frame_from_url(&source.url, 160, 90, std::time::Duration::from_secs(5))

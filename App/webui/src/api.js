@@ -24,6 +24,22 @@ const MOCK_NTF_KEY = 'ecoalert_mock_notify_targets';
 const MOCK_NTF_HISTORY_KEY = 'ecoalert_mock_notify_history';
 const MOCK_ROI_KEY = 'ecoalert_mock_roi_config';
 const MOCK_ALGO_KEY = 'ecoalert_mock_algorithm_config';
+const GLOBAL_ROI_SOURCE_ID = '__global__';
+const DEFAULT_VLM_PROMPT = `你是一个专业的人体目标检测系统。请仔细分析这张图片，检测其中是否包含人体（完整或局部均可，包括背影、侧身、被部分遮挡的人）。
+
+你必须严格按照以下 JSON 格式输出，不要包含任何额外文字、解释或说明：
+
+当检测到人时：
+{"has_person": true, "detections": [{"label": "person", "confidence": 0.95, "bbox": [x1, y1, x2, y2]}]}
+
+当未检测到人时：
+{"has_person": false, "detections": []}
+
+要求：
+1. bbox 坐标采用千分制归一化值（范围 0-1000），[x1, y1] 为边界框左上角，[x2, y2] 为右下角
+2. confidence 为 0-1 之间的浮点数，表示检测置信度
+3. 检测到的每一个人都必须单独列出一条记录
+4. 仅输出 JSON，不要包含 markdown 标记、代码块或其他任何文字`;
 
 function normalizeSource(s) {
   if (!s) return s;
@@ -524,6 +540,16 @@ export async function getAlgorithmConfig(sourceId = null) {
     vlmIntervalSec: 300,
     vlmEnabled: false,
     vlmSkipWhenPerson: true,
+    vlmApiBase: '',
+    vlmApiKey: '',
+    vlmModel: '',
+    vlmPrompt: DEFAULT_VLM_PROMPT,
+    vlmTemperature: 0.1,
+    vlmMaxTokens: 2048,
+    vlmPriceInput: 0,
+    vlmPriceInputCache: 0,
+    vlmPriceOutput: 0,
+    vlmPriceOutputCache: 0,
     personThreshold: 0.65,
     lightThreshold: 0.7,
     alarmHoldSec: 300,
@@ -554,6 +580,17 @@ export async function updateAlgorithmConfig(sourceId, payload) {
   return saved;
 }
 
+export async function listAlgorithmConfigSources() {
+  if (isTauri) return invoke('list_algorithm_config_sources');
+  try {
+    const raw = localStorage.getItem(MOCK_ALGO_KEY);
+    const file = raw ? JSON.parse(raw) : {};
+    return Object.keys(file.sources || {}).sort();
+  } catch (_) {
+    return [];
+  }
+}
+
 export async function getEffectiveAlgorithmConfig(sourceId) {
   if (isTauri) return invoke('get_effective_algorithm_config', { sourceId });
   const config = await getAlgorithmConfig(sourceId);
@@ -569,15 +606,52 @@ export async function deleteAlgorithmConfig(sourceId) {
   return { ok: true };
 }
 
+function calcVlmCost(usage, cfg) {
+  if (!usage) return 0;
+  const normalInput = Math.max(0, (usage.promptTokens || usage.prompt_tokens || 0) - (usage.promptCachedTokens || usage.prompt_cached_tokens || 0));
+  const cachedInput = usage.promptCachedTokens || usage.prompt_cached_tokens || 0;
+  const normalOutput = Math.max(0, (usage.completionTokens || usage.completion_tokens || 0) - (usage.completionCachedTokens || usage.completion_cached_tokens || 0));
+  const cachedOutput = usage.completionCachedTokens || usage.completion_cached_tokens || 0;
+  return (
+    normalInput * (cfg.vlmPriceInput || 0) +
+    cachedInput * (cfg.vlmPriceInputCache || 0) +
+    normalOutput * (cfg.vlmPriceOutput || 0) +
+    cachedOutput * (cfg.vlmPriceOutputCache || 0)
+  ) / 1_000_000;
+}
+
+export async function testVlmConfig(payload) {
+  if (isTauri) return invoke('test_vlm_config', { payload });
+  const usage = {
+    promptTokens: 128,
+    completionTokens: 8,
+    totalTokens: 136,
+    promptCachedTokens: 0,
+    completionCachedTokens: 0,
+  };
+  return {
+    ok: true,
+    reply: `mock ok: ${payload.vlmModel || '未填写模型'}`,
+    usage,
+    cost: calcVlmCost(usage, payload || {}),
+  };
+}
+
 export async function getRoiConfig(sourceId) {
   if (isTauri) return invoke('get_roi_config', { sourceId });
   try {
     const raw = localStorage.getItem(MOCK_ROI_KEY);
     const all = raw ? JSON.parse(raw) : {};
-    if (all[sourceId]) return all[sourceId];
+    const bySource = all.bySource || all.by_source || all;
+    const global = all.global || bySource[GLOBAL_ROI_SOURCE_ID];
+    if (!sourceId || sourceId === GLOBAL_ROI_SOURCE_ID) {
+      if (global) return global;
+    }
+    if (bySource[sourceId]) return bySource[sourceId];
+    if (global) return { ...global, sourceId };
   } catch (e) { console.warn('[mock] ROI 配置读取失败:', e); }
   return {
-    sourceId,
+    sourceId: sourceId || GLOBAL_ROI_SOURCE_ID,
     version: 'mock-roi',
     lightRois: [{ id: 'light-main', label: '全屏', x: 0, y: 0, w: 1, h: 1 }],
     excludeRois: [],
@@ -588,16 +662,48 @@ export async function getRoiConfig(sourceId) {
   };
 }
 
-export async function updateRoiConfig(sourceId, payload) {
-  if (isTauri) return invoke('update_roi_config', { sourceId, payload });
-  const saved = { ...payload, sourceId, updatedAt: Date.now() };
+export async function listRoiConfigSources() {
+  if (isTauri) return invoke('list_roi_config_sources');
   try {
     const raw = localStorage.getItem(MOCK_ROI_KEY);
-    const all = raw ? JSON.parse(raw) : {};
-    all[sourceId] = saved;
+    const parsed = raw ? JSON.parse(raw) : {};
+    const bySource = parsed.bySource || parsed.by_source || parsed;
+    return Object.keys(bySource)
+      .filter((id) => id && !['global', 'bySource', 'by_source', GLOBAL_ROI_SOURCE_ID].includes(id))
+      .sort();
+  } catch (e) { console.warn('[mock] ROI 配置列表读取失败:', e); }
+  return [];
+}
+
+export async function updateRoiConfig(sourceId, payload) {
+  if (isTauri) return invoke('update_roi_config', { sourceId, payload });
+  const isGlobal = !sourceId || sourceId === GLOBAL_ROI_SOURCE_ID;
+  const saved = { ...payload, sourceId: sourceId || GLOBAL_ROI_SOURCE_ID, updatedAt: Date.now() };
+  try {
+    const raw = localStorage.getItem(MOCK_ROI_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const bySource = parsed.bySource || parsed.by_source || {};
+    const all = { global: parsed.global || bySource[GLOBAL_ROI_SOURCE_ID], bySource };
+    if (isGlobal) all.global = saved;
+    else all.bySource[sourceId] = saved;
     localStorage.setItem(MOCK_ROI_KEY, JSON.stringify(all));
   } catch (e) { console.warn('[mock] ROI 配置写入失败:', e); }
   return saved;
+}
+
+export async function deleteRoiConfig(sourceId) {
+  if (isTauri) return invoke('delete_roi_config', { sourceId });
+  try {
+    const raw = localStorage.getItem(MOCK_ROI_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const bySource = parsed.bySource || parsed.by_source || parsed;
+    delete bySource[sourceId];
+    localStorage.setItem(MOCK_ROI_KEY, JSON.stringify({
+      global: parsed.global || bySource[GLOBAL_ROI_SOURCE_ID],
+      bySource,
+    }));
+  } catch (e) { console.warn('[mock] ROI 配置删除失败:', e); }
+  return { ok: true };
 }
 
 export async function testRoiConfig(sourceId, payload = null) {

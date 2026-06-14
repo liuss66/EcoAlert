@@ -18,6 +18,8 @@ const MOTION_AREA_THRESHOLD: f32 = 0.03;
 const EMA_ALPHA: f32 = 0.3;
 const COLOR_ON_THRESHOLD: f32 = 0.055;
 const COLOR_OFF_THRESHOLD: f32 = 0.025;
+const COLOR_DARK_LUMA_CUTOFF: f32 = 24.0;
+const COLOR_WEIGHT_LUMA_FLOOR: f32 = 40.0;
 
 #[derive(Debug, Clone)]
 pub struct Detection {
@@ -146,7 +148,12 @@ impl Detector {
         };
 
         let light_conf = if has_color_signal {
-            color_light_confidence(smoothed_color, self.light_state)
+            color_light_confidence(
+                smoothed_color,
+                self.light_state,
+                color_on_threshold,
+                color_off_threshold,
+            )
         } else {
             light_confidence(
                 brightness_norm,
@@ -299,8 +306,8 @@ fn average_color_score(frame: &DecodedFrame, roi_config: Option<&RoiConfig>) -> 
         let mut total = 0.0;
         let mut count = 0usize;
         for roi in rois {
-            if let Some((sum, pixels)) = roi_color_sum(frame, roi) {
-                total += sum / pixels as f32;
+            if let Some((score, _pixels)) = roi_color_sum(frame, roi) {
+                total += score;
                 count += 1;
             }
         }
@@ -309,7 +316,7 @@ fn average_color_score(frame: &DecodedFrame, roi_config: Option<&RoiConfig>) -> 
         }
     }
     color_sum_for_bounds(frame, 0, 0, frame.width as usize, frame.height as usize)
-        .map(|(sum, pixels)| sum / pixels as f32)
+        .map(|(score, _pixels)| score)
         .unwrap_or(0.0)
 }
 
@@ -341,6 +348,7 @@ fn color_sum_for_bounds(
 ) -> Option<(f32, usize)> {
     let width = frame.width as usize;
     let mut sum = 0.0f32;
+    let mut weight_sum = 0.0f32;
     let mut pixels = 0usize;
     for y in y1..y2 {
         for x in x1..x2 {
@@ -348,13 +356,34 @@ fn color_sum_for_bounds(
             let Some(px) = frame.rgb.get(idx..idx + 3) else {
                 continue;
             };
-            let max = px[0].max(px[1]).max(px[2]) as f32;
-            let min = px[0].min(px[1]).min(px[2]) as f32;
-            sum += (max - min) / 255.0;
-            pixels += 1;
+            if let Some((score, weight)) = pixel_color_score(px) {
+                sum += score * weight;
+                weight_sum += weight;
+                pixels += 1;
+            }
         }
     }
-    (pixels > 0).then_some((sum, pixels))
+    (weight_sum > 0.0).then_some((sum / weight_sum, pixels.max(1)))
+}
+
+fn pixel_color_score(px: &[u8]) -> Option<(f32, f32)> {
+    if px.len() < 3 {
+        return None;
+    }
+    let r = px[0] as f32;
+    let g = px[1] as f32;
+    let b = px[2] as f32;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let luma = (77.0 * r + 150.0 * g + 29.0 * b) / 256.0;
+    if luma < COLOR_DARK_LUMA_CUTOFF {
+        return None;
+    }
+    let chroma = (max - min) / max.max(1.0);
+    // 暗部压缩噪声和红外近黑区域容易产生微小通道差，按亮度降低权重。
+    let weight =
+        ((luma - COLOR_WEIGHT_LUMA_FLOOR) / (255.0 - COLOR_WEIGHT_LUMA_FLOOR)).clamp(0.05, 1.0);
+    Some((chroma * weight, weight))
 }
 
 fn roi_bounds(width: u32, height: u32, roi: &RoiRect) -> Option<(usize, usize, usize, usize)> {
@@ -396,13 +425,18 @@ fn light_confidence(value: f32, light: bool, on_threshold: f32, off_threshold: f
     (distance / span).clamp(0.0, 1.0)
 }
 
-fn color_light_confidence(color_score: f32, light: bool) -> f32 {
+fn color_light_confidence(
+    color_score: f32,
+    light: bool,
+    on_threshold: f32,
+    off_threshold: f32,
+) -> f32 {
     let distance = if light {
-        (color_score - COLOR_OFF_THRESHOLD).max(0.0)
+        (color_score - off_threshold).max(0.0)
     } else {
-        (COLOR_ON_THRESHOLD - color_score).max(0.0)
+        (on_threshold - color_score).max(0.0)
     };
-    let span = (COLOR_ON_THRESHOLD - COLOR_OFF_THRESHOLD).max(0.01);
+    let span = (on_threshold - off_threshold).max(0.01);
     (distance / span).clamp(0.0, 1.0)
 }
 
@@ -479,6 +513,25 @@ mod tests {
     }
 
     #[test]
+    fn color_score_ignores_dark_chroma_noise() {
+        let mut detector = Detector::new(PipelineConfig::default());
+        let noisy_dark = detector.analyze_scene(&rgb_frame(16, 16, [20, 4, 3]), None);
+        assert!(!noisy_dark.scene.light);
+        assert_eq!(noisy_dark.scene.color_score, 0.0);
+    }
+
+    #[test]
+    fn bright_near_gray_infrared_stays_off() {
+        let mut detector = Detector::new(PipelineConfig::default());
+        let mut result = detector.analyze_scene(&rgb_frame(16, 16, [185, 182, 180]), None);
+        for _ in 0..3 {
+            result = detector.analyze_scene(&rgb_frame(16, 16, [185, 182, 180]), None);
+        }
+        assert!(!result.scene.light);
+        assert!(result.scene.color_score < COLOR_OFF_THRESHOLD);
+    }
+
+    #[test]
     fn light_detector_uses_configured_color_thresholds() {
         let mut cfg = RoiConfig::new("src-test".into());
         cfg.light_on_threshold = 0.03;
@@ -493,6 +546,7 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("light_by_color"));
+        assert!(muted_color.scene.light_confidence > 0.5);
     }
 
     #[test]

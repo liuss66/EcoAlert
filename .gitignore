@@ -15,6 +15,12 @@ Tools/*.egg-info/
 Test/__pycache__/
 Test/.venv/
 Test/output/
+Algo/**/__pycache__/
+Algo/**/*.pyc
+Algo/Python/output/
+
+# Windows
+nul
 
 # 测试视频（体积大，单独管理；下载到本地的 raw 包）
 Video/*.mp4

@@ -307,6 +307,26 @@ pub struct AlgorithmConfig {
     pub vlm_interval_sec: u32,
     pub vlm_enabled: bool,
     pub vlm_skip_when_person: bool,
+    #[serde(default)]
+    pub vlm_api_base: String,
+    #[serde(default)]
+    pub vlm_api_key: String,
+    #[serde(default)]
+    pub vlm_model: String,
+    #[serde(default = "default_vlm_prompt")]
+    pub vlm_prompt: String,
+    #[serde(default = "default_vlm_temperature")]
+    pub vlm_temperature: f32,
+    #[serde(default = "default_vlm_max_tokens")]
+    pub vlm_max_tokens: u32,
+    #[serde(default)]
+    pub vlm_price_input: f32,
+    #[serde(default)]
+    pub vlm_price_input_cache: f32,
+    #[serde(default)]
+    pub vlm_price_output: f32,
+    #[serde(default)]
+    pub vlm_price_output_cache: f32,
     pub person_threshold: f32,
     pub light_threshold: f32,
     pub alarm_hold_sec: u32,
@@ -331,6 +351,16 @@ impl Default for AlgorithmConfig {
             vlm_interval_sec: 300,
             vlm_enabled: false,
             vlm_skip_when_person: true,
+            vlm_api_base: String::new(),
+            vlm_api_key: String::new(),
+            vlm_model: String::new(),
+            vlm_prompt: default_vlm_prompt(),
+            vlm_temperature: default_vlm_temperature(),
+            vlm_max_tokens: default_vlm_max_tokens(),
+            vlm_price_input: 0.0,
+            vlm_price_input_cache: 0.0,
+            vlm_price_output: 0.0,
+            vlm_price_output_cache: 0.0,
             person_threshold: 0.65,
             light_threshold: 0.70,
             alarm_hold_sec: 300,
@@ -342,10 +372,38 @@ impl Default for AlgorithmConfig {
     }
 }
 
+fn default_vlm_temperature() -> f32 {
+    0.1
+}
+
+fn default_vlm_max_tokens() -> u32 {
+    2048
+}
+
+pub fn default_vlm_prompt() -> String {
+    r#"你是一个专业的人体目标检测系统。请仔细分析这张图片，检测其中是否包含人体（完整或局部均可，包括背影、侧身、被部分遮挡的人）。
+
+你必须严格按照以下 JSON 格式输出，不要包含任何额外文字、解释或说明：
+
+当检测到人时：
+{"has_person": true, "detections": [{"label": "person", "confidence": 0.95, "bbox": [x1, y1, x2, y2]}]}
+
+当未检测到人时：
+{"has_person": false, "detections": []}
+
+要求：
+1. bbox 坐标采用千分制归一化值（范围 0-1000），[x1, y1] 为边界框左上角，[x2, y2] 为右下角
+2. confidence 为 0-1 之间的浮点数，表示检测置信度
+3. 检测到的每一个人都必须单独列出一条记录
+4. 仅输出 JSON，不要包含 markdown 标记、代码块或其他任何文字"#.into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlgorithmConfigFile {
     pub schema_version: u32,
+    #[serde(default)]
+    pub manual_source_config_mode: bool,
     pub global: AlgorithmConfig,
     #[serde(default)]
     pub groups: HashMap<String, AlgorithmConfig>,
@@ -357,6 +415,7 @@ impl Default for AlgorithmConfigFile {
     fn default() -> Self {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
+            manual_source_config_mode: true,
             global: AlgorithmConfig::default(),
             groups: HashMap::new(),
             sources: HashMap::new(),
@@ -391,6 +450,8 @@ pub struct RoiConfig {
     pub updated_at: i64,
 }
 
+pub const GLOBAL_ROI_SOURCE_ID: &str = "__global__";
+
 impl RoiConfig {
     pub fn new(source_id: String) -> Self {
         Self {
@@ -411,6 +472,10 @@ impl RoiConfig {
 pub struct RoiConfigFile {
     pub schema_version: u32,
     #[serde(default)]
+    pub manual_source_config_mode: bool,
+    #[serde(default = "default_global_roi_config")]
+    pub global: RoiConfig,
+    #[serde(default)]
     pub by_source: HashMap<String, RoiConfig>,
 }
 
@@ -418,8 +483,24 @@ impl Default for RoiConfigFile {
     fn default() -> Self {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
+            manual_source_config_mode: true,
+            global: default_global_roi_config(),
             by_source: HashMap::new(),
         }
+    }
+}
+
+fn default_global_roi_config() -> RoiConfig {
+    RoiConfig::new(GLOBAL_ROI_SOURCE_ID.into())
+}
+
+impl RoiConfigFile {
+    pub fn effective_for_source(&self, source_id: &str) -> RoiConfig {
+        self.by_source.get(source_id).cloned().unwrap_or_else(|| {
+            let mut global = self.global.clone();
+            global.source_id = source_id.to_string();
+            global
+        })
     }
 }
 

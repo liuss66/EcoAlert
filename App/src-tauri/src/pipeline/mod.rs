@@ -23,6 +23,7 @@ pub mod detector;
 pub mod notifier;
 pub mod oauth_server;
 pub mod scheduler;
+pub mod vlm;
 
 use crate::stream::FramePacket;
 

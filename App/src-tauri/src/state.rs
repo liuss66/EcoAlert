@@ -1,5 +1,6 @@
 // 应用状态：登录态、视频源、分组、状态推送、算法接入点
 use crate::auth::AuthConfig;
+use crate::pipeline::vlm;
 use crate::pipeline::{
     decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, PipelineConfig,
 };
@@ -102,7 +103,8 @@ impl AppState {
         let history = load_history(&history_file);
         let mut algorithm_config: AlgorithmConfigFile = load_json(&algorithm_config_file);
         migrate_legacy_default_algorithm_window(&mut algorithm_config);
-        let roi_config: RoiConfigFile = load_json(&roi_config_file);
+        let mut roi_config: RoiConfigFile = load_json(&roi_config_file);
+        migrate_manual_source_config_mode(&mut algorithm_config, &mut roi_config);
         let notification_config: NotificationConfigFile = load_json(&notification_config_file);
         let security_config: SecurityConfig = load_json(&security_config_file);
         let alarm_records: AlarmRecordFile = load_json(&alarm_records_file);
@@ -298,6 +300,21 @@ fn migrate_legacy_default_algorithm_window(config: &mut AlgorithmConfigFile) {
     }
 }
 
+fn migrate_manual_source_config_mode(
+    algorithm_config: &mut AlgorithmConfigFile,
+    roi_config: &mut RoiConfigFile,
+) {
+    if !algorithm_config.manual_source_config_mode {
+        algorithm_config.groups.clear();
+        algorithm_config.sources.clear();
+        algorithm_config.manual_source_config_mode = true;
+    }
+    if !roi_config.manual_source_config_mode {
+        roi_config.by_source.clear();
+        roi_config.manual_source_config_mode = true;
+    }
+}
+
 /// 启动后台状态推送任务（码率/FPS/在线）
 pub fn spawn_status_ticker(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -379,6 +396,8 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut seeds: HashMap<String, (u64, bool, bool)> = HashMap::new();
         let mut alarm_timers: HashMap<String, AlarmTimer> = HashMap::new();
         let mut last_simple_run: HashMap<String, i64> = HashMap::new();
+        let mut last_vlm_run: HashMap<String, i64> = HashMap::new();
+        let mut vlm_hourly_usage: HashMap<String, (i64, u32)> = HashMap::new();
         loop {
             interval.tick().await;
             let state = app.state::<Arc<AppState>>();
@@ -489,7 +508,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         continue;
                     }
                 };
-                let roi_config = state.roi_config.lock().by_source.get(&s.id).cloned();
+                let roi_config = state.roi_config.lock().effective_for_source(&s.id);
                 let detector = detectors.entry(s.id.clone()).or_insert_with(|| {
                     Detector::with_thresholds(
                         PipelineConfig::default(),
@@ -502,8 +521,89 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     decision.effective_config.person_threshold,
                     decision.effective_config.light_threshold,
                 );
-                let analysis = detector.analyze_scene(&frame, roi_config.as_ref());
-                let new_state = analysis.scene;
+                let analysis = detector.analyze_scene(&frame, Some(&roi_config));
+                let mut new_state = analysis.scene;
+                let vlm_interval_ms =
+                    decision.effective_config.vlm_interval_sec.max(30) as i64 * 1000;
+                let vlm_last_run = last_vlm_run.get(&s.id).copied();
+                let vlm_interval_ready = vlm_last_run
+                    .map(|last| now.saturating_sub(last) >= vlm_interval_ms)
+                    .unwrap_or(true);
+                let hour_bucket = now / 3_600_000;
+                let usage_entry = vlm_hourly_usage
+                    .entry(s.id.clone())
+                    .or_insert((hour_bucket, 0));
+                if usage_entry.0 != hour_bucket {
+                    *usage_entry = (hour_bucket, 0);
+                }
+                let vlm_limit = decision.effective_config.vlm_hourly_limit;
+                let vlm_under_limit = vlm_limit == 0 || usage_entry.1 < vlm_limit;
+                let should_run_vlm = decision.should_run_vlm
+                    && vlm_interval_ready
+                    && vlm_under_limit
+                    && !(decision.effective_config.vlm_skip_when_person && new_state.person);
+                let mut vlm_error_msg: Option<String> = None;
+                if should_run_vlm {
+                    let vlm_started = chrono::Utc::now().timestamp_millis();
+                    match vlm::analyze_person(&decision.effective_config, &frame).await {
+                        Ok(vlm_result) => {
+                            last_vlm_run.insert(s.id.clone(), now);
+                            usage_entry.1 = usage_entry.1.saturating_add(1);
+                            if vlm_result.has_person {
+                                new_state.person = true;
+                                new_state.person_confidence =
+                                    new_state.person_confidence.max(vlm_result.confidence);
+                                new_state.confidence =
+                                    new_state.confidence.max(vlm_result.confidence);
+                                new_state.source = "fused".into();
+                                new_state.reason = Some("vlm_person_detected".into());
+                            }
+                            let latency = chrono::Utc::now()
+                                .timestamp_millis()
+                                .saturating_sub(vlm_started);
+                            let _ = app.emit(
+                                "ecoalert://algorithm_schedule",
+                                serde_json::json!({
+                                    "source_id": s.id,
+                                    "action": "run_vlm",
+                                    "reason": if vlm_result.has_person { "vlm_person_detected" } else { "vlm_no_person" },
+                                    "latency_ms": latency,
+                                    "ts": now,
+                                }),
+                            );
+                            log::debug!(
+                                "VLM result source={} person={} confidence={} raw={}",
+                                s.id,
+                                vlm_result.has_person,
+                                vlm_result.confidence,
+                                vlm_result.raw
+                            );
+                        }
+                        Err(err) => {
+                            last_vlm_run.insert(s.id.clone(), now);
+                            let msg = format!("VLM 检测失败: {err}");
+                            vlm_error_msg = Some(msg.clone());
+                            {
+                                let mut runtime = state.runtime_status.lock();
+                                let entry = runtime.entry(s.id.clone()).or_insert_with(|| {
+                                    ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now)
+                                });
+                                entry.last_error = Some(msg.clone());
+                                entry.ts = now;
+                            }
+                            let _ = app.emit(
+                                "ecoalert://algorithm_schedule",
+                                serde_json::json!({
+                                    "source_id": s.id,
+                                    "action": "vlm_error",
+                                    "reason": msg,
+                                    "latency_ms": null,
+                                    "ts": now,
+                                }),
+                            );
+                        }
+                    }
+                }
                 let person = new_state.person;
                 let light = new_state.light;
                 let raw_alarm = !person && light;
@@ -538,7 +638,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         .entry(s.id.clone())
                         .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
                     entry.algorithm_status = "idle".into();
-                    entry.last_error = None;
+                    entry.last_error = vlm_error_msg.clone();
                     entry.last_algorithm_at = Some(now);
                     entry.alarm_status = alarm_status.into();
                     entry.ts = now;

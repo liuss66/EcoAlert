@@ -1,6 +1,6 @@
 # EcoAlert 视频监控 · 需求规格说明书
 
-> 版本：v1.9
+> 版本：v1.10
 > 日期：2026-06-13  
 > 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入；灯光检测已切换到彩色 / 红外黑白模式特征，人员检测仍为运动代理）
 
@@ -171,7 +171,7 @@
 
 当前检测状态：
 
-- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧 `color_score` 并做 EMA + 磁滞阈值，输出 `light=true/false` 和 `light_state=on/off`。RGB 不可用时才回退到亮度阈值。
+- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧的亮度加权 `color_score`，忽略暗部彩噪，并做 EMA + 磁滞阈值，输出 `light=true/false` 和 `light_state=on/off`。RGB 不可用时才回退到亮度阈值。
 - 人员：尚未接入人形检测模型，`person` 由低分辨率帧差运动分数临时代理；适合观察“画面有明显变化”，不适合作为生产人员存在结论。
 - 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；历史记录仍只在 `person / light` 变化时落库。
 - 默认调度：全局 `activeWindows` 为空，表示全天运行；旧版内置的“工作日 18:30-08:30”默认窗口会在启动时迁移为空，避免演示视频长期停留在“等待结果”。
@@ -193,7 +193,7 @@
 
 | 识别目标 | 推荐方案 | 理由 | 风险 | 规避 |
 | --- | --- | --- | --- | --- |
-| 是否亮灯 | 彩色 / 红外黑白模式切换检测 + 亮度兜底 | 快、稳定、无需训练，适配“开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、彩色噪声低、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI 和开 / 关色彩阈值；无 RGB 帧时回退亮度阈值 |
+| 是否亮灯 | 亮度加权色度检测 + 红外黑白模式识别 + 亮度兜底 | 快、稳定、无需训练，适配“开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI 和开 / 关色彩阈值；暗像素降权，无 RGB 帧时回退亮度阈值 |
 | 是否有人 | 轻量 person detector（ONNX YOLOv8n / YOLO11n / RT-DETR 小模型）或动态目标识别 | 人是报警抑制条件，应优先减少误检；简单模型延迟低，可高频执行 | 静止人员、遮挡、远距离小目标漏检 | 多帧投票、置信度阈值、人员存在保持时间、VLM 低频补漏 |
 | 动态目标识别 | 帧差 / 背景建模 / 光流作为辅助信号 | 计算量低，可用于发现画面变化和触发 VLM 复核 | 动态目标不等于人；风吹、反光、画面噪声容易误触发 | 只作为触发条件，不直接作为“有人”结论；Rust 侧已实现低分辨率帧差核心 |
 
@@ -268,7 +268,7 @@ pub struct SceneState {
     pub reason: Option<String>,   // schedule_disabled | simple_hit_person | vlm_recheck | ...
     pub model_latency_ms: Option<u32>,
     pub light_brightness: f32,    // 亮度兜底和排障读数
-    pub color_score: f32,         // 彩色程度；彩色画面高，红外黑白低
+    pub color_score: f32,         // 亮度加权色度；彩色画面高，红外黑白低
     pub motion_score: f32,
 }
 ```
@@ -933,3 +933,4 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 2026-06-13 | 1.7 | 根据当前代码同步通知渠道能力：补充 `webhook / feishu / wechat_work / qqbot` 渠道类型、平台 API 凭证字段、access token 缓存、飞书 OAuth 扫码绑定和凭证校验 commands；修正未注册的 `mute_source / export_config / import_config` 状态 |
 | 2026-06-13 | 1.8 | 根据当前代码同步真实抽帧与报警状态机进展：后台检测改为 ffmpeg 单帧抽样，浏览器预览停止伪造算法结果，`scene_state` 增加 `alarm / alarm_status`，`simpleIntervalSec / alarmHoldSec / alarmRecoverSec / recoverPolicy` 已接入后端运行链路；Tools 推流器和测试可视化视频生成已补齐 |
 | 2026-06-13 | 1.9 | 同步灯光检测策略变更：开灯优先按彩色画面、关灯按红外黑白画面判断；ROI 阈值改为开 / 关灯色彩阈值，亮度阈值仅作无 RGB 数据兜底；`scene_state` 和 ROI 测试输出补充 `light_state / lightState` 便于 UI 直接展示开关状态 |
+| 2026-06-13 | 1.10 | 优化开灯检测算法：`color_score` 改为亮度加权色度分数，暗像素和红外近黑区域降权，避免暗部压缩彩噪误判开灯；补充暗部彩噪和高亮近灰红外场景单元测试 |

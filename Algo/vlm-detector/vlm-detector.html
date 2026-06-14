@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>人体检测 - VLM 识别</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: #f0f2f5;
+    min-height: 100vh;
+    padding: 24px;
+    color: #333;
+}
+
+.container {
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 28px;
+}
+
+header h1 {
+    font-size: 30px;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin-bottom: 6px;
+}
+
+header .subtitle {
+    font-size: 15px;
+    color: #888;
+}
+
+.config-bar {
+    background: #fff;
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin-bottom: 18px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+}
+
+.config-bar .config-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #444;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.config-bar .config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 14px;
+}
+
+@media (max-width: 720px) {
+    .config-bar .config-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.config-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.config-item label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.config-bar input,
+.config-bar .model-input-wrap {
+    position: relative;
+}
+
+.config-bar input[type="text"],
+.config-bar input[type="password"] {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1.5px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+    font-family: 'Courier New', monospace;
+    background: #fafbfc;
+}
+
+.config-bar input[type="text"]:focus,
+.config-bar input[type="password"]:focus {
+    border-color: #4a90d9;
+    background: #fff;
+}
+
+.config-bar input::placeholder {
+    color: #bbb;
+    font-family: -apple-system, sans-serif;
+}
+
+.config-bar .model-input-wrap input {
+    width: 100%;
+}
+
+.toggle-vis {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: #aaa;
+    padding: 2px 4px;
+    line-height: 1;
+}
+
+.toggle-vis:hover {
+    color: #666;
+}
+
+/* test button */
+.btn-test {
+    background: #52c41a;
+    color: #fff;
+    border: none;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: all 0.2s;
+}
+
+.btn-test:hover {
+    background: #46a817;
+}
+
+.btn-test:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+
+/* test result */
+.test-result {
+    margin-top: 10px;
+    padding: 0;
+    font-size: 13px;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: all 0.3s;
+    max-height: 0;
+}
+
+.test-result.visible {
+    padding: 10px 14px;
+    max-height: 200px;
+}
+
+.test-result.success {
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+.test-result.error {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.test-result.testing {
+    background: #eff6ff;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+}
+
+.test-result pre {
+    margin-top: 6px;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+    opacity: 0.8;
+    max-height: 80px;
+    overflow-y: auto;
+}
+
+/* pricing config row */
+.pricing-row {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed #eee;
+}
+
+.pricing-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #888;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.pricing-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+@media (max-width: 720px) {
+    .pricing-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.pricing-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.pricing-item label {
+    font-size: 11px;
+    color: #999;
+}
+
+.pricing-item input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1.5px solid #e8e8e8;
+    border-radius: 6px;
+    font-size: 13px;
+    outline: none;
+    background: #fafbfc;
+    font-family: 'Courier New', monospace;
+    transition: border-color 0.2s;
+}
+
+.pricing-item input:focus {
+    border-color: #4a90d9;
+    background: #fff;
+}
+
+/* remove number input spinners */
+.pricing-item input[type="number"]::-webkit-inner-spin-button,
+.pricing-item input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.pricing-item input[type="number"] { -moz-appearance: textfield; }
+
+/* token stats in result */
+.token-stats {
+    margin-top: 14px;
+    padding: 14px 18px;
+    background: linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%);
+    border-radius: 10px;
+    border: 1px solid #e8ecf8;
+}
+
+.token-stats .stats-header {
+    font-size: 13px;
+    font-weight: 700;
+    color: #555;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.token-stats .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+}
+
+.stat-card {
+    background: #fff;
+    border-radius: 8px;
+    padding: 10px 14px;
+    border: 1px solid #eef0f5;
+}
+
+.stat-card .stat-label {
+    font-size: 11px;
+    color: #999;
+    margin-bottom: 3px;
+}
+
+.stat-card .stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: #333;
+    font-family: 'Courier New', monospace;
+}
+
+.stat-card .stat-value.cost {
+    color: #e74c3c;
+}
+
+.stat-card .stat-value small {
+    font-size: 12px;
+    font-weight: 400;
+    color: #999;
+}
+
+.stat-card.cache .stat-value {
+    color: #27ae60;
+}
+
+.card {
+    background: #fff;
+    border-radius: 16px;
+    padding: 36px;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+    margin-bottom: 18px;
+}
+
+.upload-area {
+    border: 2.5px dashed #d0d5dd;
+    border-radius: 14px;
+    padding: 56px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.25s;
+    position: relative;
+}
+
+.upload-area:hover,
+.upload-area.dragover {
+    border-color: #4a90d9;
+    background: rgba(74, 144, 217, 0.03);
+}
+
+.upload-area .icon {
+    font-size: 52px;
+    margin-bottom: 14px;
+    display: block;
+}
+
+.upload-area h3 {
+    font-size: 18px;
+    color: #444;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+
+.upload-area p {
+    font-size: 13px;
+    color: #999;
+}
+
+.upload-area input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.result-area { display: none; }
+.result-area.visible { display: block; }
+
+.image-container {
+    position: relative;
+    display: inline-block;
+    line-height: 0;
+}
+
+.image-container img {
+    max-width: 100%;
+    display: block;
+    border-radius: 10px;
+}
+
+.image-container canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+}
+
+.info-panel {
+    margin-top: 18px;
+    padding: 18px 20px;
+    background: #f8f9fb;
+    border-radius: 12px;
+}
+
+.info-panel .summary {
+    font-size: 20px;
+    font-weight: 700;
+    color: #2c3e50;
+    margin-bottom: 10px;
+}
+
+.info-panel .summary.has-person { color: #d35400; }
+.info-panel .summary.no-person  { color: #27ae60; }
+
+.detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+    font-size: 14px;
+}
+
+.detail-table th {
+    background: #eef1f6;
+    padding: 9px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: #555;
+    border-radius: 4px;
+}
+
+.detail-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid #eef0f3;
+    color: #444;
+}
+
+.detail-table td.confidence { font-weight: 700; }
+
+.confidence-high   { color: #27ae60; }
+.confidence-medium { color: #f39c12; }
+.confidence-low    { color: #e74c3c; }
+
+.status-bar {
+    text-align: center;
+    padding: 14px;
+    font-size: 15px;
+    color: #666;
+    display: none;
+}
+
+.status-bar.visible {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+}
+
+.spinner {
+    width: 22px;
+    height: 22px;
+    border: 3px solid #e0e0e0;
+    border-top-color: #4a90d9;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error-msg {
+    background: #fef2f2;
+    color: #b91c1c;
+    padding: 14px 18px;
+    border-radius: 12px;
+    margin-top: 16px;
+    font-size: 14px;
+    display: none;
+    border-left: 4px solid #ef4444;
+}
+
+.error-msg.visible { display: block; }
+
+.raw-section { margin-top: 16px; }
+
+.raw-toggle {
+    background: none;
+    border: 1px solid #ddd;
+    padding: 7px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #666;
+    transition: all 0.2s;
+}
+
+.raw-toggle:hover {
+    background: #f5f5f5;
+    border-color: #bbb;
+}
+
+.raw-content {
+    display: none;
+    margin-top: 12px;
+    padding: 16px;
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-radius: 10px;
+    font-family: 'Courier New', 'Fira Code', monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 350px;
+    overflow-y: auto;
+    line-height: 1.6;
+}
+
+.raw-content.visible { display: block; }
+
+.actions {
+    text-align: center;
+    margin-top: 18px;
+}
+
+.btn {
+    background: #4a90d9;
+    color: #fff;
+    border: none;
+    padding: 11px 30px;
+    border-radius: 10px;
+    font-size: 15px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn:hover {
+    background: #3a7bc8;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(74, 144, 217, 0.3);
+}
+
+.btn:active { transform: translateY(0); }
+.btn.hidden { display: none; }
+
+footer {
+    text-align: center;
+    margin-top: 32px;
+    font-size: 12px;
+    color: #bbb;
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>🔍 人体检测</h1>
+        <p class="subtitle">基于 VLM 大模型 · 上传图片自动识别人体并标注位置</p>
+    </header>
+
+    <!-- Config -->
+    <div class="config-bar">
+        <div class="config-title">
+            <span>⚙️ 接口配置</span>
+            <button id="clearConfig" style="margin-left:auto;background:none;border:1px solid #e0e0e0;padding:3px 10px;border-radius:6px;font-size:11px;color:#999;cursor:pointer">清空配置</button>
+        </div>
+        <div class="config-grid">
+            <div class="config-item">
+                <label>API 地址</label>
+                <input type="text" id="apiBase" placeholder="如 https://api.openai.com/v1">
+            </div>
+            <div class="config-item">
+                <label>API Key</label>
+                <div class="model-input-wrap">
+                    <input type="password" id="apiKey" placeholder="sk-...">
+                    <button class="toggle-vis" id="toggleKeyVis" title="显示/隐藏">👁</button>
+                </div>
+            </div>
+            <div class="config-item">
+                <label>模型名称</label>
+                <div style="display:flex;gap:8px">
+                    <input type="text" id="modelName" placeholder="如 gpt-4o" style="flex:1">
+                    <button class="btn-test" id="testBtn">🔌 测试</button>
+                </div>
+            </div>
+        </div>
+        <div class="test-result" id="testResult"></div>
+
+        <!-- 定价配置 -->
+        <div class="pricing-row">
+            <div class="pricing-title">
+                <span>💰 模型定价</span>
+                <span style="font-weight:400;font-size:11px;color:#bbb">（元 / 百万 tokens）</span>
+            </div>
+            <div class="pricing-grid">
+                <div class="pricing-item">
+                    <label>输入</label>
+                    <input type="number" id="priceInput" step="0.1" min="0" placeholder="2">
+                </div>
+                <div class="pricing-item">
+                    <label>输入（缓存命中）</label>
+                    <input type="number" id="priceInputCache" step="0.1" min="0" placeholder="0.4">
+                </div>
+                <div class="pricing-item">
+                    <label>输出</label>
+                    <input type="number" id="priceOutput" step="0.1" min="0" placeholder="8">
+                </div>
+                <div class="pricing-item">
+                    <label>输出（缓存命中）</label>
+                    <input type="number" id="priceOutputCache" step="0.1" min="0" placeholder="6.4">
+                </div>
+            </div>
+        </div>
+
+        <p style="margin-top:10px;font-size:12px;color:#aaa;line-height:1.6">
+            💡 支持所有兼容 OpenAI <code style="background:#f0f0f0;padding:1px 5px;border-radius:3px">/v1/chat/completions</code> 接口的服务：
+            OpenAI · DashScope · 硅基流动 · Ollama · vLLM · LM Studio 等
+        </p>
+    </div>
+
+    <!-- Upload -->
+    <div class="card">
+        <div class="upload-area" id="uploadArea">
+            <span class="icon">📷</span>
+            <h3>点击或拖拽上传图片</h3>
+            <p>支持 JPG / PNG / WebP 格式</p>
+            <input type="file" id="fileInput" accept="image/*">
+        </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar" id="statusBar">
+        <div class="spinner"></div>
+        <span id="statusText">正在识别中…</span>
+    </div>
+
+    <!-- Error -->
+    <div class="error-msg" id="errorMsg"></div>
+
+    <!-- Result -->
+    <div class="result-area" id="resultArea">
+        <div class="card">
+            <div class="image-container" id="imageContainer">
+                <img id="previewImg" src="" alt="预览图片">
+                <canvas id="overlayCanvas"></canvas>
+            </div>
+            <div class="info-panel" id="infoPanel"></div>
+            <div class="raw-section">
+                <button class="raw-toggle" id="rawToggle">📋 查看模型原始返回</button>
+                <div class="raw-content" id="rawContent"></div>
+            </div>
+        </div>
+        <div class="actions">
+            <button class="btn hidden" id="retryBtn">🔄 重新选择图片</button>
+        </div>
+    </div>
+
+    <footer>Powered by VLM · OpenAI Compatible API</footer>
+</div>
+
+<script>
+// ======================== Configuration (from UI) ========================
+// 无默认值 —— 支持任意兼容 OpenAI 格式的 API（DashScope / OpenAI / Ollama / vLLM / LM Studio …）
+
+// ======================== Prompt Engineering ========================
+const DETECTION_PROMPT = `你是一个专业的人体目标检测系统。请仔细分析这张图片，检测其中是否包含人体（完整或局部均可，包括背影、侧身、被部分遮挡的人）。
+
+你必须严格按照以下 JSON 格式输出，不要包含任何额外文字、解释或说明：
+
+当检测到人时：
+{"has_person": true, "detections": [{"label": "person", "confidence": 0.95, "bbox": [x1, y1, x2, y2]}]}
+
+当未检测到人时：
+{"has_person": false, "detections": []}
+
+要求：
+1. bbox 坐标采用千分制归一化值（范围 0-1000），[x1, y1] 为边界框左上角，[x2, y2] 为右下角
+2. confidence 为 0-1 之间的浮点数，表示检测置信度
+3. 检测到的每一个人都必须单独列出一条记录
+4. 仅输出 JSON，不要包含 markdown 标记、代码块或其他任何文字`;
+
+// ======================== DOM ========================
+const $ = id => document.getElementById(id);
+const fileInput    = $('fileInput');
+const uploadArea   = $('uploadArea');
+const previewImg   = $('previewImg');
+const canvas       = $('overlayCanvas');
+const ctx          = canvas.getContext('2d');
+const resultArea   = $('resultArea');
+const infoPanel    = $('infoPanel');
+const statusBar    = $('statusBar');
+const statusText   = $('statusText');
+const errorMsg     = $('errorMsg');
+const rawContent   = $('rawContent');
+const rawToggle    = $('rawToggle');
+const retryBtn     = $('retryBtn');
+const apiKeyInput    = $('apiKey');
+const apiBaseInput   = $('apiBase');
+const modelNameInput = $('modelName');
+const toggleKeyVis   = $('toggleKeyVis');
+
+// 定价输入
+const priceInput      = $('priceInput');
+const priceInputCache = $('priceInputCache');
+const priceOutput     = $('priceOutput');
+const priceOutputCache = $('priceOutputCache');
+
+// ---- Restore config from localStorage (blank on first visit) ----
+const LS_KEYS = {
+    base: 'vlm_api_base', key: 'vlm_api_key', model: 'vlm_model',
+    priceInput: 'vlm_price_input', priceInputCache: 'vlm_price_input_cache',
+    priceOutput: 'vlm_price_output', priceOutputCache: 'vlm_price_output_cache',
+};
+
+apiBaseInput.value   = localStorage.getItem(LS_KEYS.base) || '';
+apiKeyInput.value    = localStorage.getItem(LS_KEYS.key)  || '';
+modelNameInput.value = localStorage.getItem(LS_KEYS.model) || '';
+
+// 定价：默认值为用户提供的价格
+priceInput.value      = localStorage.getItem(LS_KEYS.priceInput)      || '2';
+priceInputCache.value = localStorage.getItem(LS_KEYS.priceInputCache) || '0.4';
+priceOutput.value     = localStorage.getItem(LS_KEYS.priceOutput)     || '8';
+priceOutputCache.value = localStorage.getItem(LS_KEYS.priceOutputCache) || '6.4';
+
+apiBaseInput.addEventListener('change',   () => localStorage.setItem(LS_KEYS.base, apiBaseInput.value.trim()));
+apiKeyInput.addEventListener('change',    () => localStorage.setItem(LS_KEYS.key, apiKeyInput.value));
+modelNameInput.addEventListener('change', () => localStorage.setItem(LS_KEYS.model, modelNameInput.value.trim()));
+
+priceInput.addEventListener('change',      () => localStorage.setItem(LS_KEYS.priceInput, priceInput.value));
+priceInputCache.addEventListener('change', () => localStorage.setItem(LS_KEYS.priceInputCache, priceInputCache.value));
+priceOutput.addEventListener('change',     () => localStorage.setItem(LS_KEYS.priceOutput, priceOutput.value));
+priceOutputCache.addEventListener('change',() => localStorage.setItem(LS_KEYS.priceOutputCache, priceOutputCache.value));
+
+toggleKeyVis.addEventListener('click', () => {
+    const isPassword = apiKeyInput.type === 'password';
+    apiKeyInput.type = isPassword ? 'text' : 'password';
+    toggleKeyVis.textContent = isPassword ? '🙈' : '👁';
+});
+
+// 清空配置按钮
+$('clearConfig').addEventListener('click', () => {
+    Object.values(LS_KEYS).forEach(k => localStorage.removeItem(k));
+    apiBaseInput.value   = '';
+    apiKeyInput.value    = '';
+    modelNameInput.value = '';
+    priceInput.value      = '2';
+    priceInputCache.value = '0.4';
+    priceOutput.value     = '8';
+    priceOutputCache.value = '6.4';
+    hideTestResult();
+});
+
+// ======================== Generic API Caller ========================
+// 统一的代理请求函数，用于测试和图片识别
+async function callAPI({ apiBase, apiKey, body }) {
+    const proxyUrl  = `${location.protocol}//${location.hostname}:3000/api/proxy`;
+    const targetUrl = `${apiBase}/chat/completions`;
+
+    // 不显式设置 stream 相关参数，让 API 使用默认值
+    const reqBody = { ...body };
+
+    const resp = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            url: targetUrl,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            body: reqBody,
+        }),
+    });
+
+    if (!resp.ok) {
+        const raw = await resp.text();
+        throw new Error(formatApiError(resp.status, raw));
+    }
+
+    return resp.json();
+}
+
+// 解析不同 API 服务的错误格式，给出人类可读的提示
+function formatApiError(status, rawText) {
+    let msg = `HTTP ${status}`;
+    try {
+        const err = JSON.parse(rawText);
+        // OpenAI / DashScope 格式: { error: { message, code, type, param } }
+        if (err.error) {
+            const e = err.error;
+            const parts = [];
+            if (e.code)    parts.push(`code: ${e.code}`);
+            if (e.param)   parts.push(`param: ${e.param}`);
+            if (e.type)    parts.push(`type: ${e.type}`);
+            if (e.message) parts.push(e.message);
+            if (parts.length) msg += ' · ' + parts.join(' | ');
+        }
+        // Ollama 格式: { error: "string" }
+        else if (typeof err.error === 'string') {
+            msg += ' · ' + err.error;
+        }
+        // 其它带 message 的格式
+        else if (err.message) {
+            msg += ' · ' + err.message;
+        }
+        else {
+            msg += '\n' + rawText;
+        }
+    } catch (_) {
+        msg += '\n' + rawText;
+    }
+    return msg;
+}
+
+// ======================== Test Connection ========================
+const testBtn    = $('testBtn');
+const testResult = $('testResult');
+
+testBtn.addEventListener('click', testConnection);
+
+async function testConnection() {
+    const apiBase = apiBaseInput.value.trim().replace(/\/+$/, '');
+    const apiKey  = apiKeyInput.value.trim();
+    const model   = modelNameInput.value.trim();
+
+    if (!apiBase) { showTestResult('error', '❌ 请先填写 API 地址'); return; }
+    if (!apiKey)  { showTestResult('error', '❌ 请先填写 API Key');  return; }
+    if (!model)   { showTestResult('error', '❌ 请先填写模型名称');  return; }
+
+    // 保存配置
+    localStorage.setItem(LS_KEYS.base, apiBase);
+    localStorage.setItem(LS_KEYS.key, apiKey);
+    localStorage.setItem(LS_KEYS.model, model);
+
+    testBtn.disabled = true;
+    testBtn.textContent = '⏳ 测试中…';
+    showTestResult('testing', '🔄 正在连接，请稍候…');
+
+    try {
+        const data = await callAPI({
+            apiBase,
+            apiKey,
+            body: {
+                model,
+                messages: [{ role: 'user', content: 'Hi' }],
+                max_tokens: 16,
+            },
+        });
+
+        const reply = data.choices?.[0]?.message?.content || '(空回复)';
+        const usage = data.usage;
+        let info = `✅ 连接成功！模型 <b>${model}</b> 可用`;
+        if (usage) {
+            info += `<br>tokens：输入 ${usage.prompt_tokens || '?'} · 输出 ${usage.completion_tokens || '?'} · 合计 ${usage.total_tokens || '?'}`;
+        }
+        info += `<pre>${escapeHtml(reply)}</pre>`;
+        showTestResult('success', info);
+
+    } catch (err) {
+        showTestResult('error', `❌ 连接失败\n<pre>${escapeHtml(err.message)}</pre>`);
+    } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = '🔌 测试';
+    }
+}
+
+function showTestResult(type, html) {
+    testResult.className = `test-result visible ${type}`;
+    testResult.innerHTML = html;
+}
+
+function hideTestResult() {
+    testResult.className = 'test-result';
+    testResult.innerHTML = '';
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// ======================== File Upload ========================
+uploadArea.addEventListener('dragover', e => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+});
+
+uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragover');
+});
+
+uploadArea.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+
+fileInput.addEventListener('change', e => {
+    if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+retryBtn.addEventListener('click', () => {
+    resultArea.classList.remove('visible');
+    retryBtn.classList.add('hidden');
+    errorMsg.classList.remove('visible');
+    uploadArea.parentElement.style.display = '';
+    fileInput.value = '';
+});
+
+rawToggle.addEventListener('click', () => {
+    rawContent.classList.toggle('visible');
+    rawToggle.textContent = rawContent.classList.contains('visible')
+        ? '📋 隐藏模型原始返回'
+        : '📋 查看模型原始返回';
+});
+
+function handleFile(file) {
+    if (!file.type.startsWith('image/')) {
+        showError('请选择图片文件（JPG / PNG / WebP）');
+        return;
+    }
+    errorMsg.classList.remove('visible');
+    resultArea.classList.remove('visible');
+
+    const reader = new FileReader();
+    reader.onload = e => {
+        previewImg.onload = () => {
+            resultArea.classList.add('visible');
+            retryBtn.classList.remove('hidden');
+            uploadArea.parentElement.style.display = 'none';
+            detectImage(e.target.result);
+        };
+        previewImg.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+// ======================== Image → Base64 ========================
+function imageToBase64(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            const MAX = 1280;
+            let w = img.naturalWidth, h = img.naturalHeight;
+            if (w > MAX || h > MAX) {
+                const scale = MAX / Math.max(w, h);
+                w = Math.round(w * scale);
+                h = Math.round(h * scale);
+            }
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            c.getContext('2d').drawImage(img, 0, 0, w, h);
+            resolve(c.toDataURL('image/jpeg', 0.85));
+        };
+        img.onerror = reject;
+        img.src = dataUrl;
+    });
+}
+
+// ======================== Call VLM API ========================
+async function detectImage(dataUrl) {
+    const apiBase = apiBaseInput.value.trim().replace(/\/+$/, '');
+    const apiKey  = apiKeyInput.value.trim();
+    const model   = modelNameInput.value.trim();
+
+    if (!apiBase) { showError('请先填写 API 地址（兼容 OpenAI 格式，如 https://api.openai.com/v1）'); return; }
+    if (!apiKey)  { showError('请先填写 API Key');   return; }
+    if (!model)   { showError('请先填写模型名称');   return; }
+
+    localStorage.setItem(LS_KEYS.base, apiBase);
+    localStorage.setItem(LS_KEYS.key, apiKey);
+    localStorage.setItem(LS_KEYS.model, model);
+
+    showLoading('正在编码图片…');
+
+    let base64Url;
+    try {
+        base64Url = await imageToBase64(dataUrl);
+    } catch (err) {
+        showError('图片编码失败：' + err.message);
+        return;
+    }
+
+    showLoading(`正在调用 ${model} 识别…`);
+
+    try {
+        const data = await callAPI({
+            apiBase,
+            apiKey,
+            body: {
+                model,
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'image_url', image_url: { url: base64Url } },
+                            { type: 'text', text: DETECTION_PROMPT },
+                        ],
+                    },
+                ],
+                max_tokens: 2048,
+                temperature: 0.1,
+            },
+        });
+
+        const content = data.choices?.[0]?.message?.content || '';
+        console.log('[VLM Raw Response]', content);
+
+        showLoading('正在解析结果…');
+        const result = parseModelOutput(content);
+        hideLoading();
+
+        drawDetections(result);
+        renderInfo(result, data.usage);
+        rawContent.textContent = content;
+
+    } catch (err) {
+        hideLoading();
+        showError('请求失败：' + err.message);
+    }
+}
+
+// ======================== Parse Model Output ========================
+function parseModelOutput(text) {
+    try { return JSON.parse(text); } catch (_) {}
+
+    const codeBlock = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    if (codeBlock) {
+        try { return JSON.parse(codeBlock[1].trim()); } catch (_) {}
+    }
+
+    const brace = text.match(/\{[\s\S]*\}/);
+    if (brace) {
+        try { return JSON.parse(brace[0]); } catch (_) {}
+    }
+
+    return {
+        has_person: /有|存在|detect|yes|人/i.test(text),
+        detections: [],
+        _parse_error: true,
+        _raw: text,
+    };
+}
+
+// ======================== Draw Bounding Boxes ========================
+function drawDetections(result) {
+    requestAnimationFrame(() => {
+        const dispW = previewImg.clientWidth;
+        const dispH = previewImg.clientHeight;
+        canvas.width  = dispW;
+        canvas.height = dispH;
+        ctx.clearRect(0, 0, dispW, dispH);
+
+        const detections = result.detections || [];
+        const palette = [
+            { stroke: '#ff4d4f', fill: 'rgba(255,77,79,0.12)',  text: '#fff' },
+            { stroke: '#4a90d9', fill: 'rgba(74,144,217,0.12)', text: '#fff' },
+            { stroke: '#52c41a', fill: 'rgba(82,196,26,0.12)',  text: '#fff' },
+            { stroke: '#faad14', fill: 'rgba(250,173,20,0.12)', text: '#fff' },
+            { stroke: '#eb2f96', fill: 'rgba(235,47,150,0.12)', text: '#fff' },
+        ];
+
+        detections.forEach((det, i) => {
+            if (!det.bbox || det.bbox.length !== 4) return;
+
+            const color = palette[i % palette.length];
+            const x1 = (det.bbox[0] / 1000) * dispW;
+            const y1 = (det.bbox[1] / 1000) * dispH;
+            const x2 = (det.bbox[2] / 1000) * dispW;
+            const y2 = (det.bbox[3] / 1000) * dispH;
+            const w  = x2 - x1;
+            const h  = y2 - y1;
+
+            ctx.fillStyle = color.fill;
+            ctx.fillRect(x1, y1, w, h);
+
+            ctx.strokeStyle = color.stroke;
+            ctx.lineWidth   = 3;
+            ctx.setLineDash([]);
+            ctx.strokeRect(x1, y1, w, h);
+
+            const corner = Math.min(20, w * 0.15, h * 0.15);
+            ctx.lineWidth = 5;
+            ctx.beginPath(); ctx.moveTo(x1, y1 + corner); ctx.lineTo(x1, y1); ctx.lineTo(x1 + corner, y1); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x2 - corner, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + corner); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x1, y2 - corner); ctx.lineTo(x1, y2); ctx.lineTo(x1 + corner, y2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x2 - corner, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - corner); ctx.stroke();
+
+            const conf = Math.round((det.confidence || 0) * 100);
+            const label = `${det.label || 'person'} ${conf}%`;
+            ctx.font = 'bold 14px -apple-system, sans-serif';
+            const tm = ctx.measureText(label);
+            const lh = 24, lp = 8;
+            const ly = y1 - lh > 0 ? y1 - lh : y1;
+
+            ctx.fillStyle = color.stroke;
+            ctx.beginPath();
+            roundRect(ctx, x1, ly, tm.width + lp * 2, lh, 5);
+            ctx.fill();
+
+            ctx.fillStyle   = color.text;
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, x1 + lp, ly + lh / 2);
+        });
+    });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+// ======================== Render Info ========================
+function getPricing() {
+    return {
+        input:       parseFloat(priceInput.value)      || 0,
+        inputCache:  parseFloat(priceInputCache.value) || 0,
+        output:      parseFloat(priceOutput.value)     || 0,
+        outputCache: parseFloat(priceOutputCache.value)|| 0,
+    };
+}
+
+// 计算花费（元）：优先使用缓存命中价格，否则用标准价格
+function calcCost(usage, pricing) {
+    if (!usage) return 0;
+    const M = 1_000_000;
+    // 有缓存数据时分开计算
+    if (usage.prompt_tokens_details?.cached_tokens > 0) {
+        const cached = usage.prompt_tokens_details.cached_tokens;
+        const normal = (usage.prompt_tokens || 0) - cached;
+        const inputCost  = (normal / M) * pricing.input + (cached / M) * pricing.inputCache;
+        const outCached  = usage.completion_tokens_details?.cached_tokens || 0;
+        const outNormal  = (usage.completion_tokens || 0) - outCached;
+        const outputCost = (outNormal / M) * pricing.output + (outCached / M) * pricing.outputCache;
+        return inputCost + outputCost;
+    }
+    // 无缓存数据
+    const inputCost  = ((usage.prompt_tokens || 0)     / M) * pricing.input;
+    const outputCost = ((usage.completion_tokens || 0) / M) * pricing.output;
+    return inputCost + outputCost;
+}
+
+function renderInfo(result, usage) {
+    const count = (result.detections || []).length;
+    const hasPerson = result.has_person && count > 0;
+
+    let html = `<div class="summary ${hasPerson ? 'has-person' : 'no-person'}">`;
+    html += hasPerson
+        ? `🚶 检测到 <u>${count}</u> 个人`
+        : '✅ 图片中未检测到人体';
+    html += '</div>';
+
+    if (hasPerson) {
+        html += `<table class="detail-table">
+            <tr><th>#</th><th>标签</th><th>置信度</th><th>位置 (x1, y1, x2, y2)</th></tr>`;
+        result.detections.forEach((d, i) => {
+            const conf = d.confidence || 0;
+            const cls  = conf >= 0.8 ? 'confidence-high'
+                       : conf >= 0.5 ? 'confidence-medium'
+                       : 'confidence-low';
+            html += `<tr>
+                <td>${i + 1}</td>
+                <td>${d.label || 'person'}</td>
+                <td class="confidence ${cls}">${(conf * 100).toFixed(1)}%</td>
+                <td><code>${(d.bbox || []).join(', ')}</code></td>
+            </tr>`;
+        });
+        html += '</table>';
+    }
+
+    // ===== Token 统计和花费 =====
+    if (usage) {
+        const pricing = getPricing();
+        const cost = calcCost(usage, pricing);
+        const cachedIn  = usage.prompt_tokens_details?.cached_tokens || 0;
+        const cachedOut = usage.completion_tokens_details?.cached_tokens || 0;
+
+        html += `<div class="token-stats">
+            <div class="stats-header">📊 Token 用量 & 花费估算</div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">输入 tokens</div>
+                    <div class="stat-value">${(usage.prompt_tokens || 0).toLocaleString()}</div>
+                </div>`;
+
+        if (cachedIn > 0) {
+            html += `<div class="stat-card cache">
+                <div class="stat-label">输入（缓存命中）</div>
+                <div class="stat-value">${cachedIn.toLocaleString()} <small>(${((cachedIn / (usage.prompt_tokens||1)) * 100).toFixed(0)}%)</small></div>
+            </div>`;
+        }
+
+        html += `<div class="stat-card">
+                    <div class="stat-label">输出 tokens</div>
+                    <div class="stat-value">${(usage.completion_tokens || 0).toLocaleString()}</div>
+                </div>`;
+
+        if (cachedOut > 0) {
+            html += `<div class="stat-card cache">
+                <div class="stat-label">输出（缓存命中）</div>
+                        <div class="stat-value">${cachedOut.toLocaleString()}</div>
+                    </div>`;
+        }
+
+        html += `<div class="stat-card">
+                    <div class="stat-label">合计 tokens</div>
+                    <div class="stat-value">${(usage.total_tokens || 0).toLocaleString()}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">本次花费</div>
+                    <div class="stat-value cost">¥${cost.toFixed(6)}</div>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    if (result._parse_error) {
+        html += `<p style="color:#e67e22;margin-top:14px;font-size:13px">
+            ⚠️ 模型返回格式异常，已尝试自动解析。可点击"查看模型原始返回"了解详情。</p>`;
+    }
+
+    infoPanel.innerHTML = html;
+}
+
+// ======================== Helpers ========================
+function showLoading(msg) {
+    statusText.textContent = msg || '处理中…';
+    statusBar.classList.add('visible');
+}
+
+function hideLoading() {
+    statusBar.classList.remove('visible');
+}
+
+function showError(msg) {
+    errorMsg.textContent = '❌ ' + msg;
+    errorMsg.classList.add('visible');
+    hideLoading();
+}
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+        if (resultArea.classList.contains('visible') && previewImg.src) {
+            const raw = rawContent.textContent;
+            if (raw) {
+                const result = parseModelOutput(raw);
+                drawDetections(result);
+            }
+        }
+    }, 200);
+});
+</script>
+</body>
+</html>

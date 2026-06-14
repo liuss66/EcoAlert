@@ -12,8 +12,9 @@ import {
   createSource, updateSource, deleteSource,
   reportSceneState, getStateHistory,
   listAlarms, ackAlarm, resolveAlarm,
-  getAlgorithmConfig, updateAlgorithmConfig, deleteAlgorithmConfig,
-  getRoiConfig, updateRoiConfig, testRoiConfig,
+  getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
+  testVlmConfig,
+  getRoiConfig, listRoiConfigSources, updateRoiConfig, deleteRoiConfig, testRoiConfig,
   listNotificationTargets, createNotificationTarget, updateNotificationTarget, deleteNotificationTarget,
   listNotificationHistory, testNotificationTarget, resendNotification,
   changePassword, getDataDir,
@@ -26,6 +27,45 @@ const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
 
 /* -------------------- 工具 -------------------- */
+const ICONS = {
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  monitor: '<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  chart: '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/>',
+  camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z"/><path d="M9 12l2 2 4-4"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  bell: '<path d="M10 21a2 2 0 0 0 4 0"/><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>',
+  terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  'folder-plus': '<path d="M12 10v6M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.8a2 2 0 0 1-1.6-.8L9.4 3.6A2 2 0 0 0 7.8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.8L21 8"/><path d="M21 3v5h-5"/>',
+  wrench: '<path d="M14.7 6.3a4 4 0 0 0-5.5 5.5L3 18v3h3l6.2-6.2a4 4 0 0 0 5.5-5.5l-2.6 2.6-3-3 2.6-2.6Z"/>',
+  video: '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/>',
+  satellite: '<path d="M13 7 9 3 5 7l4 4 4-4Z"/><path d="m17 11 4 4-4 4-4-4 4-4Z"/><path d="m9 11 4 4"/><path d="M6 14a6 6 0 0 0 4 4"/><path d="M3 15a9 9 0 0 0 6 6"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/>',
+  user: '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/>',
+  bulb: '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M8 14a6 6 0 1 1 8 0c-.7.6-1 1.4-1 2H9c0-.6-.3-1.4-1-2Z"/>',
+  alarm: '<path d="M10 2h4"/><path d="M12 8v5"/><path d="M12 17h.01"/><path d="M4.9 19.1a10 10 0 1 1 14.2 0"/><path d="M3 5 1 7M21 5l2 2"/>',
+  check: '<circle cx="12" cy="12" r="10"/><path d="m8 12 3 3 5-6"/>',
+  alert: '<path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4M12 17h.01"/>',
+  qr: '<rect width="6" height="6" x="3" y="3" rx="1"/><rect width="6" height="6" x="15" y="3" rx="1"/><rect width="6" height="6" x="3" y="15" rx="1"/><path d="M15 15h2v2h-2zM19 15h2M15 19h2M19 19h2v2h-2z"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+};
+
+const icon = (name, extraClass = '') =>
+  `<svg class="icon-svg ${extraClass}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name] || ''}</svg>`;
+
+const hydrateIcons = () => {
+  $$('[data-icon]').forEach((el) => {
+    el.innerHTML = icon(el.dataset.icon);
+  });
+};
+
+const stateMarker = (on, label) =>
+  `<span class="state-marker ${on ? 'on' : 'off'}">${icon(on ? 'check' : 'alert')}<span>${label}</span></span>`;
+
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -298,8 +338,7 @@ const VIEW_META = {
   sources: { title: '视频管理', sub: '新增 / 编辑 / 删除视频流' },
   'basic-settings': { title: '基础设置', sub: '账号安全、数据目录与调试开关' },
   'detection-settings': { title: '检测配置', sub: '算法调度、阈值和 ROI 标定' },
-  'notification-settings': { title: '通知配置', sub: '通知渠道、事件规则和冷却时间' },
-  'notify-history': { title: '通知历史', sub: '每次通知发送的记录与结果' },
+  'notification-settings': { title: '通知管理', sub: '通知渠道配置与发送历史' },
   console: { title: '系统日志', sub: '服务端与客户端事件流' },
 };
 const switchView = (name) => {
@@ -312,7 +351,6 @@ const switchView = (name) => {
   if (name === 'basic-settings') renderBasicSettings();
   if (name === 'detection-settings') renderDetectionSettings();
   if (name === 'notification-settings') renderNotificationSettings();
-  if (name === 'notify-history') renderNotificationHistory();
   if (name !== 'detection-settings') destroyRoiVideo();
 };
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
@@ -376,15 +414,15 @@ const renderLive = () => {
   const sectionHtml = (g, list) => `
     <section class="group-section" data-group-id="${g.id}">
       <header class="group-header">
-        <span class="caret ${g.collapsed ? 'collapsed' : ''}" data-toggle="${g.id}">▾</span>
+        <span class="caret ${g.collapsed ? 'collapsed' : ''}" data-toggle="${g.id}">${icon('chevron')}</span>
         <div class="group-name">
           <span class="grp-label">${escapeHtml(g.name)}</span>
           <input class="grp-input hidden" data-grp-input="${g.id}" value="${escapeHtml(g.name)}" />
         </div>
         <span class="group-count">${list.length} 路</span>
         <div class="group-actions">
-          ${g.id === 'grp-default' ? '' : `<button data-rename="${g.id}" title="重命名">✏️</button>`}
-          ${g.id === 'grp-default' ? '' : `<button data-delgrp="${g.id}" title="删除分组">🗑</button>`}
+          ${g.id === 'grp-default' ? '' : `<button data-rename="${g.id}" title="重命名">${icon('edit')}</button>`}
+          ${g.id === 'grp-default' ? '' : `<button data-delgrp="${g.id}" title="删除分组">${icon('trash')}</button>`}
         </div>
       </header>
       <div class="group-body ${g.collapsed ? 'collapsed' : ''}" data-dropzone="${g.id}">
@@ -623,21 +661,21 @@ function applyStateIcons() {
     const light = el.querySelector('.light');
     const alarm = el.querySelector('.alarm');
     if (person) {
-      person.style.display = s.person ? '' : 'none';
+      person.classList.toggle('is-active', !!s.person);
       person.title = s.person
         ? `人：在场 (置信度 ${(s.personConfidence * 100).toFixed(0)}%)`
         : '人：不在';
     }
     if (light) {
-      light.style.display = s.light ? '' : 'none';
+      light.classList.toggle('is-active', !!s.light);
       light.title = s.light
         ? `灯：亮 (置信度 ${(s.lightConfidence * 100).toFixed(0)}%)`
         : '灯：关';
     }
     if (alarm) {
       const isAlarm = !!s.alarm;
-      alarm.style.display = isAlarm ? '' : 'none';
-      alarm.title = isAlarm ? '⚠️ 报警：无人 + 亮灯' : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常');
+      alarm.classList.toggle('is-active', isAlarm);
+      alarm.title = isAlarm ? '报警：无人 + 亮灯' : (s.alarmStatus === 'suspected' ? '疑似：等待保持时间' : '正常');
     }
   });
   $$('.scene-readout').forEach((el) => {
@@ -674,17 +712,14 @@ function applyStateIcons() {
       return;
     }
     const personPct = s.personConfidence == null ? '-' : `${(s.personConfidence * 100).toFixed(0)}%`;
-    const lightPct  = s.lightConfidence  == null ? '-' : `${(s.lightConfidence  * 100).toFixed(0)}%`;
-    const colorPct   = s.colorScore  == null ? '-' : `${(Number(s.colorScore)  * 100).toFixed(0)}%`;
+    const brightnessText = s.lightBrightness == null ? '-' : `${Number(s.lightBrightness).toFixed(0)}`;
+    const colorText = s.colorScore == null ? '-' : `${Number(s.colorScore).toFixed(3)}`;
     const motionPct  = s.motionScore == null ? '-' : `${(Number(s.motionScore) * 100).toFixed(0)}%`;
     const cost = s.processMs ?? s.modelLatencyMs;
     const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
-    // 纯文字 + 百分比，无 label 无图标
-    const personText = s.person ? '在场' : '不在';
-    const lightText  = s.light  ? '开灯' : '关灯';
-    el.textContent = `${personText} ${personPct}  ${lightText} ${lightPct}  色彩 ${colorPct}  运动 ${motionPct}`;
+    el.textContent = `有人:${personPct}  亮度:${brightnessText}  色彩:${colorText}  运动:${motionPct}`;
     el.dataset.brightness = s.lightBrightness ?? '';
-    el.title = `人: ${personText} (${personPct}) · 灯: ${lightText} (${lightPct}) · 色彩 ${colorPct} · 运动 ${motionPct} · 亮度 ${s.lightBrightness ?? '-'} · 来源 ${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
+    el.title = `有人:${personPct} · 亮度:${brightnessText} · 色彩:${colorText} · 运动:${motionPct} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
   });
 }
 
@@ -731,7 +766,7 @@ function updateAlarmBanner() {
     banner.classList.add('ok');
     banner.classList.remove('alarm');
     banner.innerHTML = `
-      <span class="icon">✅</span>
+      <span class="icon">${icon('check')}</span>
       <div>所有通道状态正常</div>
     `;
   } else {
@@ -741,7 +776,7 @@ function updateAlarmBanner() {
     const shown = alarming.slice(0, 3).map((s) => `<b>${escapeHtml(s.name)}</b>`).join('、');
     const more = alarming.length > 3 ? ` 等 <b>${alarming.length}</b> 路` : '';
     banner.innerHTML = `
-      <span class="icon">🚨</span>
+      <span class="icon">${icon('alarm')}</span>
       <div>当前 <b>${alarming.length}</b> 路报警：${shown}${more}</div>
     `;
   }
@@ -754,7 +789,7 @@ const videoCardHtml = (s) => {
   return `
     <div class="video-card" draggable="true" data-id="${s.id}" data-group-id="${s.groupId || 'grp-default'}">
       <div class="video-wrap" id="vw-${s.id}">
-        <div class="placeholder"><div class="illu">📡</div><div>正在加载视频…</div></div>
+        <div class="placeholder"><div class="illu">${icon('satellite')}</div><div>正在加载视频…</div></div>
         <div class="live-tag ${st.online ? '' : 'off'}">
           <span class="pulse"></span>${st.online ? 'LIVE' : '离线'}
         </div>
@@ -763,16 +798,16 @@ const videoCardHtml = (s) => {
         <div class="card-row card-row-top">
           <span class="card-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
           <span class="state-icons" data-state="${s.id}">
-            <span class="state-icon person" title="人 ${scene.person ? '在场' : '不在'}" style="${scene.person ? '' : 'display:none'}">🧍</span>
-            <span class="state-icon light" title="灯 ${scene.light ? '亮' : '关'}" style="${scene.light ? '' : 'display:none'}">💡</span>
-            <span class="state-icon alarm" title="${alarm ? '⚠️ 报警：无人但亮灯' : '正常'}" style="${alarm ? '' : 'display:none'}">🚨</span>
+            <span class="state-icon person ${scene.person ? 'is-active' : ''}" title="人 ${scene.person ? '在场' : '不在'}">${icon('user')}</span>
+            <span class="state-icon light ${scene.light ? 'is-active' : ''}" title="灯 ${scene.light ? '亮' : '关'}">${icon('bulb')}</span>
+            <span class="state-icon alarm ${alarm ? 'is-active' : ''}" title="${alarm ? '报警：无人但亮灯' : '正常'}">${icon('alarm')}</span>
           </span>
         </div>
         <div class="card-row card-row-bottom">
           <span class="card-loc" title="${escapeHtml(s.location || '')}">${escapeHtml(s.location || '—')}</span>
           <span class="card-actions">
-            <button class="ico-btn btn-edit" data-id="${s.id}" title="编辑">✏️</button>
-            <button class="ico-btn btn-del" data-id="${s.id}" title="删除">🗑</button>
+            <button class="ico-btn btn-edit" data-id="${s.id}" title="编辑">${icon('edit')}</button>
+            <button class="ico-btn btn-del" data-id="${s.id}" title="删除">${icon('trash')}</button>
           </span>
         </div>
         <div class="scene-readout ${developerMode ? '' : 'hidden'}" data-scene="${s.id}" title="等待检测结果">检测：等待结果</div>
@@ -795,7 +830,7 @@ const mountVideo = (src) => {
     if (ph) ph.remove();
     const e = document.createElement('div');
     e.className = 'placeholder';
-    e.innerHTML = '<div class="illu">⚠️</div><div>视频加载失败</div>';
+    e.innerHTML = `<div class="illu">${icon('alert')}</div><div>视频加载失败</div>`;
     wrap.appendChild(e);
   };
   video.addEventListener('error', onError);
@@ -837,7 +872,7 @@ const mountVideo = (src) => {
       if (ph) ph.remove();
       const e = document.createElement('div');
       e.className = 'placeholder';
-      e.innerHTML = '<div class="illu">📡</div><div>RTSP 需服务端转码</div>';
+      e.innerHTML = `<div class="illu">${icon('satellite')}</div><div>RTSP 需服务端转码</div>`;
       wrap.appendChild(e);
       return;
     }
@@ -951,13 +986,13 @@ const renderOverview = async () => {
     const shown = alarming.slice(0, 5).map((s) => `<b>${escapeHtml(s.name)}</b>`).join('、');
     const more = alarming.length > 5 ? ` 等 <b>${alarming.length}</b> 路` : '';
     banner.innerHTML = `
-      <span class="icon">🚨</span>
+      <span class="icon">${icon('alarm')}</span>
       <div>当前 <b>${alarming.length}</b> 路报警：${shown}${more}</div>
     `;
   } else {
     banner.classList.add('ok');
     banner.classList.remove('alarm');
-    banner.innerHTML = `<span class="icon">✅</span><div>所有通道状态正常</div>`;
+    banner.innerHTML = `<span class="icon">${icon('check')}</span><div>所有通道状态正常</div>`;
   }
 
   const tb = $('#ov-tbody');
@@ -968,10 +1003,10 @@ const renderOverview = async () => {
       const st = stats.find((x) => x.id === s.id) || {};
       const sc = sceneStates.get(s.id) || { person: false, light: false };
       const alarm = !!sc.alarm;
-      const personIcon = `<span style="color:${sc.person ? '#10b981' : '#94a3b8'};">${sc.person ? '🟢' : '⚪'}</span>`;
-      const lightIcon = `<span style="color:${sc.light ? '#10b981' : '#94a3b8'};">${sc.light ? '🟢' : '⚪'}</span>`;
+      const personIcon = stateMarker(sc.person, sc.person ? '在' : '不在');
+      const lightIcon = stateMarker(sc.light, sc.light ? '亮' : '关');
       const alarmIcon = alarm
-        ? '<span class="status-pill" style="background:#fee2e2;color:#991b1b;">🚨 报警</span>'
+        ? `<span class="status-pill alarm">${icon('alarm')}报警</span>`
         : '<span class="muted">正常</span>';
       return `
         <tr>
@@ -1004,9 +1039,9 @@ const renderOverview = async () => {
         <tr>
           <td>${fmtDate(r.ts)}</td>
           <td>${escapeHtml(byId.get(r.sourceId) || r.sourceId)}</td>
-          <td>${r.person ? '🟢 在' : '⚪ 不在'}</td>
-          <td>${r.light ? '🟢 亮' : '⚪ 关'}</td>
-          <td>${r.alarm ? '<span class="status-pill" style="background:#fee2e2;color:#991b1b;">🚨</span>' : '<span class="muted">—</span>'}</td>
+          <td>${stateMarker(r.person, r.person ? '在' : '不在')}</td>
+          <td>${stateMarker(r.light, r.light ? '亮' : '关')}</td>
+          <td>${r.alarm ? `<span class="status-pill alarm">${icon('alarm')}</span>` : '<span class="muted">—</span>'}</td>
         </tr>
       `).join('');
     }
@@ -1179,6 +1214,24 @@ $('#pw-form').addEventListener('submit', async (e) => {
 });
 
 /* -------------------- 算法配置 -------------------- */
+const GLOBAL_CONFIG_ID = '__global__';
+let algorithmConfiguredSourceIds = [];
+const DEFAULT_VLM_PROMPT = `你是一个专业的人体目标检测系统。请仔细分析这张图片，检测其中是否包含人体（完整或局部均可，包括背影、侧身、被部分遮挡的人）。
+
+你必须严格按照以下 JSON 格式输出，不要包含任何额外文字、解释或说明：
+
+当检测到人时：
+{"has_person": true, "detections": [{"label": "person", "confidence": 0.95, "bbox": [x1, y1, x2, y2]}]}
+
+当未检测到人时：
+{"has_person": false, "detections": []}
+
+要求：
+1. bbox 坐标采用千分制归一化值（范围 0-1000），[x1, y1] 为边界框左上角，[x2, y2] 为右下角
+2. confidence 为 0-1 之间的浮点数，表示检测置信度
+3. 检测到的每一个人都必须单独列出一条记录
+4. 仅输出 JSON，不要包含 markdown 标记、代码块或其他任何文字`;
+
 const toInt = (value, fallback, min = 0) => {
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -1220,11 +1273,25 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-vlm-limit').value = cfg.vlmHourlyLimit ?? 12;
   $('#algo-vlm-enabled').checked = !!cfg.vlmEnabled;
   $('#algo-vlm-skip-person').checked = cfg.vlmSkipWhenPerson !== false;
+  $('#algo-vlm-api-base').value = cfg.vlmApiBase ?? cfg.vlm_api_base ?? '';
+  $('#algo-vlm-api-key').value = cfg.vlmApiKey ?? cfg.vlm_api_key ?? '';
+  $('#algo-vlm-model').value = cfg.vlmModel ?? cfg.vlm_model ?? '';
+  $('#algo-vlm-temperature').value = cfg.vlmTemperature ?? cfg.vlm_temperature ?? 0.1;
+  $('#algo-vlm-max-tokens').value = cfg.vlmMaxTokens ?? cfg.vlm_max_tokens ?? 2048;
+  $('#algo-vlm-prompt').value = cfg.vlmPrompt ?? cfg.vlm_prompt ?? DEFAULT_VLM_PROMPT;
+  $('#algo-vlm-price-input').value = cfg.vlmPriceInput ?? cfg.vlm_price_input ?? 0;
+  $('#algo-vlm-price-input-cache').value = cfg.vlmPriceInputCache ?? cfg.vlm_price_input_cache ?? 0;
+  $('#algo-vlm-price-output').value = cfg.vlmPriceOutput ?? cfg.vlm_price_output ?? 0;
+  $('#algo-vlm-price-output-cache').value = cfg.vlmPriceOutputCache ?? cfg.vlm_price_output_cache ?? 0;
   const selectedSourceId = getSelectedAlgorithmSourceId();
   const selectedSource = selectedSourceId ? sources.find((s) => s.id === selectedSourceId) : null;
   $('#algo-scope').textContent = selectedSource
-    ? (cfg.scope === 'source' ? `通道配置 · ${selectedSource.name}` : `继承全局 · ${selectedSource.name}`)
-    : '全局配置';
+    ? `通道配置 · ${selectedSource.name}`
+    : '全局默认设置';
+  const vlmScope = $('#vlm-scope');
+  if (vlmScope) {
+    vlmScope.textContent = selectedSource ? `通道配置 · ${selectedSource.name}` : '全局默认设置';
+  }
   const resetBtn = $('#btn-reset-algorithm-source');
   if (resetBtn) resetBtn.style.display = selectedSourceId ? '' : 'none';
   // 同步 chip 选中态 + 刷新 slider 数字显示
@@ -1234,19 +1301,30 @@ const fillAlgorithmForm = (cfg) => {
 };
 
 const getSelectedAlgorithmSourceId = () => {
-  const value = $('#algo-source')?.value || '';
-  return value === '__global__' ? null : value;
+  const value = $('#algo-source')?.value || GLOBAL_CONFIG_ID;
+  return value === GLOBAL_CONFIG_ID ? null : value;
 };
 
 const populateAlgorithmSourceOptions = () => {
   const sel = $('#algo-source');
   if (!sel) return;
-  const current = sel.value || '__global__';
+  const current = sel.value || GLOBAL_CONFIG_ID;
+  const configuredSources = sources.filter((source) => algorithmConfiguredSourceIds.includes(source.id));
   sel.innerHTML = [
-    '<option value="__global__">全局默认配置</option>',
-    ...sources.map((source) => `<option value="${source.id}">${escapeHtml(source.name)} · ${escapeHtml(source.location || '')}</option>`),
+    '<option value="__global__">全局默认设置</option>',
+    ...configuredSources.map((source) => `<option value="${source.id}">${escapeHtml(source.name)} · ${escapeHtml(source.location || '')}</option>`),
   ].join('');
-  sel.value = [...sel.options].some((option) => option.value === current) ? current : '__global__';
+  sel.value = [...sel.options].some((option) => option.value === current) ? current : GLOBAL_CONFIG_ID;
+};
+
+const populateAlgorithmAddOptions = () => {
+  const sel = $('#algo-add-source');
+  if (!sel) return;
+  const candidates = sources.filter((source) => !algorithmConfiguredSourceIds.includes(source.id));
+  sel.innerHTML = candidates.length
+    ? candidates.map((source) => `<option value="${source.id}">${escapeHtml(source.name)} · ${escapeHtml(source.location || '')}</option>`).join('')
+    : '<option value="">没有可添加的视频源</option>';
+  $('#btn-confirm-add-algorithm-source')?.toggleAttribute('disabled', !candidates.length);
 };
 
 const algorithmPayloadFromForm = () => {
@@ -1268,6 +1346,16 @@ const algorithmPayloadFromForm = () => {
     vlmIntervalSec: toInt($('#algo-vlm-interval').value, 300, 30),
     vlmEnabled: $('#algo-vlm-enabled').checked,
     vlmSkipWhenPerson: $('#algo-vlm-skip-person').checked,
+    vlmApiBase: $('#algo-vlm-api-base').value.trim(),
+    vlmApiKey: $('#algo-vlm-api-key').value.trim(),
+    vlmModel: $('#algo-vlm-model').value.trim(),
+    vlmPrompt: $('#algo-vlm-prompt').value.trim() || DEFAULT_VLM_PROMPT,
+    vlmTemperature: toFloat($('#algo-vlm-temperature').value, 0.1, 0, 2),
+    vlmMaxTokens: toInt($('#algo-vlm-max-tokens').value, 2048, 16),
+    vlmPriceInput: toFloat($('#algo-vlm-price-input').value, 0, 0, Number.MAX_SAFE_INTEGER),
+    vlmPriceInputCache: toFloat($('#algo-vlm-price-input-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
+    vlmPriceOutput: toFloat($('#algo-vlm-price-output').value, 0, 0, Number.MAX_SAFE_INTEGER),
+    vlmPriceOutputCache: toFloat($('#algo-vlm-price-output-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
     personThreshold: toFloat($('#algo-person-threshold').value, 0.65),
     lightThreshold: toFloat($('#algo-light-threshold').value, 0.70),
     alarmHoldSec: toInt($('#algo-hold-sec').value, 300, 0),
@@ -1280,13 +1368,37 @@ const algorithmPayloadFromForm = () => {
 
 const renderAlgorithmSettings = async () => {
   try {
+    algorithmConfiguredSourceIds = await listAlgorithmConfigSources();
     populateAlgorithmSourceOptions();
+    populateAlgorithmAddOptions();
     const sourceId = getSelectedAlgorithmSourceId();
     algorithmConfig = await getAlgorithmConfig(sourceId);
     fillAlgorithmForm(algorithmConfig);
   } catch (err) {
     addLog('warn', `算法配置加载失败: ${err.message || err}`);
   }
+};
+
+const renderVlmTestResult = (result) => {
+  const el = $('#vlm-test-result');
+  if (!el) return;
+  const usage = result.usage || {};
+  const promptTokens = usage.promptTokens ?? usage.prompt_tokens ?? 0;
+  const completionTokens = usage.completionTokens ?? usage.completion_tokens ?? 0;
+  const totalTokens = usage.totalTokens ?? usage.total_tokens ?? 0;
+  const promptCached = usage.promptCachedTokens ?? usage.prompt_cached_tokens ?? 0;
+  const completionCached = usage.completionCachedTokens ?? usage.completion_cached_tokens ?? 0;
+  const cost = Number(result.cost || 0);
+  el.classList.add('success');
+  el.innerHTML = [
+    '<div>连接成功，模型可用。</div>',
+    `<div>Tokens：输入 ${promptTokens}，输出 ${completionTokens}，合计 ${totalTokens}</div>`,
+    (promptCached || completionCached)
+      ? `<div>缓存命中：输入 ${promptCached}，输出 ${completionCached}</div>`
+      : '',
+    `<div>估算费用：¥${cost.toFixed(6)}</div>`,
+    result.reply ? `<pre class="inline-pre">${escapeHtml(result.reply)}</pre>` : '',
+  ].filter(Boolean).join('');
 };
 
 const renderSettings = async () => {
@@ -1351,24 +1463,91 @@ $('#algorithm-form').addEventListener('submit', async (e) => {
     const payload = algorithmPayloadFromForm();
     algorithmConfig = await updateAlgorithmConfig(sourceId, payload);
     fillAlgorithmForm(algorithmConfig);
-    addLog('info', sourceId ? '通道算法配置已保存' : '全局算法配置已保存');
+    addLog('info', sourceId ? '通道算法配置已保存' : '全局默认设置已保存');
   } catch (err) {
     alert(err.message || '保存算法配置失败');
   }
 });
 
+$('#vlm-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const sourceId = getSelectedAlgorithmSourceId();
+    const payload = algorithmPayloadFromForm();
+    algorithmConfig = await updateAlgorithmConfig(sourceId, payload);
+    fillAlgorithmForm(algorithmConfig);
+    addLog('info', sourceId ? '通道 VLM 配置已保存' : '全局 VLM 配置已保存');
+  } catch (err) {
+    alert(err.message || '保存 VLM 配置失败');
+  }
+});
+
 $('#btn-reload-algorithm').addEventListener('click', renderAlgorithmSettings);
+$('#btn-reload-vlm')?.addEventListener('click', renderAlgorithmSettings);
+$('#btn-test-vlm')?.addEventListener('click', async () => {
+  const btn = $('#btn-test-vlm');
+  const el = $('#vlm-test-result');
+  if (el) {
+    el.classList.remove('success');
+    el.textContent = '正在测试模型连接...';
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const result = await testVlmConfig(algorithmPayloadFromForm());
+    renderVlmTestResult(result);
+  } catch (err) {
+    if (el) {
+      el.classList.remove('success');
+      el.textContent = err.message || '模型测试失败';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
 $('#algo-source')?.addEventListener('change', renderAlgorithmSettings);
+$('#btn-add-algorithm-source')?.addEventListener('click', () => {
+  populateAlgorithmAddOptions();
+  $('#algo-add-row')?.classList.toggle('hidden');
+});
+$('#btn-confirm-add-algorithm-source')?.addEventListener('click', async () => {
+  const sourceId = $('#algo-add-source')?.value;
+  if (!sourceId) return;
+  try {
+    const globalConfig = await getAlgorithmConfig(null);
+    const payload = {
+      ...globalConfig,
+      scope: 'source',
+      scopeId: sourceId,
+    };
+    await updateAlgorithmConfig(sourceId, payload);
+    algorithmConfiguredSourceIds = await listAlgorithmConfigSources();
+    populateAlgorithmSourceOptions();
+    populateAlgorithmAddOptions();
+    $('#algo-source').value = sourceId;
+    $('#algo-add-row')?.classList.add('hidden');
+    algorithmConfig = await getAlgorithmConfig(sourceId);
+    fillAlgorithmForm(algorithmConfig);
+    addLog('info', '通道算法配置已添加');
+  } catch (err) {
+    alert(err.message || '添加通道算法配置失败');
+  }
+});
 $('#btn-reset-algorithm-source')?.addEventListener('click', async () => {
   const sourceId = getSelectedAlgorithmSourceId();
   if (!sourceId) return;
+  const sourceName = sources.find((item) => item.id === sourceId)?.name || sourceId;
+  if (!confirm(`确定删除「${sourceName}」的算法自定义配置吗？删除后该通道会继承全局默认设置。`)) return;
   try {
     await deleteAlgorithmConfig(sourceId);
-    algorithmConfig = await getAlgorithmConfig(sourceId);
+    algorithmConfiguredSourceIds = await listAlgorithmConfigSources();
+    populateAlgorithmSourceOptions();
+    populateAlgorithmAddOptions();
+    $('#algo-source').value = GLOBAL_CONFIG_ID;
+    algorithmConfig = await getAlgorithmConfig(null);
     fillAlgorithmForm(algorithmConfig);
-    addLog('info', '已恢复为全局算法配置');
+    addLog('info', `已删除算法自定义配置: ${sourceName}`);
   } catch (err) {
-    alert(err.message || '恢复全局继承失败');
+    alert(err.message || '删除算法自定义配置失败');
   }
 });
 
@@ -1381,6 +1560,8 @@ const clamp01 = (value, fallback = 0) => {
 
 const DEFAULT_COLOR_ON_THRESHOLD = 0.055;
 const DEFAULT_COLOR_OFF_THRESHOLD = 0.025;
+const GLOBAL_ROI_SOURCE_ID = '__global__';
+let roiConfiguredSourceIds = [];
 
 const normalizeColorThreshold = (value, fallback) => {
   const n = Number.parseFloat(value);
@@ -1470,12 +1651,33 @@ const mountRoiVideo = (src) => {
 const populateRoiSourceOptions = () => {
   const sel = $('#roi-source');
   if (!sel) return;
-  const current = sel.value;
-  sel.innerHTML = sources.length
-    ? sources.map((s) => `<option value="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(s.location || '未填写位置')}</option>`).join('')
-    : '<option value="">暂无视频源</option>';
-  if (current && sources.some((s) => s.id === current)) sel.value = current;
+  const current = sel.value || GLOBAL_ROI_SOURCE_ID;
+  const configuredSources = sources.filter((s) => roiConfiguredSourceIds.includes(s.id));
+  sel.innerHTML = [
+    '<option value="__global__">全局默认设置</option>',
+    ...configuredSources.map((s) => `<option value="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(s.location || '未填写位置')}</option>`),
+  ].join('');
+  sel.value = [...sel.options].some((option) => option.value === current)
+    ? current
+    : GLOBAL_ROI_SOURCE_ID;
 };
+
+const populateRoiAddOptions = () => {
+  const sel = $('#roi-add-source');
+  if (!sel) return;
+  const candidates = sources.filter((s) => !roiConfiguredSourceIds.includes(s.id));
+  sel.innerHTML = candidates.length
+    ? candidates.map((s) => `<option value="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(s.location || '未填写位置')}</option>`).join('')
+    : '<option value="">没有可添加的视频源</option>';
+  $('#btn-confirm-add-roi-source')?.toggleAttribute('disabled', !candidates.length);
+};
+
+const getSelectedRoiSourceId = () => {
+  const value = $('#roi-source')?.value || GLOBAL_ROI_SOURCE_ID;
+  return value === GLOBAL_ROI_SOURCE_ID ? null : value;
+};
+
+const getRoiTestSourceId = () => getSelectedRoiSourceId() || sources[0]?.id || null;
 
 const updateRoiPreview = () => {
   const box = $('#roi-preview-box');
@@ -1508,7 +1710,7 @@ const fillRoiForm = (cfg) => {
 };
 
 const roiPayloadFromForm = () => {
-  const sourceId = $('#roi-source').value;
+  const sourceId = getSelectedRoiSourceId();
   const x = clamp01($('#roi-x').value, 0);
   const y = clamp01($('#roi-y').value, 0);
   const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 1)));
@@ -1517,7 +1719,7 @@ const roiPayloadFromForm = () => {
   const off = Math.min(on, normalizeColorThreshold($('#roi-light-off').value, DEFAULT_COLOR_OFF_THRESHOLD));
   return {
     ...(roiConfig || {}),
-    sourceId,
+    sourceId: sourceId || GLOBAL_ROI_SOURCE_ID,
     version: roiConfig?.version || `roi-${Date.now()}`,
     lightRois: [{ id: 'light-main', label: '主灯光区域', x, y, w, h }],
     excludeRois: roiConfig?.excludeRois || [],
@@ -1529,10 +1731,12 @@ const roiPayloadFromForm = () => {
 };
 
 const loadSelectedRoi = async () => {
-  const sourceId = $('#roi-source')?.value;
-  if (!sourceId) return;
-  const src = sources.find((s) => s.id === sourceId);
+  const sourceId = getSelectedRoiSourceId();
+  const src = sourceId ? sources.find((s) => s.id === sourceId) : null;
+  const resetBtn = $('#btn-reset-roi-source');
+  if (resetBtn) resetBtn.style.display = sourceId ? '' : 'none';
   if (src) mountRoiVideo(src);
+  else destroyRoiVideo();
   try {
     roiConfig = await getRoiConfig(sourceId);
     fillRoiForm(roiConfig);
@@ -1542,7 +1746,9 @@ const loadSelectedRoi = async () => {
 };
 
 const renderRoiSettings = async () => {
+  roiConfiguredSourceIds = await listRoiConfigSources();
   populateRoiSourceOptions();
+  populateRoiAddOptions();
   await loadSelectedRoi();
 };
 
@@ -1550,11 +1756,57 @@ $('#roi-source')?.addEventListener('change', loadSelectedRoi);
 ['#roi-x', '#roi-y', '#roi-w', '#roi-h'].forEach((id) => {
   $(id)?.addEventListener('input', updateRoiPreview);
 });
+$('#btn-add-roi-source')?.addEventListener('click', () => {
+  populateRoiAddOptions();
+  $('#roi-add-row')?.classList.toggle('hidden');
+});
+$('#btn-confirm-add-roi-source')?.addEventListener('click', async () => {
+  const sourceId = $('#roi-add-source')?.value;
+  if (!sourceId) return;
+  try {
+    const globalConfig = await getRoiConfig(null);
+    const payload = {
+      ...globalConfig,
+      sourceId,
+      version: `roi-${Date.now()}`,
+      updatedAt: Date.now(),
+    };
+    await updateRoiConfig(sourceId, payload);
+    roiConfiguredSourceIds = await listRoiConfigSources();
+    populateRoiSourceOptions();
+    populateRoiAddOptions();
+    $('#roi-source').value = sourceId;
+    $('#roi-add-row')?.classList.add('hidden');
+    await loadSelectedRoi();
+    addLog('info', '通道 ROI 配置已添加');
+  } catch (err) {
+    alert(err.message || '添加通道 ROI 配置失败');
+  }
+});
 $('#btn-reload-roi')?.addEventListener('click', loadSelectedRoi);
+$('#btn-reset-roi-source')?.addEventListener('click', async () => {
+  const sourceId = getSelectedRoiSourceId();
+  if (!sourceId) return;
+  const sourceName = sources.find((item) => item.id === sourceId)?.name || sourceId;
+  if (!confirm(`确定删除「${sourceName}」的 ROI 自定义配置吗？删除后该通道会继承全局默认设置。`)) return;
+  try {
+    await deleteRoiConfig(sourceId);
+    roiConfiguredSourceIds = await listRoiConfigSources();
+    populateRoiSourceOptions();
+    populateRoiAddOptions();
+    $('#roi-source').value = GLOBAL_ROI_SOURCE_ID;
+    roiConfig = await getRoiConfig(null);
+    fillRoiForm(roiConfig);
+    await loadSelectedRoi();
+    addLog('info', `已删除 ROI 自定义配置: ${sourceName}`);
+  } catch (err) {
+    alert(err.message || '删除 ROI 自定义配置失败');
+  }
+});
 $('#btn-test-roi')?.addEventListener('click', async () => {
-  const sourceId = $('#roi-source').value;
+  const sourceId = getRoiTestSourceId();
   if (!sourceId) {
-    alert('请先选择视频源');
+    alert('请先添加视频源，全局默认设置测试需要用一个视频源抽帧');
     return;
   }
   try {
@@ -1571,16 +1823,12 @@ $('#btn-test-roi')?.addEventListener('click', async () => {
 });
 $('#roi-form')?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const sourceId = $('#roi-source').value;
-  if (!sourceId) {
-    alert('请先选择视频源');
-    return;
-  }
+  const sourceId = getSelectedRoiSourceId();
   try {
     const payload = roiPayloadFromForm();
     roiConfig = await updateRoiConfig(sourceId, payload);
     fillRoiForm(roiConfig);
-    addLog('info', 'ROI 配置已保存');
+    addLog('info', sourceId ? '通道 ROI 配置已保存' : '全局默认设置已保存');
   } catch (err) {
     alert(err.message || '保存 ROI 失败');
   }
@@ -2133,6 +2381,7 @@ const updateLiveStats = () => {
 
 /* -------------------- 启动 -------------------- */
 (async () => {
+  hydrateIcons();
   $('#ws-text').textContent = isTauriEnv ? 'Tauri IPC 就绪' : '浏览器预览模式';
   const dot = $('#ws-dot');
   dot.className = isTauriEnv ? 'dot ok' : 'dot';

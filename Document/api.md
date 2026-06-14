@@ -1,6 +1,6 @@
 # EcoAlert 接口契约
 
-> 版本：v1.2
+> 版本：v1.3  
 > 日期：2026-06-13  
 > 范围：Tauri commands、Tauri events、通知 Payload
 
@@ -117,7 +117,7 @@
 | `update_roi_config` | `{ sourceId, payload }` | `RoiConfig` |
 | `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, lightState, person, brightness, colorScore, motionScore, confidence, processMs, version }` |
 
-`test_roi_config` 会对当前视频源 URL 调用 ffmpeg 抽取一帧 `160x90` RGB 图，同时生成灰度图，再用传入或已保存的 ROI 配置运行 `Detector::analyze_scene()`。灯光判断优先使用 ROI 内 `colorScore`：彩色画面高于开灯色彩阈值输出 `light=true / lightState=on`，红外黑白画面低于关灯色彩阈值输出 `light=false / lightState=off`；无 RGB 数据时才回退亮度阈值。调用环境需要可执行的 `ffmpeg`。
+`test_roi_config` 会对当前视频源 URL 调用 ffmpeg 抽取一帧 `160x90` RGB 图，同时生成灰度图，再用传入或已保存的 ROI 配置运行 `Detector::analyze_scene()`。灯光判断优先使用 ROI 内 `colorScore`：该值是亮度加权色度分数，暗像素会降权以抑制红外近黑区域和压缩噪声；彩色画面高于开灯色彩阈值输出 `light=true / lightState=on`，红外黑白画面低于关灯色彩阈值输出 `light=false / lightState=off`；无 RGB 数据时才回退亮度阈值。调用环境需要可执行的 `ffmpeg`。
 
 ### 3.3 报警（生命周期骨架已实现，静默待实现）
 
@@ -235,7 +235,7 @@
 
 `SceneState` 本体只表达画面事实；事件 payload 额外携带 `alarm / alarmStatus` 供前端展示。通知仍只由 `AlarmRecord` 状态变化触发。
 
-当前 `source = simple` 时，`light` 是最终开关灯布尔结果，`lightState` / `light_state` 是便于 UI 直读的 `on/off` 字符串。该结果优先来自 `colorScore`：开灯时摄像头输出彩色图，关灯红外模式输出黑白图；RGB 不可用时才回退到亮度阈值。`lightConfidence` 是当前开关状态判断置信度，不是单纯“关灯概率”。`person` 仍是帧差运动代理结果，不等同于真实人形检测。前端实时卡片会展示开关状态、`colorScore / motionScore / processMs`，用于判断是算法阈值问题还是事件链路问题。
+当前 `source = simple` 时，`light` 是最终开关灯布尔结果，`lightState` / `light_state` 是便于 UI 直读的 `on/off` 字符串。该结果优先来自 `colorScore`：开灯时摄像头输出彩色图，关灯红外模式输出黑白图；`colorScore` 使用亮度加权色度，暗部彩噪不会像正常彩色亮区一样贡献权重；RGB 不可用时才回退到亮度阈值。`lightConfidence` 是当前开关状态判断置信度，不是单纯“关灯概率”。`person` 仍是帧差运动代理结果，不等同于真实人形检测。前端实时卡片会展示开关状态、`colorScore / motionScore / processMs`，用于判断是算法阈值问题还是事件链路问题。
 
 ### 5.3 AlarmRecord
 
