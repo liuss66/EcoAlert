@@ -2438,7 +2438,7 @@ const DEFAULT_DEV_NOTIFY_TARGET = {
     touser: 'jinsheng.liu1',
     msgtype: 'text',
     agentcode: 'ai_challenge',
-    text: { content: '{{event}}：{{source_name}} / {{location}} / 有人={{person}} / 亮灯={{light}} / {{ts}}' },
+    text: { content: '[EcoAlert] {{event}}\n视频源: {{source_name}}\n区域: {{location}}\n有人: {{person}}\n亮灯: {{light}}\n时间: {{ts_formatted}}' },
   }, null, 2),
   eventTypes: ['alarm_triggered', 'alarm_resolved'],
   cooldownSec: 1800,

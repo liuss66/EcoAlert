@@ -67,6 +67,7 @@ pub async fn send_test(
     mut target: NotificationTarget,
 ) -> NotificationRecord {
     let now = chrono::Utc::now().timestamp_millis();
+    let ts_formatted = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let payload = serde_json::json!({
         "event": "test",
         "source_id": null,
@@ -79,6 +80,7 @@ pub async fn send_test(
         "confidence": 1.0,
         "state_source": "test",
         "ts": now,
+        "ts_formatted": ts_formatted,
     });
     let record = send_to_target(&mut target, "test", &payload, None).await;
     persist_and_emit(&app, &state, record.clone());
@@ -188,6 +190,8 @@ fn build_alarm_payload(state: &AppState, event: &str, alarm: &AlarmRecord) -> Va
         .find(|source| source.id == alarm.source_id)
         .cloned();
     let scene = state.current_state.lock().get(&alarm.source_id).cloned();
+    let now = chrono::Utc::now();
+    let ts_formatted = now.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
     serde_json::json!({
         "event": event,
         "alarm_id": alarm.id,
@@ -201,7 +205,8 @@ fn build_alarm_payload(state: &AppState, event: &str, alarm: &AlarmRecord) -> Va
         "alarm": alarm.status == "alarm_active" || alarm.status == "acknowledged",
         "confidence": scene.as_ref().map(|s| s.confidence).unwrap_or(0.0),
         "state_source": "mock",
-        "ts": chrono::Utc::now().timestamp_millis(),
+        "ts": now.timestamp_millis(),
+        "ts_formatted": ts_formatted,
     })
 }
 

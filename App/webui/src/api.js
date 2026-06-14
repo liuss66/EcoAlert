@@ -339,7 +339,7 @@ function buildDefaultNtfTarget() {
       touser: 'jinsheng.liu1',
       msgtype: 'text',
       agentcode: 'ai_challenge',
-      text: { content: '{{rendered_text}}' },
+      text: { content: '[EcoAlert] {{event}}\n视频源: {{source_name}}\n区域: {{location}}\n有人: {{person}}\n亮灯: {{light}}\n时间: {{ts_formatted}}' },
       subject: '{{subject}}',
       from: '{{from}}',
     }, null, 2),
