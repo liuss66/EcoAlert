@@ -2435,7 +2435,7 @@ const DEFAULT_DEV_NOTIFY_TARGET = {
     { name: 'Cookie', value: 'JSESSIONID=1D6DEE38ECAC44223748CE0B062F8CC0' },
   ],
   bodyTemplate: JSON.stringify({
-    touser: 'ai_challenge',
+    touser: 'jinsheng.liu1',
     msgtype: 'text',
     agentcode: 'ai_challenge',
     text: { content: '{{event}}：{{source_name}} / {{location}} / 有人={{person}} / 亮灯={{light}} / {{ts}}' },

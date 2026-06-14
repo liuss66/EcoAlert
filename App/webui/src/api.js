@@ -336,7 +336,7 @@ function buildDefaultNtfTarget() {
     timeoutSec: 10,
     retryCount: 2,
     bodyTemplate: JSON.stringify({
-      touser: 'ai_challenge',
+      touser: 'jinsheng.liu1',
       msgtype: 'text',
       agentcode: 'ai_challenge',
       text: { content: '{{rendered_text}}' },
