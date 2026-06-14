@@ -7,9 +7,10 @@ use crate::pipeline::{
 use crate::store::{
     backfill_groups, load, load_history, load_json, migrate_local_hls_demo_names, save,
     save_history, save_json, seed_local_hls_sources_if_empty, AlarmRecord, AlarmRecordFile,
-    AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, HistoryFile, NotificationConfigFile,
-    NotificationHistoryFile, NotificationRecord, RoiConfigFile, SceneState, SecurityConfig,
-    SourceGroup, StateRecord, VideoSource,
+    AlgorithmConfig, AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, DetectionHistoryFile,
+    DetectionSampleRecord, HistoryFile, NotificationConfigFile, NotificationHistoryFile,
+    NotificationRecord, RoiConfigFile, SceneState, SecurityConfig, SourceGroup, StateRecord,
+    VideoSource,
 };
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -18,6 +19,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+
+const PERSON_PRESENCE_HOLD_MS: i64 = 5 * 60 * 1000;
+const VLM_NO_PERSON_CONFIRMATIONS: u8 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelStatus {
@@ -36,6 +40,7 @@ pub struct AppState {
     pub data_file: PathBuf,
     pub auth_file: PathBuf,
     pub history_file: PathBuf,
+    pub detection_history_file: PathBuf,
     pub algorithm_config_file: PathBuf,
     pub roi_config_file: PathBuf,
     pub notification_config_file: PathBuf,
@@ -48,6 +53,7 @@ pub struct AppState {
     pub auth: Mutex<AuthConfig>,
     pub data: Mutex<DataFile>,
     pub history: Mutex<HistoryFile>,
+    pub detection_history: Mutex<DetectionHistoryFile>,
     pub algorithm_config: Mutex<AlgorithmConfigFile>,
     pub roi_config: Mutex<RoiConfigFile>,
     pub notification_config: Mutex<NotificationConfigFile>,
@@ -69,6 +75,7 @@ impl AppState {
         let data_file = data_dir.join("sources.json");
         let auth_file = data_dir.join("auth.json");
         let history_file = data_dir.join("state_history.json");
+        let detection_history_file = data_dir.join("detection_history.json");
         let algorithm_config_file = data_dir.join("algorithm_config.json");
         let roi_config_file = data_dir.join("roi_config.json");
         let notification_config_file = data_dir.join("notification_config.json");
@@ -101,6 +108,7 @@ impl AppState {
         };
 
         let history = load_history(&history_file);
+        let detection_history: DetectionHistoryFile = load_json(&detection_history_file);
         let mut algorithm_config: AlgorithmConfigFile = load_json(&algorithm_config_file);
         migrate_legacy_default_algorithm_window(&mut algorithm_config);
         let mut roi_config: RoiConfigFile = load_json(&roi_config_file);
@@ -127,6 +135,9 @@ impl AppState {
         if let Err(e) = save_json(&notification_history_file, &notification_history) {
             log::warn!("初始化落盘失败(notification_history.json): {e}");
         }
+        if let Err(e) = save_json(&detection_history_file, &detection_history) {
+            log::warn!("初始化落盘失败(detection_history.json): {e}");
+        }
         let sources = data.sources.clone();
         let groups = data.groups.clone();
 
@@ -135,6 +146,7 @@ impl AppState {
             data_file,
             auth_file,
             history_file,
+            detection_history_file,
             algorithm_config_file,
             roi_config_file,
             notification_config_file,
@@ -147,6 +159,7 @@ impl AppState {
             auth: Mutex::new(auth),
             data: Mutex::new(data),
             history: Mutex::new(history),
+            detection_history: Mutex::new(detection_history),
             algorithm_config: Mutex::new(algorithm_config),
             roi_config: Mutex::new(roi_config),
             notification_config: Mutex::new(notification_config),
@@ -208,6 +221,35 @@ impl AppState {
             h.records.pop_front();
         }
         save_history(&self.history_file, &h)
+    }
+
+    /// 详细检测采样落盘：开发者诊断曲线使用，每个源最多保留 2000 条，总量 20000 条。
+    pub fn record_detection_sample(&self, rec: DetectionSampleRecord) -> anyhow::Result<()> {
+        let source_id = rec.source_id.clone();
+        let mut h = self.detection_history.lock();
+        h.records.push_back(rec);
+
+        let mut source_count = h
+            .records
+            .iter()
+            .filter(|item| item.source_id == source_id)
+            .count();
+        while source_count > 2000 {
+            if let Some(idx) = h
+                .records
+                .iter()
+                .position(|item| item.source_id == source_id)
+            {
+                h.records.remove(idx);
+                source_count -= 1;
+            } else {
+                break;
+            }
+        }
+        while h.records.len() > 20000 {
+            h.records.pop_front();
+        }
+        save_json(&self.detection_history_file, &*h)
     }
 
     pub fn runtime_status_snapshot(&self) -> Vec<ChannelRuntimeStatus> {
@@ -396,7 +438,9 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut seeds: HashMap<String, (u64, bool, bool)> = HashMap::new();
         let mut alarm_timers: HashMap<String, AlarmTimer> = HashMap::new();
         let mut last_simple_run: HashMap<String, i64> = HashMap::new();
+        let mut config_signatures: HashMap<String, String> = HashMap::new();
         let mut last_vlm_run: HashMap<String, i64> = HashMap::new();
+        let mut presence_trackers: HashMap<String, PresenceTracker> = HashMap::new();
         let mut vlm_hourly_usage: HashMap<String, (i64, u32)> = HashMap::new();
         loop {
             interval.tick().await;
@@ -406,10 +450,16 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             let now = chrono::Utc::now().timestamp_millis();
             for s in &sources {
                 let decision = scheduler::decide_for_source(s, &algorithm_config);
+                let config_signature = algorithm_config_signature(&decision.effective_config);
+                let config_changed = config_signatures
+                    .get(&s.id)
+                    .map(|prev| prev != &config_signature)
+                    .unwrap_or(true);
                 let simple_interval_ms =
                     decision.effective_config.simple_interval_sec.max(1) as i64 * 1000;
                 let last_run = last_simple_run.get(&s.id).copied();
                 let should_wait_interval = decision.should_run_simple
+                    && !config_changed
                     && last_run
                         .map(|last| now.saturating_sub(last) < simple_interval_ms)
                         .unwrap_or(false);
@@ -419,6 +469,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         .entry(s.id.clone())
                         .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
                     entry.effective_algorithm_config_scope = decision.config_scope.clone();
+                    entry.vlm_enabled = decision.effective_config.vlm_enabled;
                     entry.algorithm_status = if should_wait_interval {
                         "idle".into()
                     } else if decision.should_run_simple {
@@ -457,6 +508,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 if !decision.should_run_simple || should_wait_interval {
                     continue;
                 }
+                config_signatures.insert(s.id.clone(), config_signature);
                 last_simple_run.insert(s.id.clone(), now);
                 let (counter, prev_p, prev_l) =
                     seeds.entry(s.id.clone()).or_insert((0, false, false));
@@ -477,6 +529,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                             let entry = runtime.entry(source_id.clone()).or_insert_with(|| {
                                 ChannelRuntimeStatus::new(source_id.clone(), source_enabled, now)
                             });
+                            entry.vlm_enabled = decision.effective_config.vlm_enabled;
                             entry.algorithm_status = "error".into();
                             entry.last_error = Some(msg.clone());
                             entry.ts = now;
@@ -500,6 +553,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                             let entry = runtime.entry(source_id.clone()).or_insert_with(|| {
                                 ChannelRuntimeStatus::new(source_id.clone(), source_enabled, now)
                             });
+                            entry.vlm_enabled = decision.effective_config.vlm_enabled;
                             entry.algorithm_status = "error".into();
                             entry.last_error = Some(msg.clone());
                             entry.ts = now;
@@ -523,6 +577,30 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 );
                 let analysis = detector.analyze_scene(&frame, Some(&roi_config));
                 let mut new_state = analysis.scene;
+                let tracker = presence_trackers.entry(s.id.clone()).or_default();
+                let simple_person = new_state.person;
+                let simple_person_confidence = new_state.person_confidence;
+                let mut vlm_person: Option<bool> = None;
+                let mut vlm_person_confidence: Option<f32> = None;
+                let mut vlm_status = "none";
+                if simple_person {
+                    tracker.mark_person_seen(now);
+                    new_state.reason = Some(append_reason(
+                        new_state.reason.as_deref(),
+                        "simple_person_hold_reset",
+                    ));
+                } else {
+                    tracker.mark_simple_no_person(now);
+                    if tracker.person_is_held(now) {
+                        new_state.person = true;
+                        new_state.person_confidence = new_state.person_confidence.max(0.55);
+                        new_state.reason = Some(append_reason(
+                            new_state.reason.as_deref(),
+                            "person_hold_5min",
+                        ));
+                    }
+                }
+
                 let vlm_interval_ms =
                     decision.effective_config.vlm_interval_sec.max(30) as i64 * 1000;
                 let vlm_last_run = last_vlm_run.get(&s.id).copied();
@@ -538,18 +616,61 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 }
                 let vlm_limit = decision.effective_config.vlm_hourly_limit;
                 let vlm_under_limit = vlm_limit == 0 || usage_entry.1 < vlm_limit;
+                let needs_vlm_no_person_confirmation =
+                    tracker.no_person_for_at_least(now, PERSON_PRESENCE_HOLD_MS);
+                let vlm_skip_when_person = decision.effective_config.vlm_skip_when_person;
+                let light_off_skip = !new_state.light;
+                let mut vlm_skip_reason: Option<&'static str> = None;
                 let should_run_vlm = decision.should_run_vlm
                     && vlm_interval_ready
                     && vlm_under_limit
-                    && !(decision.effective_config.vlm_skip_when_person && new_state.person);
+                    && needs_vlm_no_person_confirmation
+                    && {
+                        if vlm_skip_when_person && simple_person {
+                            vlm_skip_reason = Some("simple_person_detected");
+                            false
+                        } else if light_off_skip {
+                            vlm_skip_reason = Some("light_off_no_alarm_risk");
+                            false
+                        } else {
+                            true
+                        }
+                    };
                 let mut vlm_error_msg: Option<String> = None;
+                if !should_run_vlm {
+                    if let Some(reason) = vlm_skip_reason {
+                        vlm_status = "skipped";
+                        let _ = app.emit(
+                            "ecoalert://algorithm_schedule",
+                            serde_json::json!({
+                                "source_id": s.id,
+                                "action": "skip_vlm",
+                                "reason": reason,
+                                "latency_ms": null,
+                                "ts": now,
+                            }),
+                        );
+                        log::debug!(
+                            "VLM skipped source={} reason={} (skip_when_person={}, light_off={}, simple_person={})",
+                            s.id,
+                            reason,
+                            vlm_skip_when_person,
+                            light_off_skip,
+                            simple_person,
+                        );
+                    }
+                }
                 if should_run_vlm {
                     let vlm_started = chrono::Utc::now().timestamp_millis();
                     match vlm::analyze_person(&decision.effective_config, &frame).await {
                         Ok(vlm_result) => {
                             last_vlm_run.insert(s.id.clone(), now);
                             usage_entry.1 = usage_entry.1.saturating_add(1);
+                            vlm_person = Some(vlm_result.has_person);
+                            vlm_person_confidence = Some(vlm_result.confidence);
                             if vlm_result.has_person {
+                                vlm_status = "person";
+                                tracker.mark_person_seen(now);
                                 new_state.person = true;
                                 new_state.person_confidence =
                                     new_state.person_confidence.max(vlm_result.confidence);
@@ -557,10 +678,21 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                     new_state.confidence.max(vlm_result.confidence);
                                 new_state.source = "fused".into();
                                 new_state.reason = Some("vlm_person_detected".into());
+                            } else {
+                                vlm_status = "no_person";
+                                tracker.mark_vlm_no_person();
+                                new_state.person = false;
+                                new_state.person_confidence = 0.0;
+                                new_state.source = "fused".into();
+                                new_state.reason = Some(format!(
+                                    "vlm_no_person_confirmed_{}/{}",
+                                    tracker.vlm_no_person_streak, VLM_NO_PERSON_CONFIRMATIONS
+                                ));
                             }
                             let latency = chrono::Utc::now()
                                 .timestamp_millis()
                                 .saturating_sub(vlm_started);
+                            new_state.model_latency_ms = Some(latency as u32);
                             let _ = app.emit(
                                 "ecoalert://algorithm_schedule",
                                 serde_json::json!({
@@ -581,6 +713,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         }
                         Err(err) => {
                             last_vlm_run.insert(s.id.clone(), now);
+                            vlm_status = "error";
                             let msg = format!("VLM 检测失败: {err}");
                             vlm_error_msg = Some(msg.clone());
                             {
@@ -588,6 +721,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                 let entry = runtime.entry(s.id.clone()).or_insert_with(|| {
                                     ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now)
                                 });
+                                entry.vlm_enabled = decision.effective_config.vlm_enabled;
                                 entry.last_error = Some(msg.clone());
                                 entry.ts = now;
                             }
@@ -604,25 +738,48 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         }
                     }
                 }
+                if !tracker.person_is_held(now) && !simple_person {
+                    new_state.person = false;
+                }
                 let person = new_state.person;
                 let light = new_state.light;
-                let raw_alarm = !person && light;
+                let vlm_confirmed_no_person =
+                    tracker.vlm_no_person_streak >= VLM_NO_PERSON_CONFIRMATIONS;
+                let raw_alarm = light && !person && vlm_confirmed_no_person;
+                let alarm_progress = if raw_alarm {
+                    1.0
+                } else if light && !person && decision.should_run_vlm {
+                    (tracker.vlm_no_person_streak as f32 / VLM_NO_PERSON_CONFIRMATIONS as f32)
+                        .clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 let recover_condition =
                     should_recover_alarm(person, light, &decision.effective_config.recover_policy);
                 let alarm_transition = alarm_timers.entry(s.id.clone()).or_default().update(
                     raw_alarm,
                     recover_condition,
                     now,
-                    decision.effective_config.alarm_hold_sec,
+                    0,
                     decision.effective_config.alarm_recover_sec,
                 );
                 let alarm_status = alarm_timers
                     .get(&s.id)
                     .map(|timer| {
                         if timer.active {
-                            "alarm_active"
+                            if recover_condition {
+                                "recovering"
+                            } else {
+                                "alarm_active"
+                            }
                         } else if raw_alarm {
                             "suspected"
+                        } else if light
+                            && !person
+                            && needs_vlm_no_person_confirmation
+                            && decision.should_run_vlm
+                        {
+                            "vlm_checking"
                         } else {
                             "normal"
                         }
@@ -638,6 +795,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         .entry(s.id.clone())
                         .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
                     entry.algorithm_status = "idle".into();
+                    entry.vlm_enabled = decision.effective_config.vlm_enabled;
                     entry.last_error = vlm_error_msg.clone();
                     entry.last_algorithm_at = Some(now);
                     entry.alarm_status = alarm_status.into();
@@ -649,7 +807,14 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "light": light,
                     "light_state": if light { "on" } else { "off" },
                     "alarm": alarm_status == "alarm_active",
+                    "alarm_record_active": alarm_timers.get(&s.id).map(|timer| timer.active).unwrap_or(false),
                     "alarm_status": alarm_status,
+                    "alarm_progress": alarm_progress,
+                    "simple_person": simple_person,
+                    "simple_person_confidence": simple_person_confidence,
+                    "vlm_person": vlm_person,
+                    "vlm_person_confidence": vlm_person_confidence,
+                    "vlm_status": vlm_status,
                     "person_confidence": new_state.person_confidence,
                     "light_confidence": new_state.light_confidence,
                     "confidence": new_state.confidence,
@@ -664,6 +829,15 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "ts": now,
                 });
                 let _ = app.emit("ecoalert://scene_state", scene_payload);
+
+                if let Err(e) = state.record_detection_sample(DetectionSampleRecord::from_scene(
+                    &s.id,
+                    &new_state,
+                    alarm_status,
+                    now,
+                )) {
+                    log::warn!("详细检测历史落库失败: {e}");
+                }
 
                 // 状态历史只在 person / light 变化时落库，避免历史文件快速膨胀。
                 let mut state_record_id: Option<String> = None;
@@ -747,6 +921,56 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
 }
 
 #[derive(Default)]
+struct PresenceTracker {
+    last_person_seen_at: Option<i64>,
+    first_no_person_at: Option<i64>,
+    vlm_no_person_streak: u8,
+}
+
+impl PresenceTracker {
+    fn mark_person_seen(&mut self, now: i64) {
+        self.last_person_seen_at = Some(now);
+        self.first_no_person_at = None;
+        self.vlm_no_person_streak = 0;
+    }
+
+    fn mark_simple_no_person(&mut self, now: i64) {
+        if self.last_person_seen_at.is_none() {
+            self.first_no_person_at.get_or_insert(now);
+        }
+    }
+
+    fn mark_vlm_no_person(&mut self) {
+        self.vlm_no_person_streak = self.vlm_no_person_streak.saturating_add(1);
+    }
+
+    fn person_is_held(&self, now: i64) -> bool {
+        self.last_person_seen_at
+            .map(|seen_at| now.saturating_sub(seen_at) < PERSON_PRESENCE_HOLD_MS)
+            .unwrap_or(false)
+    }
+
+    fn no_person_since(&self) -> Option<i64> {
+        self.last_person_seen_at.or(self.first_no_person_at)
+    }
+
+    fn no_person_for_at_least(&self, now: i64, duration_ms: i64) -> bool {
+        !self.person_is_held(now)
+            && self
+                .no_person_since()
+                .map(|since| now.saturating_sub(since) >= duration_ms)
+                .unwrap_or(false)
+    }
+}
+
+fn append_reason(existing: Option<&str>, item: &str) -> String {
+    match existing {
+        Some(text) if !text.is_empty() => format!("{text};{item}"),
+        _ => item.to_string(),
+    }
+}
+
+#[derive(Default)]
 struct AlarmTimer {
     alarm_since: Option<i64>,
     recover_since: Option<i64>,
@@ -798,6 +1022,31 @@ fn should_recover_alarm(person: bool, light: bool, policy: &str) -> bool {
         "both" => person && !light,
         "either" => person || !light,
         _ => person || !light,
+    }
+}
+
+fn algorithm_config_signature(config: &AlgorithmConfig) -> String {
+    format!(
+        "enabled={};dev={};simple={};person={:.5};hold={};recover={};policy={};vlm={};vlm_interval={};vlm_skip={};vlm_limit={}",
+        config.enabled,
+        config.developer_mode,
+        config.simple_interval_sec,
+        normalized_person_threshold(config.person_threshold),
+        config.alarm_hold_sec,
+        config.alarm_recover_sec,
+        config.recover_policy,
+        config.vlm_enabled,
+        config.vlm_interval_sec,
+        config.vlm_skip_when_person,
+        config.vlm_hourly_limit,
+    )
+}
+
+fn normalized_person_threshold(value: f32) -> f32 {
+    if value > 0.2 {
+        (value.clamp(0.05, 1.0) * 0.03).max(0.001)
+    } else {
+        value.clamp(0.001, 0.20)
     }
 }
 
