@@ -8,6 +8,7 @@
 - `architecture.md` — 架构设计（模块图、数据流、关键决策）
 - `api.md` — 前后端接口契约（Tauri commands / events）
 - `deployment.md` — 打包 / 部署 / 升级
+- `user-guide.md` — 软件使用流程与用户操作手册
 - `changelog/` — 变更日志，按日期分文件
 - `decisions/` — 关键决策记录（ADR 风格）
 

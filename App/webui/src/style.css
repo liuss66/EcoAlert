@@ -973,6 +973,55 @@ body.developer-mode .developer-only.hidden { display: flex !important; }
   border-radius: 999px;
   border: 1px solid var(--border);
 }
+.domain-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.domain-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.domain-toggle-track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background-color .15s;
+}
+.domain-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15,23,42,0.18);
+  transition: transform .15s;
+}
+.domain-toggle input:checked + .domain-toggle-track {
+  background: var(--primary);
+}
+.domain-toggle input:checked + .domain-toggle-track::after {
+  transform: translateX(12px);
+}
+.domain-toggle:has(input:checked) {
+  color: var(--primary-hover);
+  border-color: rgba(59,130,246,0.35);
+  background: #eff6ff;
+}
 .group-header .group-actions {
   display: flex; gap: 4px;
   margin-left: auto;
@@ -1545,6 +1594,133 @@ body.developer-mode .developer-only.hidden { display: flex !important; }
 .check-row:has(input:checked) {
   background: var(--primary-soft);
   border-color: rgba(59,130,246,0.25);
+}
+
+/* 开关样式 toggle */
+.check-row.toggle-row input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0; height: 0;
+  pointer-events: none;
+}
+.toggle-switch {
+  position: relative;
+  grid-row: 1 / 3;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 999px;
+  transition: background-color .18s;
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform .18s;
+}
+.toggle-switch input:checked + .toggle-track {
+  background: var(--primary);
+}
+.toggle-switch input:checked + .toggle-track::after {
+  transform: translateX(16px);
+}
+.toggle-switch input:focus-visible + .toggle-track {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 调试面板使用说明 */
+.debug-guide {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.debug-guide-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+}
+.debug-guide-title [data-icon] {
+  width: 16px;
+  height: 16px;
+  color: var(--primary);
+}
+.debug-guide-body {
+  padding: 12px 14px 14px;
+  font-size: 12.5px;
+  color: var(--text-secondary, var(--text));
+  line-height: 1.6;
+}
+.debug-guide-body p { margin: 0 0 8px; }
+.debug-guide-prereq {
+  color: var(--muted);
+  font-size: 12px;
+}
+.debug-guide-steps {
+  margin: 8px 0 10px;
+  padding-left: 20px;
+  counter-reset: step;
+}
+.debug-guide-steps li {
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+.step-label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.step-desc {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.step-cmd {
+  display: block;
+  margin-top: 2px;
+  padding: 5px 10px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--primary);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  user-select: all;
+  cursor: text;
+  word-break: break-all;
+}
+.debug-guide-note {
+  padding: 8px 10px;
+  background: var(--primary-soft, rgba(59,130,246,0.08));
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+.debug-guide-note code {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 11.5px;
+  color: var(--primary);
 }
 
 /* 表单消息 + 操作栏 */

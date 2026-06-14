@@ -289,12 +289,51 @@
               <span class="panel-sub">开发者诊断开关</span>
             </div>
             <div class="settings-form">
-              <label class="check-row">
-                <input type="checkbox" id="developer-mode" />
+              <label class="check-row toggle-row">
+                <span class="toggle-switch">
+                  <input type="checkbox" id="developer-mode" />
+                  <span class="toggle-track"></span>
+                </span>
                 <span class="check-text">开发者模式</span>
                 <span class="check-hint">忽略算法生效时段，并在视频卡片显示检测读数和检测历史菜单</span>
               </label>
+              <label class="check-row toggle-row">
+                <span class="toggle-switch">
+                  <input type="checkbox" id="test-sources-toggle" />
+                  <span class="toggle-track"></span>
+                </span>
+                <span class="check-text">测试视频源</span>
+                <span class="check-hint">创建 8 个本地 HLS 测试源，需配合 push_streamer 推流器使用</span>
+              </label>
               <div class="form-msg success" id="developer-ok"></div>
+              <div class="form-msg success" id="test-sources-ok"></div>
+
+              <div class="debug-guide">
+                <div class="debug-guide-title">
+                  <span data-icon="info"></span>
+                  push_streamer 推流器使用说明
+                </div>
+                <div class="debug-guide-body">
+                  <p class="debug-guide-prereq">前置依赖：Python 3.10+、ffmpeg（需加入 PATH）、测试视频文件（放在 <code>Video/</code> 目录下）</p>
+                  <p class="debug-guide-prereq">文件位置：<code>Release/push_streamer/</code>（含 <code>requirements.txt</code>、<code>config.example.yaml</code>、<code>start.bat</code>）</p>
+                  <ol class="debug-guide-steps">
+                    <li>
+                      <span class="step-label">最简单：双击 <code>start.bat</code></span>
+                      <span class="step-desc">自动检查 Python、ffmpeg 并安装依赖，一键启动</span>
+                    </li>
+                    <li>
+                      <span class="step-label">或命令行启动（先进入 <code>Release/push_streamer/</code> 目录）</span>
+                      <code class="step-cmd">pip install -r requirements.txt</code>
+                      <code class="step-cmd">python -m push_streamer.cli --config config.example.yaml</code>
+                    </li>
+                    <li>
+                      <span class="step-label">或使用自动扫描模式</span>
+                      <code class="step-cmd">python -m push_streamer.cli --auto-scan</code>
+                    </li>
+                  </ol>
+                  <p class="debug-guide-note">启动成功后，8 路 HLS 地址为 <code>http://127.0.0.1:8080/cam-{1~8}/index.m3u8</code>，App 端开启"测试视频源"即可拉流播放。</p>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -343,8 +382,11 @@
 
               <div class="form-section">
                 <div class="form-section-title">调度开关</div>
-                <label class="check-row">
-                  <input type="checkbox" id="algo-enabled" checked />
+                <label class="check-row toggle-row">
+                  <span class="toggle-switch">
+                    <input type="checkbox" id="algo-enabled" checked />
+                    <span class="toggle-track"></span>
+                  </span>
                   <span class="check-text">启用算法调度</span>
                   <span class="check-hint">关闭后所有视频源停止算法推理</span>
                 </label>
@@ -457,13 +499,19 @@
             <form id="vlm-form" class="settings-form">
               <div class="form-section">
                 <div class="form-section-title">调用策略</div>
-                <label class="check-row">
-                  <input type="checkbox" id="algo-vlm-enabled" />
+                <label class="check-row toggle-row">
+                  <span class="toggle-switch">
+                    <input type="checkbox" id="algo-vlm-enabled" />
+                    <span class="toggle-track"></span>
+                  </span>
                   <span class="check-text">启用 VLM 低频补漏</span>
                   <span class="check-hint">当简单模型置信度低时再调 VLM 复核</span>
                 </label>
-                <label class="check-row">
-                  <input type="checkbox" id="algo-vlm-skip-person" checked />
+                <label class="check-row toggle-row">
+                  <span class="toggle-switch">
+                    <input type="checkbox" id="algo-vlm-skip-person" checked />
+                    <span class="toggle-track"></span>
+                  </span>
                   <span class="check-text">简单模型识别到"有人"时跳过 VLM</span>
                   <span class="check-hint">节省 VLM 配额，常规情况无需复核</span>
                 </label>
@@ -776,8 +824,11 @@
               <div class="notify-image-note">
                 图片通知需平台媒体上传能力：通用 Webhook 可在自定义服务侧按视频源抓图；飞书、企微、QQ 文本机器人默认发送文字报警。
               </div>
-              <label class="check-row">
-                <input type="checkbox" id="ntf-enabled" checked />
+              <label class="check-row toggle-row">
+                <span class="toggle-switch">
+                  <input type="checkbox" id="ntf-enabled" checked />
+                  <span class="toggle-track"></span>
+                </span>
                 <span class="check-text">启用该通知目标</span>
               </label>
               <div class="form-actions notify-form-actions">

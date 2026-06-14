@@ -31,6 +31,7 @@ pub fn run() {
             commands::create_source,
             commands::update_source,
             commands::delete_source,
+            commands::set_test_sources_enabled,
             commands::create_group,
             commands::update_group,
             commands::delete_group,

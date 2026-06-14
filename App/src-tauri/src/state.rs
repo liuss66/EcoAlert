@@ -6,7 +6,7 @@ use crate::pipeline::{
 };
 use crate::store::{
     backfill_groups, load, load_history, load_json, migrate_local_hls_demo_names, save,
-    save_history, save_json, seed_local_hls_sources_if_empty, AlarmRecord, AlarmRecordFile,
+    save_history, save_json, AlarmRecord, AlarmRecordFile,
     AlgorithmConfig, AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, DetectionHistoryFile,
     DetectionSampleRecord, HistoryFile, NotificationConfigFile, NotificationHistoryFile,
     NotificationRecord, RoiConfigFile, SceneState, SecurityConfig, SourceGroup, StateRecord,
@@ -14,7 +14,7 @@ use crate::store::{
 };
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,8 +85,7 @@ impl AppState {
 
         // 加载数据
         let mut data = load(&data_file);
-        // 首次运行预置本地 HLS 测试源，匹配 Tools/push_streamer 输出。
-        seed_local_hls_sources_if_empty(&mut data);
+        // 测试源由调试菜单"测试视频源"开关控制，启动时不再自动创建。
         // 修正旧版内置演示源命名，只影响本地 HLS 默认源。
         migrate_local_hls_demo_names(&mut data);
         // 向前兼容：补全 group_id
@@ -437,6 +436,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut detectors: HashMap<String, Detector> = HashMap::new();
         let mut seeds: HashMap<String, (u64, bool, bool)> = HashMap::new();
         let mut alarm_timers: HashMap<String, AlarmTimer> = HashMap::new();
+        let mut domain_notified_groups: HashSet<String> = HashSet::new();
         let mut last_simple_run: HashMap<String, i64> = HashMap::new();
         let mut config_signatures: HashMap<String, String> = HashMap::new();
         let mut last_vlm_run: HashMap<String, i64> = HashMap::new();
@@ -899,23 +899,30 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                     "ts": now,
                                 }),
                             );
-                            let app_for_notify = app.clone();
-                            let state_for_notify = state.inner().clone();
                             let event = if alarm_active {
                                 "alarm_triggered"
                             } else {
                                 "alarm_resolved"
                             }
                             .to_string();
-                            tauri::async_runtime::spawn(async move {
-                                notifier::dispatch_alarm_event(
-                                    app_for_notify,
-                                    state_for_notify,
-                                    event,
-                                    alarm_record,
-                                )
-                                .await;
-                            });
+                            if should_dispatch_alarm_notification(
+                                &event,
+                                &alarm_record.source_id,
+                                state.inner(),
+                                &mut domain_notified_groups,
+                            ) {
+                                let app_for_notify = app.clone();
+                                let state_for_notify = state.inner().clone();
+                                tauri::async_runtime::spawn(async move {
+                                    notifier::dispatch_alarm_event(
+                                        app_for_notify,
+                                        state_for_notify,
+                                        event,
+                                        alarm_record,
+                                    )
+                                    .await;
+                                });
+                            }
                         }
                         Ok(None) => {}
                         Err(e) => log::warn!("报警状态落库失败: {e}"),
@@ -924,6 +931,70 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             }
         }
     });
+}
+
+fn should_dispatch_alarm_notification(
+    event: &str,
+    source_id: &str,
+    state: &Arc<AppState>,
+    domain_notified_groups: &mut HashSet<String>,
+) -> bool {
+    let sources = state.sources.lock().clone();
+    let Some(source) = sources.iter().find(|item| item.id == source_id) else {
+        return true;
+    };
+    let Some(group_id) = source.group_id.as_deref() else {
+        return true;
+    };
+    let groups = state.groups.lock().clone();
+    let Some(group) = groups.iter().find(|item| item.id == group_id) else {
+        return true;
+    };
+    if !group.domain_detection_enabled {
+        return true;
+    }
+
+    let group_sources: Vec<&VideoSource> = sources
+        .iter()
+        .filter(|item| item.enabled && item.group_id.as_deref() == Some(group_id))
+        .collect();
+    if group_sources.is_empty() {
+        return false;
+    }
+
+    let runtime = state.runtime_status.lock();
+    let all_group_sources_alarm = group_sources.iter().all(|item| {
+        runtime
+            .get(&item.id)
+            .map(|status| {
+                matches!(
+                    status.alarm_status.as_str(),
+                    "alarm_active" | "acknowledged" | "recovering"
+                )
+            })
+            .unwrap_or(false)
+    });
+    drop(runtime);
+
+    match event {
+        "alarm_triggered" => {
+            if all_group_sources_alarm && !domain_notified_groups.contains(group_id) {
+                domain_notified_groups.insert(group_id.to_string());
+                true
+            } else {
+                false
+            }
+        }
+        "alarm_resolved" => {
+            if domain_notified_groups.contains(group_id) && !all_group_sources_alarm {
+                domain_notified_groups.remove(group_id);
+                true
+            } else {
+                false
+            }
+        }
+        _ => true,
+    }
 }
 
 #[derive(Default)]

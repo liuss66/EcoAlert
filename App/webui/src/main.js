@@ -9,7 +9,7 @@ import Hls from 'hls.js';
 import {
   login, logout, checkAuth,
   listSources, listGroups, createGroup, updateGroup, deleteGroup, reorder,
-  createSource, updateSource, deleteSource,
+  createSource, updateSource, deleteSource, setTestSourcesEnabled, TEST_SOURCE_IDS,
   reportSceneState, getStateHistory, listDetectionHistory,
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
@@ -429,6 +429,11 @@ const renderLive = () => {
           <input class="grp-input hidden" data-grp-input="${g.id}" value="${escapeHtml(g.name)}" />
         </div>
         <span class="group-count">${list.length} 路</span>
+        <label class="domain-toggle" title="开启后，该分组内所有启用视频源均报警时才发送报警通知">
+          <input type="checkbox" data-domain-detect="${g.id}" ${g.domainDetectionEnabled ? 'checked' : ''} />
+          <span class="domain-toggle-track" aria-hidden="true"></span>
+          <span class="domain-toggle-text">域检测</span>
+        </label>
         <div class="group-actions">
           ${g.id === 'grp-default' ? '' : `<button data-rename="${g.id}" title="重命名">${icon('edit')}</button>`}
           ${g.id === 'grp-default' ? '' : `<button data-delgrp="${g.id}" title="删除分组">${icon('trash')}</button>`}
@@ -445,7 +450,7 @@ const renderLive = () => {
   if (noGroup.length > 0) {
     // 临时兜底分组（理论上不会到这里）
     html += sectionHtml(
-      { id: '__nogroup', name: '其他', collapsed: false, order: 9999 },
+      { id: '__nogroup', name: '其他', collapsed: false, order: 9999, domainDetectionEnabled: false },
       noGroup
     );
   }
@@ -464,6 +469,9 @@ const renderLive = () => {
   $$('[data-rename]', grid).forEach((b) => {
     b.addEventListener('click', () => startRenameGroup(b.dataset.rename));
   });
+  $$('[data-domain-detect]', grid).forEach((input) => {
+    input.addEventListener('change', () => toggleDomainDetection(input.dataset.domainDetect, input.checked));
+  });
   $$('[data-grp-input]', grid).forEach((inp) => {
     inp.addEventListener('blur', () => finishRenameGroup(inp.dataset.grpInput, inp.value));
     inp.addEventListener('keydown', (e) => {
@@ -478,63 +486,97 @@ const renderLive = () => {
 };
 
 /* -------------------- 拖拽：视频卡 / 分组 -------------------- */
+/*
+ * 不使用 HTML5 Drag API — <video> 元素会让浏览器"拖拽源确定"算法中断，
+ * 使父级 card 的 draggable 失效。改用 document 级 mouse 事件实现自定义拖拽。
+ */
 let dragSourceId = null;
 function bindDragAndDrop() {
-  // 视频卡：可拖
-  $$('.video-card[draggable="true"]').forEach((card) => {
-    // 阻止 video 元素自己被拖
-    card.querySelectorAll('video').forEach((v) => {
-      v.setAttribute('draggable', 'false');
-    });
-    card.addEventListener('dragstart', (e) => {
-      // 排除从按钮等交互控件触发的拖拽（让 click 正常生效）
-      if (e.target.closest('button, input, select, textarea, a[href]')) {
-        e.preventDefault();
-        return;
-      }
-      dragSourceId = card.dataset.id;
-      card.classList.add('dragging');
-      // 标记来源分组
-      const srcSection = card.closest('.group-section');
-      if (srcSection) srcSection.classList.add('drag-source');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', card.dataset.id);
-    });
-    card.addEventListener('dragend', () => {
-      card.classList.remove('dragging');
-      dragSourceId = null;
-      $$('.group-section').forEach((g) => {
-        g.classList.remove('drag-over', 'drag-source');
-        const body = g.querySelector('.group-body');
-        if (body) body.classList.remove('drag-active');
-      });
+  $$('.video-card').forEach((card) => {
+    card.addEventListener('mousedown', (e) => {
+      // 仅左键
+      if (e.button !== 0) return;
+      // 排除交互控件（但不排除 video，video 区域也应可拖拽）
+      if (e.target.closest('button, input, select, textarea, a[href]')) return;
+      // 阻止 <video> 的默认拖拽行为（不阻止 click）
+      e.preventDefault();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragging = false;
+      let clone = null;
+
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!dragging && (dx * dx + dy * dy) > 25) {
+          dragging = true;
+          dragSourceId = card.dataset.id;
+          card.classList.add('dragging');
+          const srcSection = card.closest('.group-section');
+          if (srcSection) srcSection.classList.add('drag-source');
+          clone = card.cloneNode(true);
+          clone.style.cssText = `position:fixed;z-index:9999;pointer-events:none;opacity:.75;width:${card.offsetWidth}px;`;
+          clone.style.left = `${ev.clientX - card.offsetWidth / 2}px`;
+          clone.style.top = `${ev.clientY - 20}px`;
+          document.body.appendChild(clone);
+        }
+        if (dragging) {
+          if (clone) {
+            clone.style.left = `${ev.clientX - card.offsetWidth / 2}px`;
+            clone.style.top = `${ev.clientY - 20}px`;
+          }
+          $$('[data-dropzone]').forEach((z) => {
+            const r = z.getBoundingClientRect();
+            const over = ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
+            z.classList.toggle('drag-active', over);
+            const sec = z.closest('.group-section');
+            if (sec) sec.classList.toggle('drag-over', over);
+          });
+        }
+      };
+
+      const cleanup = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (dragging) {
+          card._dragJustEnded = true;
+          setTimeout(() => { card._dragJustEnded = false; }, 0);
+        }
+        if (clone) { clone.remove(); clone = null; }
+        card.classList.remove('dragging');
+        $$('.group-section').forEach((g) => {
+          g.classList.remove('drag-over', 'drag-source');
+          const body = g.querySelector('.group-body');
+          if (body) body.classList.remove('drag-active');
+        });
+      };
+
+      const onUp = async (ev) => {
+        if (dragging) {
+          const target = document.elementsFromPoint(ev.clientX, ev.clientY)
+            .find((el) => el.dataset?.dropzone);
+          if (target && dragSourceId) {
+            await moveSourceToGroup(dragSourceId, target.dataset.dropzone);
+          }
+        }
+        dragSourceId = null;
+        cleanup();
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp, { once: true });
     });
   });
-  // 分组容器：接收
-  $$('[data-dropzone]').forEach((zone) => {
-    zone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      zone.classList.add('drag-active');
-      const section = zone.closest('.group-section');
-      if (section) section.classList.add('drag-over');
-    });
-    zone.addEventListener('dragleave', () => {
-      zone.classList.remove('drag-active');
-      const section = zone.closest('.group-section');
-      if (section) section.classList.remove('drag-over');
-    });
-    zone.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      zone.classList.remove('drag-active');
-      const section = zone.closest('.group-section');
-      if (section) section.classList.remove('drag-over');
-      const id = e.dataTransfer.getData('text/plain') || dragSourceId;
-      const targetGroupId = zone.dataset.dropzone;
-      if (!id) return;
-      await moveSourceToGroup(id, targetGroupId);
-    });
-  });
+
+  // 拖拽结束后阻止冒泡 click（防止误触按钮/编辑等操作）
+  if (!document._dragClickGuard) {
+    document._dragClickGuard = true;
+    document.addEventListener('click', (e) => {
+      const card = e.target.closest('.video-card');
+      if (card?._dragJustEnded) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+  }
 }
 
 async function moveSourceToGroup(sourceId, groupId) {
@@ -593,13 +635,38 @@ async function toggleGroup(groupId) {
   const g = groups.find((x) => x.id === groupId);
   if (!g) return;
   try {
-    const updated = await updateGroup(groupId, { name: g.name, order: g.order, collapsed: !g.collapsed });
+    const updated = await updateGroup(groupId, {
+      name: g.name,
+      order: g.order,
+      collapsed: !g.collapsed,
+      domainDetectionEnabled: g.domainDetectionEnabled,
+    });
     g.collapsed = updated.collapsed;
     renderLive();
   } catch (err) {
     addLog('error', `折叠状态切换失败: ${err.message}`);
   }
 }
+
+async function toggleDomainDetection(groupId, enabled) {
+  const g = groups.find((x) => x.id === groupId);
+  if (!g) return;
+  try {
+    const updated = await updateGroup(groupId, {
+      name: g.name,
+      order: g.order,
+      collapsed: g.collapsed,
+      domainDetectionEnabled: enabled,
+    });
+    g.domainDetectionEnabled = updated.domainDetectionEnabled;
+    addLog('info', `分组「${g.name}」域检测已${g.domainDetectionEnabled ? '开启' : '关闭'}`);
+    renderLive();
+  } catch (err) {
+    addLog('error', `域检测切换失败: ${err.message}`);
+    renderLive();
+  }
+}
+
 async function removeGroup(groupId) {
   const g = groups.find((x) => x.id === groupId);
   if (!g) return;
@@ -637,7 +704,12 @@ async function finishRenameGroup(groupId, name) {
     return;
   }
   try {
-    const updated = await updateGroup(groupId, { name: newName, order: g.order, collapsed: g.collapsed });
+    const updated = await updateGroup(groupId, {
+      name: newName,
+      order: g.order,
+      collapsed: g.collapsed,
+      domainDetectionEnabled: g.domainDetectionEnabled,
+    });
     g.name = updated.name;
     addLog('info', `分组已重命名: ${updated.name}`);
     renderLive();
@@ -652,7 +724,7 @@ async function addNewGroup() {
   if (!name) return;
   try {
     const order = groups.length > 0 ? Math.max(...groups.map((g) => g.order)) + 1 : 0;
-    const grp = await createGroup({ name, order, collapsed: false });
+    const grp = await createGroup({ name, order, collapsed: false, domainDetectionEnabled: false });
     groups.push(grp);
     renderLive();
     addLog('info', `新增分组: ${grp.name}`);
@@ -930,7 +1002,7 @@ const videoCardHtml = (s) => {
   const simplePerson = scene.simplePerson ?? scene.person;
   const alarm = !!scene.alarm;
   return `
-    <div class="video-card" draggable="true" data-id="${s.id}" data-group-id="${s.groupId || 'grp-default'}">
+    <div class="video-card" data-id="${s.id}" data-group-id="${s.groupId || 'grp-default'}">
       <div class="video-wrap" id="vw-${s.id}">
         <div class="placeholder"><div class="illu">${icon('satellite')}</div><div>正在加载视频…</div></div>
         <div class="live-tag ${st.online ? '' : 'off'}">
@@ -1817,6 +1889,10 @@ const renderDeveloperSettings = async () => {
     setDeveloperMode(!!(cfg.developerMode ?? cfg.developer_mode));
     const input = $('#developer-mode');
     if (input) input.checked = developerMode;
+    const testIds = new Set(TEST_SOURCE_IDS);
+    const hasTestSources = sources.some((s) => testIds.has(s.id));
+    const testToggle = $('#test-sources-toggle');
+    if (testToggle) testToggle.checked = hasTestSources;
     applyStateIcons();
   } catch (err) {
     addLog('warn', `开发设置加载失败: ${err.message || err}`);
@@ -1854,13 +1930,32 @@ $('#developer-mode')?.addEventListener('change', async (e) => {
     const saved = await updateAlgorithmConfig(null, payload);
     setDeveloperMode(!!(saved.developerMode ?? saved.developer_mode));
     e.target.checked = developerMode;
-    $('#developer-ok').textContent = '开发者模式已保存';
+    const devMsg = $('#developer-ok');
+    if (devMsg) devMsg.textContent = '开发者模式已保存';
     if (developerMode) await ensureDeveloperNotificationTarget();
     renderLive();
     addLog('info', developerMode ? '开发者模式已开启' : '开发者模式已关闭');
   } catch (err) {
     e.target.checked = developerMode;
     alert(err.message || '保存开发设置失败');
+  }
+});
+
+$('#test-sources-toggle')?.addEventListener('change', async (e) => {
+  const enabled = !!e.target.checked;
+  try {
+    await setTestSourcesEnabled(enabled);
+    // 重新加载源列表，renderLive 依赖模块级 sources 变量
+    await loadSources();
+    await loadGroups();
+    const msg = $('#test-sources-ok');
+    if (msg) msg.textContent = enabled ? '测试视频源已创建' : '测试视频源已移除';
+    addLog('info', enabled ? '测试视频源已创建' : '测试视频源已移除');
+    renderLive();
+    renderSourcesTable();
+  } catch (err) {
+    e.target.checked = !enabled;
+    alert(err.message || '切换测试视频源失败');
   }
 });
 

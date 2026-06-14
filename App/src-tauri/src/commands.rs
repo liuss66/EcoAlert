@@ -5,9 +5,10 @@ use crate::pipeline::{
 };
 use crate::state::{log_event, AppState};
 use crate::store::{
-    records_by_source, AlarmRecord, AlgorithmConfig, ChannelRuntimeStatus, DetectionSampleRecord,
-    NotificationRecord, NotificationTarget, NotificationTargetPayload, RoiConfig, SceneState,
-    SecurityConfig, SourceGroup, StateRecord, VideoSource, GLOBAL_ROI_SOURCE_ID,
+    records_by_source, seed_local_hls_sources, AlarmRecord, AlgorithmConfig,
+    ChannelRuntimeStatus, DetectionSampleRecord, NotificationRecord, NotificationTarget,
+    NotificationTargetPayload, RoiConfig, SceneState, SecurityConfig, SourceGroup, StateRecord,
+    VideoSource, TEST_GROUP_IDS, TEST_SOURCE_IDS, GLOBAL_ROI_SOURCE_ID,
 };
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -191,6 +192,60 @@ pub fn delete_source(
     Ok(serde_json::json!({ "ok": true }))
 }
 
+/* -------------------- 调试菜单：测试视频源开关 -------------------- */
+
+/// 开启时创建 8 个预设 HLS 测试源，关闭时只删除这 8 个（用户自加的源保留）。
+#[tauri::command]
+pub fn set_test_sources_enabled(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    enabled: bool,
+) -> Result<Vec<VideoSource>, String> {
+    require_login(&state)?;
+    if enabled {
+        // 用临时 DataFile 收集 seed 结果，再合并到 state（避免覆盖用户已有数据）。
+        let mut tmp = crate::store::DataFile::default();
+        seed_local_hls_sources(&mut tmp);
+        let existing_ids: std::collections::HashSet<String> =
+            state.sources.lock().iter().map(|s| s.id.clone()).collect();
+        let mut sources = state.sources.lock();
+        for s in tmp.sources {
+            if !existing_ids.contains(&s.id) {
+                sources.push(s);
+            }
+        }
+        drop(sources);
+        let existing_group_ids: std::collections::HashSet<String> =
+            state.groups.lock().iter().map(|g| g.id.clone()).collect();
+        let mut groups = state.groups.lock();
+        for g in tmp.groups {
+            if !existing_group_ids.contains(&g.id) {
+                groups.push(g);
+            }
+        }
+        drop(groups);
+        log_event(&app, "info", "测试视频源已创建");
+    } else {
+        let remove_ids: std::collections::HashSet<&str> =
+            TEST_SOURCE_IDS.iter().copied().collect();
+        state.sources.lock().retain(|s| !remove_ids.contains(s.id.as_str()));
+        // 仅当测试分组下已无任何源时才删除分组
+        let remaining_group_ids: std::collections::HashSet<Option<String>> = state
+            .sources
+            .lock()
+            .iter()
+            .map(|s| s.group_id.clone())
+            .collect();
+        state.groups.lock().retain(|g| {
+            !TEST_GROUP_IDS.contains(&g.id.as_str())
+                || remaining_group_ids.contains(&Some(g.id.clone()))
+        });
+        log_event(&app, "info", "测试视频源已移除");
+    }
+    state.persist_sources().map_err(|e| e.to_string())?;
+    Ok(state.sources.lock().clone())
+}
+
 /* -------------------- 分组 -------------------- */
 
 #[derive(serde::Deserialize)]
@@ -200,6 +255,8 @@ pub struct GroupPayload {
     pub order: i32,
     #[serde(default)]
     pub collapsed: bool,
+    #[serde(default)]
+    pub domain_detection_enabled: bool,
 }
 
 #[tauri::command]
@@ -218,6 +275,7 @@ pub fn create_group(
     );
     let mut grp = grp;
     grp.collapsed = payload.collapsed;
+    grp.domain_detection_enabled = payload.domain_detection_enabled;
     {
         let mut gs = state.groups.lock();
         gs.push(grp.clone());
@@ -243,6 +301,7 @@ pub fn update_group(
         name: payload.name.chars().take(64).collect(),
         order: payload.order,
         collapsed: payload.collapsed,
+        domain_detection_enabled: payload.domain_detection_enabled,
         created_at: cur.created_at,
     };
     gs[idx] = updated.clone();

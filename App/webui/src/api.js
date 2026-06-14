@@ -56,6 +56,7 @@ function normalizeGroup(g) {
   return {
     ...g,
     createdAt: g.createdAt ?? g.created_at,
+    domainDetectionEnabled: g.domainDetectionEnabled ?? g.domain_detection_enabled ?? false,
   };
 }
 
@@ -203,6 +204,15 @@ function toOrderItems(items) {
   }));
 }
 
+function toGroupPayload(payload) {
+  return {
+    name: payload.name,
+    order: payload.order ?? 0,
+    collapsed: !!payload.collapsed,
+    domain_detection_enabled: !!(payload.domainDetectionEnabled ?? payload.domain_detection_enabled),
+  };
+}
+
 function mockLoad() {
   // 浏览器预览模式：优先读 localStorage（保留用户修改），否则返回默认数据
   try {
@@ -247,9 +257,9 @@ function mockLoadGroups() {
     }
   } catch (e) { console.warn('[mock] mockLoadGroups 解析失败:', e); }
   const defaults = [
-    { id: 'grp-domain',   name: '域控测试视频', order: 0, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-chassis',  name: '底盘测试视频', order: 1, collapsed: false, createdAt: Date.now() },
-    { id: 'grp-hardware', name: '硬件测试视频', order: 2, collapsed: false, createdAt: Date.now() },
+    { id: 'grp-domain',   name: '域控测试视频', order: 0, collapsed: false, domainDetectionEnabled: false, createdAt: Date.now() },
+    { id: 'grp-chassis',  name: '底盘测试视频', order: 1, collapsed: false, domainDetectionEnabled: false, createdAt: Date.now() },
+    { id: 'grp-hardware', name: '硬件测试视频', order: 2, collapsed: false, domainDetectionEnabled: false, createdAt: Date.now() },
   ];
   mockSaveGroups(defaults);
   return defaults;
@@ -410,11 +420,11 @@ export async function listSources() {
 
 export async function listGroups() {
   if (isTauri) return (await invoke('list_groups')).map(normalizeGroup);
-  return mockLoadGroups();
+  return mockLoadGroups().map(normalizeGroup);
 }
 
 export async function createGroup(payload) {
-  if (isTauri) return normalizeGroup(await invoke('create_group', { payload }));
+  if (isTauri) return normalizeGroup(await invoke('create_group', { payload: toGroupPayload(payload) }));
   const all = mockLoadGroups();
   const item = {
     id: 'grp-' + Math.random().toString(36).slice(2, 10),
@@ -423,23 +433,23 @@ export async function createGroup(payload) {
   };
   all.push(item);
   mockSaveGroups(all);
-  return item;
+  return normalizeGroup(item);
 }
 
 export async function updateGroup(id, payload) {
-  if (isTauri) return normalizeGroup(await invoke('update_group', { id, payload }));
+  if (isTauri) return normalizeGroup(await invoke('update_group', { id, payload: toGroupPayload(payload) }));
   const all = mockLoadGroups();
   const idx = all.findIndex((g) => g.id === id);
   if (idx < 0) throw new Error('分组不存在');
   all[idx] = { ...all[idx], ...payload };
   mockSaveGroups(all);
-  return all[idx];
+  return normalizeGroup(all[idx]);
 }
 
 export async function deleteGroup(id) {
   if (isTauri) return invoke('delete_group', { id });
   let all = mockLoadGroups().filter((g) => g.id !== id);
-  if (all.length === 0) all = [{ id: 'grp-default', name: '默认分组', order: 0, collapsed: false, createdAt: Date.now() }];
+  if (all.length === 0) all = [{ id: 'grp-default', name: '默认分组', order: 0, collapsed: false, domainDetectionEnabled: false, createdAt: Date.now() }];
   mockSaveGroups(all);
   // 把该组下的源移到默认组
   const sources = mockLoad().map((s) => s.groupId === id ? { ...s, groupId: 'grp-default' } : s);
@@ -490,6 +500,29 @@ export async function deleteSource(id) {
   const all = mockLoad().filter((s) => s.id !== id);
   mockSave(all);
   return { ok: true };
+}
+
+/// 调试菜单"测试视频源"开关：enabled=true 创建 8 个预设测试源，false 仅删除这 8 个。
+export const TEST_SOURCE_IDS = [
+  'cam-domain-0424', 'cam-domain-0527', 'cam-domain-0528', 'cam-domain-0507',
+  'cam-chassis-0424', 'cam-chassis-0515', 'cam-chassis-0507', 'cam-hardware-0514',
+];
+
+export async function setTestSourcesEnabled(enabled) {
+  if (isTauri) {
+    const list = await invoke('set_test_sources_enabled', { enabled });
+    return list.map(normalizeSource);
+  }
+  if (enabled) {
+    const existing = mockLoad();
+    const existingIds = new Set(existing.map((s) => s.id));
+    const seeded = mockDefaultSources().filter((s) => !existingIds.has(s.id));
+    mockSave([...existing, ...seeded]);
+  } else {
+    const removeIds = new Set(TEST_SOURCE_IDS);
+    mockSave(mockLoad().filter((s) => !removeIds.has(s.id)));
+  }
+  return mockLoad().map(normalizeSource);
 }
 
 export async function reportSceneState(sourceId, person, light) {

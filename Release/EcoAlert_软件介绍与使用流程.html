@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EcoAlert · 产品介绍与使用指南</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --paper: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --soft: #f8fafc;
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --primary-soft: #dbeafe;
+      --green: #047857;
+      --green-soft: #d1fae5;
+      --amber: #b45309;
+      --amber-soft: #fef3c7;
+      --red: #dc2626;
+      --red-soft: #fee2e2;
+      --cyan: #0891b2;
+      --cyan-soft: #cffafe;
+      --purple: #7c3aed;
+      --purple-soft: #ede9fe;
+      --slate: #334155;
+      --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+      --shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+      --shadow-lg: 0 30px 60px rgba(15, 23, 42, 0.18);
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", -apple-system, Segoe UI, Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ========== Hero ========== */
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 80px 24px 64px;
+      color: #fff;
+      background:
+        radial-gradient(1200px 600px at 80% -10%, rgba(56, 189, 248, .35), transparent 60%),
+        radial-gradient(900px 600px at 0% 110%, rgba(99, 102, 241, .35), transparent 60%),
+        linear-gradient(135deg, #0b1220 0%, #111827 50%, #0b3a64 100%);
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse at center, #000 40%, transparent 80%);
+      pointer-events: none;
+    }
+    .hero-inner { width: min(1200px, 100%); margin: 0 auto; position: relative; }
+    .eyebrow {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      padding: 7px 16px;
+      border: 1px solid rgba(255,255,255,.28);
+      border-radius: 999px;
+      background: rgba(255,255,255,.08);
+      font-size: 13.5px;
+      letter-spacing: .4px;
+    }
+    .eyebrow .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #34d399; box-shadow: 0 0 0 4px rgba(52,211,153,.22);
+    }
+    h1 {
+      margin: 28px 0 20px;
+      font-size: clamp(42px, 6.4vw, 78px);
+      line-height: 1.06;
+      letter-spacing: -.5px;
+      font-weight: 800;
+    }
+    h1 .accent {
+      background: linear-gradient(120deg, #60a5fa, #34d399 60%, #fde68a);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero p.lead {
+      max-width: 860px;
+      margin: 0;
+      font-size: 19px;
+      color: rgba(255,255,255,.86);
+      line-height: 1.75;
+    }
+    .hero-meta {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      margin-top: 30px;
+      font-size: 14px;
+      color: rgba(255,255,255,.78);
+    }
+    .hero-meta span { display: inline-flex; gap: 8px; align-items: center; }
+    .hero-meta b { color: #fff; font-weight: 700; }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-top: 48px;
+    }
+    .hero-card {
+      position: relative;
+      padding: 22px 20px;
+      min-height: 130px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.07);
+      backdrop-filter: blur(12px);
+      transition: transform .25s ease, background .25s ease;
+    }
+    .hero-card:hover { transform: translateY(-3px); background: rgba(255,255,255,.12); }
+    .hero-card .ico {
+      width: 40px; height: 40px;
+      display: grid; place-items: center;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(96,165,250,.32), rgba(52,211,153,.28));
+      margin-bottom: 14px;
+    }
+    .hero-card .ico svg { width: 22px; height: 22px; }
+    .hero-card strong { display: block; font-size: 17px; font-weight: 700; }
+    .hero-card span { display: block; margin-top: 6px; color: rgba(255,255,255,.82); font-size: 13.5px; }
+
+    /* ========== Layout ========== */
+    .wrap { width: min(1200px, calc(100% - 40px)); margin: 0 auto; }
+    section { padding: 80px 0; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin: 0 0 12px;
+      font-size: clamp(26px, 3vw, 36px);
+      line-height: 1.25;
+      font-weight: 800;
+      letter-spacing: -.3px;
+    }
+    .section-title .num-tag {
+      display: inline-grid;
+      place-items: center;
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      background: var(--primary-soft);
+      color: var(--primary-dark);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .section-lead { margin: 0 0 36px; max-width: 920px; color: var(--muted); font-size: 16px; line-height: 1.75; }
+
+    /* ========== TOC ========== */
+    .toc {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(255,255,255,.88);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    .toc .wrap {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding-top: 12px;
+      padding-bottom: 12px;
+      white-space: nowrap;
+      scrollbar-width: thin;
+    }
+    .toc a {
+      padding: 7px 14px;
+      border-radius: 999px;
+      font-size: 14px;
+      color: var(--slate);
+      font-weight: 500;
+      transition: all .2s;
+    }
+    .toc a:hover { background: var(--primary-soft); color: var(--primary-dark); text-decoration: none; }
+
+    /* ========== Panel ========== */
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+    }
+    .panel-lg { box-shadow: var(--shadow); }
+    .panel:hover { box-shadow: var(--shadow); }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+
+    /* ========== Feature card ========== */
+    .feature {
+      padding: 26px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transition: transform .25s ease;
+    }
+    .feature:hover { transform: translateY(-2px); }
+    .feature .ico {
+      width: 42px; height: 42px;
+      display: grid; place-items: center;
+      border-radius: 10px;
+      background: var(--primary-soft);
+      color: var(--primary-dark);
+    }
+    .feature .ico svg { width: 22px; height: 22px; }
+    .feature b { font-size: 17px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 14.5px; }
+    .feature.t-cyan .ico { background: var(--cyan-soft); color: var(--cyan); }
+    .feature.t-green .ico { background: var(--green-soft); color: var(--green); }
+    .feature.t-amber .ico { background: var(--amber-soft); color: var(--amber); }
+    .feature.t-red .ico { background: var(--red-soft); color: var(--red); }
+    .feature.t-purple .ico { background: var(--purple-soft); color: var(--purple); }
+
+    /* ========== Workflow steps ========== */
+    .workflow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+    .wf-step {
+      position: relative;
+      padding: 24px 20px 20px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      transition: transform .25s ease, box-shadow .25s ease;
+    }
+    .wf-step:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
+    .wf-num {
+      display: inline-grid;
+      place-items: center;
+      width: 32px; height: 32px;
+      margin-bottom: 12px;
+      border-radius: 50%;
+      color: #fff;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      font-weight: 700;
+      font-size: 14px;
+      box-shadow: 0 6px 14px rgba(37,99,235,.35);
+    }
+    .wf-step h3 { margin: 0 0 8px; font-size: 16.5px; font-weight: 700; }
+    .wf-step p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    /* ========== How it works ========== */
+    .how-flow {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin: 0 0 32px;
+    }
+    .how-node {
+      flex: 1;
+      padding: 30px 22px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      text-align: center;
+      box-shadow: var(--shadow-sm);
+      position: relative;
+      transition: transform .25s ease, box-shadow .25s ease;
+    }
+    .how-node:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
+    .how-node:not(:last-child) { border-radius: var(--radius) 0 0 var(--radius); }
+    .how-node:not(:first-child):not(:last-child) { border-radius: 0; }
+    .how-node:not(:last-child)::after {
+      content: "\203A";
+      position: absolute;
+      right: -11px; top: 50%;
+      transform: translateY(-50%);
+      width: 22px; height: 22px;
+      display: grid; place-items: center;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      z-index: 2;
+      box-shadow: 0 4px 12px rgba(37,99,235,.3);
+    }
+    .how-node .how-ico {
+      width: 54px; height: 54px;
+      display: grid; place-items: center;
+      border-radius: 14px;
+      margin: 0 auto 16px;
+    }
+    .how-node .how-ico svg { width: 28px; height: 28px; }
+    .how-node.h-blue .how-ico { background: var(--primary-soft); color: var(--primary-dark); }
+    .how-node.h-green .how-ico { background: var(--green-soft); color: var(--green); }
+    .how-node.h-red .how-ico { background: var(--red-soft); color: var(--red); }
+    .how-node h3 { margin: 0 0 6px; font-size: 18px; font-weight: 700; }
+    .how-node p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.65; }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .principle {
+      padding: 22px 24px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+    }
+    .principle h4 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .principle h4 .dot-indicator {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .principle p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
+
+    /* ========== State machine ========== */
+    .state-machine {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: stretch;
+      margin: 10px 0 16px;
+    }
+    .state {
+      flex: 1 1 140px;
+      padding: 14px 12px 12px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      text-align: center;
+      box-shadow: var(--shadow-sm);
+    }
+    .state b { display: block; font-size: 14px; font-weight: 700; color: var(--ink); }
+    .state span { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .state.s-normal { border-top: 3px solid #94a3b8; }
+    .state.s-checking { border-top: 3px solid #818cf8; }
+    .state.s-suspected { border-top: 3px solid var(--amber); }
+    .state.s-active { border-top: 3px solid var(--red); }
+    .state.s-ack { border-top: 3px solid var(--cyan); }
+    .state.s-resolved { border-top: 3px solid var(--green); }
+    .arrow {
+      align-self: center;
+      color: var(--muted);
+      font-size: 22px;
+      padding: 0 2px;
+    }
+
+    /* ========== Tables ========== */
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm); }
+    th, td { padding: 13px 15px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 14px; }
+    th { background: linear-gradient(180deg, #eef4ff, #f5f8ff); color: var(--primary-dark); font-weight: 700; letter-spacing: .2px; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--soft); }
+
+    /* ========== Highlight blocks ========== */
+    .highlight {
+      padding: 32px 34px;
+      color: #fff;
+      background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
+      border-radius: var(--radius);
+      position: relative;
+      overflow: hidden;
+    }
+    .highlight::before {
+      content: "";
+      position: absolute;
+      width: 240px; height: 240px;
+      right: -50px; top: -60px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255,255,255,.16), transparent 70%);
+    }
+    .highlight h2 { margin: 0 0 10px; font-size: 22px; font-weight: 800; position: relative; }
+    .highlight p { margin: 0; color: rgba(255,255,255,.92); font-size: 15px; position: relative; line-height: 1.7; }
+    .highlight.t-amber { background: linear-gradient(135deg, #b45309, #f59e0b); }
+    .highlight.t-red { background: linear-gradient(135deg, #b91c1c, #ef4444); }
+    .highlight.t-green { background: linear-gradient(135deg, #047857, #10b981); }
+    .highlight.t-slate { background: linear-gradient(135deg, #1e293b, #475569); }
+    .highlight.t-purple { background: linear-gradient(135deg, #6d28d9, #a78bfa); }
+
+    /* ========== Checklist ========== */
+    .checklist ul { list-style: none; padding: 24px 28px; margin: 0; columns: 2; }
+    .checklist li {
+      margin: 9px 0; break-inside: avoid;
+      display: flex; gap: 10px; align-items: flex-start;
+      font-size: 14.5px; color: var(--slate);
+    }
+    .checklist li::before {
+      content: "\2713";
+      flex-shrink: 0;
+      width: 20px; height: 20px;
+      display: grid; place-items: center;
+      border-radius: 50%;
+      background: var(--green-soft);
+      color: var(--green);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    /* ========== Timeline ========== */
+    .timeline { border-left: 3px solid var(--primary); padding-left: 28px; }
+    .timeline-item { position: relative; margin-bottom: 26px; }
+    .timeline-item::before {
+      content: "";
+      position: absolute;
+      left: -35px; top: 4px;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--paper);
+      border: 3px solid var(--primary);
+      box-shadow: 0 0 0 4px var(--primary-soft);
+    }
+    .timeline-item h3 { margin: 0 0 6px; font-size: 17px; }
+    .timeline-item p { margin: 0; color: var(--slate); font-size: 14.5px; line-height: 1.7; }
+
+    /* ========== Info cards ========== */
+    .info-row {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .info-card {
+      flex: 1;
+      min-width: 200px;
+      padding: 18px 20px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow-sm);
+    }
+    .info-card h4 { font-size: 14px; margin: 0 0 4px; }
+    .info-card p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.65; }
+
+    /* ========== Footer ========== */
+    footer { padding: 48px 0 40px; color: var(--muted); border-top: 1px solid var(--line); background: var(--soft); margin-top: 64px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; align-items: center; font-size: 14px; }
+    footer .links { display: flex; gap: 16px; flex-wrap: wrap; }
+
+    /* ========== Responsive ========== */
+    @media (max-width: 980px) {
+      .hero-grid { grid-template-columns: 1fr 1fr; }
+      .grid-3, .principles, .workflow { grid-template-columns: 1fr 1fr; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .checklist ul { columns: 1; }
+      .state-machine { flex-direction: column; }
+      .arrow { display: none; }
+      .how-flow { flex-direction: column; gap: 12px; }
+      .how-node { border-radius: var(--radius) !important; }
+      .how-node:not(:last-child)::after { content: "\203A"; right: 50%; top: auto; bottom: -14px; transform: translateX(50%) rotate(90deg); }
+    }
+    @media (max-width: 560px) {
+      .hero { padding: 48px 18px 36px; }
+      .hero-grid, .grid-3, .grid-2, .principles, .workflow { grid-template-columns: 1fr; }
+      .wrap { width: min(100% - 28px, 1200px); }
+      h1 { font-size: 36px; }
+      .section-title { font-size: 24px; }
+      .checklist ul { columns: 1; padding: 18px 22px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ==================== Hero ==================== -->
+  <header class="hero">
+    <div class="hero-inner">
+      <span class="eyebrow"><span class="dot"></span>EcoAlert 1.0.0 · 本地桌面视频监控 · 忘关灯报警</span>
+      <h1>让<span class="accent">忘关灯</span>这类小事<br/>不再悄悄消耗一整晚的电</h1>
+      <p class="lead">EcoAlert 是面向办公室、实验室、机房和值守区域的本地视频监控软件。它把视频管理、灯光识别、人员检测、报警处理和多渠道通知集中到一个桌面应用中，专注于「无人但灯仍开启」这一明确场景。所有配置与历史保存在本机，数据不出内网。</p>
+      <div class="hero-meta">
+        <span><b>桌面应用</b> · 离线可用</span>
+        <span><b>多类视频源</b> · 灵活接入</span>
+        <span><b>多渠道通知</b> · 飞书 / 企微 / QQ</span>
+        <span><b>数据不出内网</b> · 本地存储</span>
+      </div>
+      <div class="hero-grid">
+        <div class="hero-card">
+          <div class="ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-6 9 6v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
+          </div>
+          <strong>本地桌面运行</strong>
+          <span>配置与历史全部保存在本机，无云端依赖，内网环境直接使用。</span>
+        </div>
+        <div class="hero-card">
+          <div class="ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20M6 14h4"/></svg>
+          </div>
+          <strong>多源灵活接入</strong>
+          <span>支持 HLS、本地视频、摄像头等多种视频源，分组管理与拖拽排序。</span>
+        </div>
+        <div class="hero-card">
+          <div class="ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 12-8 12 8 12 8-4 8-12 8-12-8-12-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <strong>智能分层检测</strong>
+          <span>灯光识别 + 人员运动检测 + AI 复核，分层调度，过程透明可调。</span>
+        </div>
+        <div class="hero-card">
+          <div class="ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>
+          </div>
+          <strong>通知闭环</strong>
+          <span>从触发、确认、恢复到重发，全流程可追溯，支持多渠道推送。</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==================== TOC ==================== -->
+  <nav class="toc">
+    <div class="wrap">
+      <a href="#overview">产品概览</a>
+      <a href="#how">工作原理</a>
+      <a href="#flow">快速上手</a>
+      <a href="#alarm">报警处理</a>
+      <a href="#features">功能特性</a>
+      <a href="#highlights">核心优势</a>
+      <a href="#deploy">系统要求</a>
+      <a href="#checklist">上线检查</a>
+      <a href="#faq">常见问题</a>
+    </div>
+  </nav>
+
+  <!-- ==================== Overview ==================== -->
+  <section id="overview">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">01</span>产品概览</h2>
+      <p class="section-lead">EcoAlert 把视频画面、检测状态、报警记录和通知结果集中到一个本地桌面应用中。不依赖云服务，适合需要内网部署、数据留在本机的节能巡检场景。</p>
+      <div class="grid-3">
+        <div class="feature panel">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
+          <b>实时监控</b>
+          <p>分组展示多路视频，每张卡片直接呈现在线、人员、灯光和报警状态，异常通道一眼可见。</p>
+        </div>
+        <div class="feature panel t-cyan">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+          <b>智能检测</b>
+          <p>灯光识别与人员运动检测自动巡检，AI 仅在必要时低频复核，兼顾准确性与运行成本。</p>
+        </div>
+        <div class="feature panel t-red">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+          <b>报警闭环</b>
+          <p>从倒计时、正式报警到确认恢复，形成完整可追踪的生命周期，避免误报打扰。</p>
+        </div>
+        <div class="feature panel t-green">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4z"/></svg></div>
+          <b>多渠道通知</b>
+          <p>报警和恢复事件可推送到 Webhook、飞书、企业微信或 QQ，失败支持手动重发。</p>
+        </div>
+        <div class="feature panel t-amber">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div>
+          <b>ROI 标定</b>
+          <p>为每路视频框选检测区域，减少画面边缘、反光和无关运动的干扰，支持实时测试。</p>
+        </div>
+        <div class="feature panel t-purple">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <b>域检测门控</b>
+          <p>同一分组所有视频都报警时才发送通知，有效降低灯光互相干扰造成的误报。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== How It Works ==================== -->
+  <section id="how" style="background: var(--soft);">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">02</span>工作原理</h2>
+      <p class="section-lead">EcoAlert 的检测逻辑分为三步：接入视频 → 智能分析 → 触发通知。整个过程自动运行，管理员只需关注最终结果。</p>
+
+      <div class="how-flow">
+        <div class="how-node h-blue">
+          <div class="how-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h3>视频接入</h3>
+          <p>支持 HLS 流、本地视频文件、USB 摄像头等多种来源，按楼层或区域分组管理</p>
+        </div>
+        <div class="how-node h-green">
+          <div class="how-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 12-8 12 8 12 8-4 8-12 8-12-8-12-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <h3>智能检测</h3>
+          <p>自动识别灯光开关与人员活动，AI 仅在必要时复核确认，兼顾准确与低成本</p>
+        </div>
+        <div class="how-node h-red">
+          <div class="how-ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </div>
+          <h3>报警通知</h3>
+          <p>确认无人且灯亮后自动报警，通过飞书、企微等渠道推送，全程可追溯</p>
+        </div>
+      </div>
+
+      <h3 style="margin: 0 0 16px; font-size: 18px;">检测策略</h3>
+      <div class="principles">
+        <div class="principle">
+          <h4><span class="dot-indicator" style="background: var(--primary);"></span>灯光识别</h4>
+          <p>利用摄像头开灯彩色、关灯黑白的画面特征自动判断灯光状态，无需额外硬件传感器，支持手动标定检测区域和灵敏度。</p>
+        </div>
+        <div class="principle">
+          <h4><span class="dot-indicator" style="background: var(--green);"></span>人员检测</h4>
+          <p>通过画面中的运动变化判断是否有人在场。检测到人后保持一段时间，避免短暂动作遗漏。有人时自动跳过报警流程。</p>
+        </div>
+        <div class="principle">
+          <h4><span class="dot-indicator" style="background: var(--purple);"></span>AI 兜底确认</h4>
+          <p>常规检测持续无人时，自动调用 AI 模型进行二次确认。每通道每小时有调用上限，有人时自动跳过，有效控制成本。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== Flow ==================== -->
+  <section id="flow">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">03</span>快速上手</h2>
+      <p class="section-lead">建议按以下顺序完成首次设置。每一步都可以独立反复调整，无需重新安装。</p>
+      <div class="workflow">
+        <div class="wf-step"><span class="wf-num">1</span><h3>安装启动</h3><p>运行安装程序完成安装，启动后使用默认密码登录。</p></div>
+        <div class="wf-step"><span class="wf-num">2</span><h3>修改密码</h3><p>进入「基础设置」修改管理员密码，保障账户安全。</p></div>
+        <div class="wf-step"><span class="wf-num">3</span><h3>添加视频源</h3><p>在「视频管理」中录入视频地址，支持 HLS、本地视频、摄像头等类型。</p></div>
+        <div class="wf-step"><span class="wf-num">4</span><h3>分组整理</h3><p>按楼层或区域创建分组，将视频拖入对应分组，灯光互相干扰的区域可开启域检测。</p></div>
+        <div class="wf-step"><span class="wf-num">5</span><h3>检查画面</h3><p>在「实时监控」中确认每路视频画面可正常播放，如有问题使用诊断功能检查。</p></div>
+        <div class="wf-step"><span class="wf-num">6</span><h3>配置检测</h3><p>在「检测配置」中设置算法启用时段、检测周期和报警参数。</p></div>
+        <div class="wf-step"><span class="wf-num">7</span><h3>标定检测区域</h3><p>在「ROI 标定」中框选每路视频的检测区域，调整灯光灵敏度。</p></div>
+        <div class="wf-step"><span class="wf-num">8</span><h3>测试上线</h3><p>在开灯/关灯/有人/无人场景下测试效果，配置通知渠道并发送测试后即可启用。</p></div>
+      </div>
+
+      <div class="highlight" style="margin-top: 28px;">
+        <h2>使用建议</h2>
+        <p>建议先完成视频源添加和检测区域标定，再启用报警功能。这样可以避免因阈值不合适导致的误报，上线过程更顺畅。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== Alarm ==================== -->
+  <section id="alarm" style="background: var(--soft);">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">04</span>报警处理</h2>
+      <p class="section-lead">报警不只是「当前画面是否有异常」的简单判断，而是一条完整的状态链路。通知只在状态变化时触发，避免画面短暂波动造成重复打扰。</p>
+
+      <div class="panel panel-lg" style="padding: 28px 30px; margin-bottom: 20px;">
+        <div class="state-machine">
+          <div class="state s-normal"><b>正常</b><span>无人或关灯</span></div>
+          <div class="arrow">›</div>
+          <div class="state s-checking"><b>AI 确认中</b><span>智能复核</span></div>
+          <div class="arrow">›</div>
+          <div class="state s-suspected"><b>倒计时</b><span>报警预备</span></div>
+          <div class="arrow">›</div>
+          <div class="state s-active"><b>报警中</b><span>发送通知</span></div>
+          <div class="arrow">›</div>
+          <div class="state s-ack"><b>已确认</b><span>管理员处理</span></div>
+          <div class="arrow">›</div>
+          <div class="state s-resolved"><b>已恢复</b><span>条件满足</span></div>
+        </div>
+        <p style="margin: 12px 0 0; color: var(--muted); font-size: 14.5px; line-height: 1.75;">
+          当常规检测持续 5 分钟无人且灯亮时，系统进入 AI 确认阶段。AI 连续两次确认无人后开始报警倒计时；倒计时结束后正式报警并发送通知。管理员确认后，待恢复条件满足（如灯关闭或有人出现）自动标记为已恢复。
+        </p>
+      </div>
+
+      <div class="info-row">
+        <div class="info-card" style="border-left: 4px solid #818cf8;">
+          <h4 style="color: #6366f1;">AI 确认进度</h4>
+          <p>报警图标外层环形展示确认进度，从 0/2 逐步到 2/2</p>
+        </div>
+        <div class="info-card" style="border-left: 4px solid var(--red);">
+          <h4 style="color: var(--red);">报警倒计时</h4>
+          <p>内层红色环展示倒计时进度，到时自动发送通知</p>
+        </div>
+        <div class="info-card" style="border-left: 4px solid var(--green);">
+          <h4 style="color: var(--green);">自动恢复</h4>
+          <p>灯关闭或有人出现后，持续稳定一段时间自动恢复</p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel" style="padding: 22px 24px;">
+          <h3 style="margin: 0 0 8px; font-size: 16px;">可订阅的事件</h3>
+          <p style="margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7;">支持报警触发、报警恢复、视频源离线、算法异常四类事件。每个通知目标可独立设置冷却时间，避免同一问题持续重复通知。</p>
+        </div>
+        <div class="panel" style="padding: 22px 24px;">
+          <h3 style="margin: 0 0 8px; font-size: 16px;">恢复策略</h3>
+          <p style="margin: 0; color: var(--muted); font-size: 14px; line-height: 1.7;">可选择「灯关闭」「有人出现」「任一」「同时」四种恢复条件，适应不同场景需求。恢复需要持续稳定一段时间，避免短暂变化导致误恢复。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== Features ==================== -->
+  <section id="features">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">05</span>功能特性</h2>
+      <p class="section-lead">EcoAlert 的页面按日常值守、配置管理、报警处理和诊断排障分工，减少管理员在多个工具之间切换。</p>
+
+      <div class="grid-3">
+        <div class="feature panel">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
+          <b>实时监控与报警</b>
+          <p>多路视频分组展示，报警通道自动聚合。视频卡直接呈现人员、灯光和报警状态，异常一眼可见。支持一键诊断视频连接问题。</p>
+        </div>
+        <div class="feature panel t-cyan">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20M6 14h4"/></svg></div>
+          <b>视频源管理</b>
+          <p>支持 HLS、本地视频、摄像头等多种类型。新增、编辑、删除一站式完成。位置信息会自动进入报警上下文，建议如实填写。</p>
+        </div>
+        <div class="feature panel t-green">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <b>分组与域检测</b>
+          <p>按楼层或区域分组管理，视频卡支持拖拽移动。域检测模式下，同组所有通道都报警才发送通知，有效降低灯光互相干扰造成的误报。</p>
+        </div>
+        <div class="feature panel t-amber">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+          <b>检测配置</b>
+          <p>算法启用时段、检测周期、报警保持时间和恢复策略均可灵活配置。支持全局默认与每路通道独立设置，少数配置即可覆盖大多数场景。</p>
+        </div>
+        <div class="feature panel t-red">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
+          <b>通知管理</b>
+          <p>支持 Webhook、飞书、企业微信、QQ 四类渠道。凭证自动管理，事件按需订阅，冷却策略避免重复通知。失败记录可手动重发。</p>
+        </div>
+        <div class="feature panel t-purple">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+          <b>系统日志与诊断</b>
+          <p>系统日志实时展示视频源变更、算法事件和通知结果。开发者模式下可查看检测数据曲线，便于定位误报或漏报原因。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== Highlights ==================== -->
+  <section id="highlights" style="background: var(--soft);">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">06</span>核心优势</h2>
+      <p class="section-lead">EcoAlert 不是泛安防平台，而是围绕「忘关灯」这个明确场景，把可解释检测、报警闭环和本地可控放在第一位。</p>
+
+      <div class="grid-2">
+        <div class="highlight">
+          <h2>本地优先，数据安全</h2>
+          <p>桌面应用直接运行在您的电脑上，所有配置、报警记录和检测历史保存在本机。无云端依赖，无数据外泄风险，内网环境即可完整使用。</p>
+        </div>
+        <div class="highlight t-amber">
+          <h2>分层检测，成本可控</h2>
+          <p>简单规则高频巡检承担主要判断，AI 模型仅在必要时低频复核。有人时自动跳过 AI 调用，每通道每小时有上限，大幅降低运行成本。</p>
+        </div>
+      </div>
+
+      <div class="grid-3" style="margin-top: 18px;">
+        <div class="highlight t-green">
+          <h2 style="font-size: 20px;">报警闭环</h2>
+          <p>从倒计时、正式报警、管理员确认到自动恢复，报警有完整的生命周期。通知只在状态变化时发送，避免画面抖动造成重复打扰。</p>
+        </div>
+        <div class="highlight t-red">
+          <h2 style="font-size: 20px;">多通道通知</h2>
+          <p>支持 Webhook、飞书、企业微信、QQ 四类渠道，凭证自动刷新。通知历史、失败重发和冷却策略集中管理，让报警进入运维流程。</p>
+        </div>
+        <div class="highlight t-purple">
+          <h2 style="font-size: 20px;">域检测门控</h2>
+          <p>同一分组所有通道都报警时才发送通知。保留单路报警展示用于诊断，降低灯光互相干扰、单路视角误判导致的打扰。</p>
+        </div>
+      </div>
+
+      <table style="margin-top: 24px;">
+        <thead>
+          <tr><th style="width:20%">优势</th><th>说明</th><th style="width:28%">价值</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>本地优先</b></td>
+            <td>桌面应用 + 本机存储，无云端依赖，配置与历史全部保存在本机。</td>
+            <td>适合内网、隐私敏感和轻量部署场景。</td>
+          </tr>
+          <tr>
+            <td><b>低成本检测</b></td>
+            <td>简单规则高频巡检，AI 仅低频兜底；有人时自动跳过。</td>
+            <td>降低算力、网络和外部 API 成本。</td>
+          </tr>
+          <tr>
+            <td><b>灵活配置</b></td>
+            <td>每路视频可独立配置检测区域、时段、周期和报警策略。</td>
+            <td>适应不同办公室、灯光和摄像头环境。</td>
+          </tr>
+          <tr>
+            <td><b>通知闭环</b></td>
+            <td>通知目标、测试发送、历史记录和失败重发集中管理。</td>
+            <td>让报警不仅显示在页面，也能进入运维流程。</td>
+          </tr>
+          <tr>
+            <td><b>域检测门控</b></td>
+            <td>同组所有通道都报警时才发送通知；任一路恢复后发送恢复通知。</td>
+            <td>降低灯光互相干扰和单路误判导致的打扰。</td>
+          </tr>
+          <tr>
+            <td><b>配置继承</b></td>
+            <td>全局默认 → 分组 → 通道三级覆盖，未配置即继承上一级。</td>
+            <td>少数默认值覆盖大多数通道，特殊场景单独调整。</td>
+          </tr>
+          <tr>
+            <td><b>可解释性</b></td>
+            <td>实时展示检测数据和置信度，检测历史用曲线回溯。</td>
+            <td>管理员可直接理解检测逻辑，快速定位问题。</td>
+          </tr>
+          <tr>
+            <td><b>隐私安全</b></td>
+            <td>AI 模型默认关闭，敏感信息脱敏显示，通知不包含图片。</td>
+            <td>满足内网部署和隐私合规要求。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ==================== Deploy ==================== -->
+  <section id="deploy">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">07</span>系统要求</h2>
+      <p class="section-lead">EcoAlert 安装包开箱即用，仅需 Windows 系统，不需要额外安装数据库或云服务。</p>
+
+      <table>
+        <thead><tr><th style="width:20%">项目</th><th>要求</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><b>操作系统</b></td><td>Windows 10 / 11</td><td>桌面应用运行环境</td></tr>
+          <tr><td><b>系统组件</b></td><td>WebView2</td><td>通常系统已自带，用于界面渲染</td></tr>
+          <tr><td><b>视频处理</b></td><td>ffmpeg</td><td>需要加入系统路径，用于视频分析</td></tr>
+          <tr><td><b>数据存储</b></td><td>本机自动管理</td><td>配置、历史和报警记录自动保存在本机</td></tr>
+        </tbody>
+      </table>
+
+      <div class="highlight t-slate" style="margin-top: 24px;">
+        <h2>数据隐私</h2>
+        <p>所有视频配置、报警记录和检测历史均保存在您的电脑本机。数据不经过任何外部服务器，AI 模型默认关闭，通知消息不包含视频截图。满足内网部署和隐私合规要求。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== Checklist ==================== -->
+  <section id="checklist" style="background: var(--soft);">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">08</span>上线前检查</h2>
+      <p class="section-lead">正式启用值守前，建议逐项核对一遍。任何未通过的项目都应在上线前解决或记录风险。</p>
+      <div class="panel panel-lg checklist">
+        <ul>
+          <li>已安装 EcoAlert 并可正常启动</li>
+          <li>已修改默认管理员密码</li>
+          <li>视频处理工具已正确安装</li>
+          <li>所有视频源均可正常访问</li>
+          <li>实时监控页面每路画面可播放</li>
+          <li>视频源分组和位置信息已整理</li>
+          <li>灯光互相干扰的区域已开启域检测</li>
+          <li>重点通道已完成检测区域标定</li>
+          <li>开灯、关灯、有人、无人四类场景已测试</li>
+          <li>算法启用时段符合现场值守规则</li>
+          <li>报警保持和恢复时间已确认</li>
+          <li>恢复策略已选择合适的类型</li>
+          <li>通知渠道已完成测试发送</li>
+          <li>通知历史中可看到成功记录</li>
+          <li>已了解当前版本的能力边界</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== FAQ ==================== -->
+  <section id="faq">
+    <div class="wrap">
+      <h2 class="section-title"><span class="num-tag">09</span>常见问题</h2>
+      <p class="section-lead">上线后最常遇到的问题，按现象 → 排查步骤整理。如仍未解决，可在系统日志中保留现场，方便后续排查。</p>
+      <div class="timeline">
+        <div class="timeline-item">
+          <h3>视频无法播放</h3>
+          <p>检查视频地址是否正确、网络连接是否正常。如果使用 HLS 流，确认推流设备正在运行。可在实时监控页面使用「诊断」按钮检查连接状态。同时检查防火墙是否放行了相关端口。</p>
+        </div>
+        <div class="timeline-item">
+          <h3>报警过于敏感</h3>
+          <p>缩小检测区域到灯光和人员活动的关键范围；提高人员检测灵敏度阈值；延长报警保持时间；调整灯光识别灵敏度。开启开发者模式可查看检测数据曲线，帮助找到合适的参数。</p>
+        </div>
+        <div class="timeline-item">
+          <h3>报警不触发</h3>
+          <p>检查算法是否已启用且当前处于工作时段；确认视频源已启用且在线；确认检测区域覆盖了目标范围；检查灯光亮度是否达到触发条件；确认报警保持时间是否已满足。</p>
+        </div>
+        <div class="timeline-item">
+          <h3>通知发送失败</h3>
+          <p>先使用「发送测试」功能确认地址或凭证是否正确。失败记录中可查看具体错误信息，支持手动重发。确认目标地址可从本机访问，检查网络代理和防火墙设置。</p>
+        </div>
+        <div class="timeline-item">
+          <h3>登录密码忘记</h3>
+          <p>关闭 EcoAlert，在应用数据目录中找到认证配置文件，备份后移除，重启应用即可恢复默认密码。建议恢复后立即修改新密码。</p>
+        </div>
+        <div class="timeline-item">
+          <h3>当前版本限制</h3>
+          <p>人员检测基于运动检测，不等同于人形识别。暂不支持录像存储、多用户权限分级和时间轴回放功能。如需更多功能请关注后续版本更新。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== Footer ==================== -->
+  <footer>
+    <div class="wrap">
+      <div>EcoAlert 1.0.0 · 发布日期 2026-06-14 · 本页面可离线打开，用于交付说明、培训和上线检查。</div>
+      <div class="links">
+        <a href="#overview">产品概览</a>
+        <a href="#how">工作原理</a>
+        <a href="#flow">快速上手</a>
+        <a href="#alarm">报警处理</a>
+        <a href="#features">功能特性</a>
+        <a href="#highlights">核心优势</a>
+        <a href="#checklist">上线检查</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

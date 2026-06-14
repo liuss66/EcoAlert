@@ -16,6 +16,9 @@ pub struct SourceGroup {
     pub order: i32,
     /// 是否折叠
     pub collapsed: bool,
+    /// 域检测：开启后，分组内所有启用视频源均报警时才发送外部报警通知
+    #[serde(default)]
+    pub domain_detection_enabled: bool,
     pub created_at: i64,
 }
 
@@ -26,6 +29,7 @@ impl SourceGroup {
             name: name.into(),
             order,
             collapsed: false,
+            domain_detection_enabled: false,
             created_at: chrono::Utc::now().timestamp_millis(),
         }
     }
@@ -835,6 +839,7 @@ pub fn backfill_groups(data: &mut DataFile) {
                 name: "默认分组".into(),
                 order: 0,
                 collapsed: false,
+                domain_detection_enabled: false,
                 created_at: chrono::Utc::now().timestamp_millis(),
             },
         );
@@ -846,11 +851,24 @@ pub fn backfill_groups(data: &mut DataFile) {
     }
 }
 
-/// 首次运行默认数据：与 Tools/push_streamer 的 cam-1 ~ cam-8 HLS 端点保持一致。
-pub fn seed_local_hls_sources_if_empty(data: &mut DataFile) {
-    if !data.sources.is_empty() {
-        return;
-    }
+/// 调试菜单"测试视频源"开关控制的预设源 ID，关闭开关时精确删除这些源。
+pub const TEST_SOURCE_IDS: &[&str] = &[
+    "cam-domain-0424",
+    "cam-domain-0527",
+    "cam-domain-0528",
+    "cam-domain-0507",
+    "cam-chassis-0424",
+    "cam-chassis-0515",
+    "cam-chassis-0507",
+    "cam-hardware-0514",
+];
+
+/// 测试源专用的分组 ID，关闭开关时若分组下已无其他源则一并删除。
+pub const TEST_GROUP_IDS: &[&str] = &["grp-domain", "grp-chassis", "grp-hardware"];
+
+/// 写入 8 个本地 HLS 测试源，与 Tools/push_streamer 的 cam-1 ~ cam-8 端点保持一致。
+/// 调用方负责决定是否执行（调试菜单开关控制）；已存在的同名分组会跳过，不重复创建。
+pub fn seed_local_hls_sources(data: &mut DataFile) {
 
     let now = chrono::Utc::now().timestamp_millis();
     let group_defs = [
@@ -865,6 +883,7 @@ pub fn seed_local_hls_sources_if_empty(data: &mut DataFile) {
                 name: name.into(),
                 order,
                 collapsed: false,
+                domain_detection_enabled: false,
                 created_at: now,
             });
         }
@@ -944,8 +963,12 @@ pub fn seed_local_hls_sources_if_empty(data: &mut DataFile) {
             0,
         ),
     ];
-    data.sources = source_defs
+    // 追加到已有源列表，跳过 ID 已存在的项（用户可能已手动添加或删除过）
+    let existing_ids: std::collections::HashSet<&str> =
+        data.sources.iter().map(|s| s.id.as_str()).collect();
+    let new_sources: Vec<VideoSource> = source_defs
         .into_iter()
+        .filter(|(id, _, _, _, _, _, _)| !existing_ids.contains(id))
         .map(
             |(id, name, cam_no, location, enabled, group_id, order)| VideoSource {
                 id: id.into(),
@@ -960,6 +983,7 @@ pub fn seed_local_hls_sources_if_empty(data: &mut DataFile) {
             },
         )
         .collect();
+    data.sources.extend(new_sources);
 }
 
 /// 兼容迁移：只修正旧版本内置 HLS 演示源，不改用户手动新增的视频源。
@@ -980,6 +1004,7 @@ pub fn migrate_local_hls_demo_names(data: &mut DataFile) {
                 name: name.into(),
                 order,
                 collapsed: false,
+                domain_detection_enabled: false,
                 created_at: now,
             });
         }
