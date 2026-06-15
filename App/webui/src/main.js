@@ -403,6 +403,7 @@ let developerMode = false;
 let sceneStates = new Map();
 let runtimeStatuses = new Map();
 let vlmStates = new Map();
+let frontendVideoAnalyzers = new Map();
 
 const setDeveloperMode = (enabled) => {
   developerMode = !!enabled;
@@ -427,8 +428,13 @@ const renderLive = () => {
   const grid = $('#video-grid');
   const empty = $('#live-empty');
   const enabled = sources.filter((s) => s.enabled);
+  const enabledIds = new Set(enabled.map((s) => s.id));
+  for (const sourceId of frontendVideoAnalyzers.keys()) {
+    if (!enabledIds.has(sourceId)) stopFrontendAnalyzer(sourceId);
+  }
   $('#live-count').textContent = `${enabled.length} 路`;
   if (enabled.length === 0) {
+    for (const sourceId of frontendVideoAnalyzers.keys()) stopFrontendAnalyzer(sourceId);
     grid.innerHTML = '';
     empty.classList.remove('hidden');
     return;
@@ -1073,6 +1079,112 @@ function updateLiveState(payload) {
   updateAlarmBanner();
 }
 
+const stopFrontendAnalyzer = (sourceId) => {
+  if (!sourceId) return;
+  const analyzer = frontendVideoAnalyzers.get(sourceId);
+  if (!analyzer) return;
+  clearInterval(analyzer.timer);
+  frontendVideoAnalyzers.delete(sourceId);
+};
+
+const localVideoThresholds = () => ({
+  person: normalizePersonMotionThreshold(algorithmConfig?.personThreshold ?? algorithmConfig?.person_threshold ?? 0.003),
+  light: Number(roiConfig?.lightThreshold ?? roiConfig?.light_threshold ?? 0.08),
+});
+
+const startFrontendAnalyzer = (src, video) => {
+  if (!src?.id || src.type !== 'mp4' || !video) return;
+  stopFrontendAnalyzer(src.id);
+
+  const canvas = document.createElement('canvas');
+  const width = 160;
+  const height = 90;
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return;
+
+  const state = {
+    frameSeq: 0,
+    lastGray: null,
+    motionEma: 0,
+    warned: false,
+  };
+
+  const analyze = () => {
+    if (!video.isConnected) {
+      stopFrontendAnalyzer(src.id);
+      return;
+    }
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+
+    const startedAt = performance.now();
+    try {
+      ctx.drawImage(video, 0, 0, width, height);
+      const pixels = ctx.getImageData(0, 0, width, height).data;
+      const gray = new Uint8Array(width * height);
+      let brightnessSum = 0;
+      let colorSum = 0;
+      let changed = 0;
+
+      for (let i = 0, j = 0; i < pixels.length; i += 4, j += 1) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        const luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+        const lumaByte = Math.round(luma);
+        gray[j] = lumaByte;
+        brightnessSum += luma;
+        colorSum += (Math.abs(r - g) + Math.abs(g - b) + Math.abs(r - b)) / (3 * 255);
+        if (state.lastGray && Math.abs(lumaByte - state.lastGray[j]) > 16) changed += 1;
+      }
+
+      const pixelCount = width * height;
+      const motionRaw = state.lastGray ? changed / pixelCount : 0;
+      state.motionEma = (state.motionEma * 0.65) + (motionRaw * 0.35);
+      state.lastGray = gray;
+      state.frameSeq += 1;
+
+      const thresholds = localVideoThresholds();
+      const brightness = brightnessSum / pixelCount;
+      const colorScore = colorSum / pixelCount;
+      const personConfidence = Math.min(1, thresholds.person > 0 ? state.motionEma / thresholds.person : state.motionEma);
+      const lightConfidence = Math.min(1, thresholds.light > 0 ? colorScore / thresholds.light : colorScore);
+      const person = state.motionEma >= thresholds.person;
+      const light = colorScore >= thresholds.light;
+
+      updateLiveState({
+        sourceId: src.id,
+        person,
+        light,
+        lightState: light ? 'on' : 'off',
+        simplePerson: person,
+        simplePersonConfidence: personConfidence,
+        personConfidence,
+        lightConfidence,
+        source: 'frontend-canvas',
+        frameSeq: state.frameSeq,
+        confidence: Math.max(personConfidence, lightConfidence),
+        reason: 'local_video_canvas',
+        lightBrightness: brightness,
+        colorScore,
+        motionScore: state.motionEma,
+        processMs: performance.now() - startedAt,
+        ts: Date.now(),
+      });
+    } catch (error) {
+      if (!state.warned) {
+        state.warned = true;
+        addLog('warn', `本地视频前端检测失败: ${error?.message || error}`);
+      }
+    }
+  };
+
+  const timer = setInterval(analyze, 1000);
+  frontendVideoAnalyzers.set(src.id, { timer, analyze });
+  video.addEventListener('loadeddata', analyze, { once: true });
+};
+
 function updateVlmStateFromSchedule(payload) {
   if (!payload?.sourceId) return;
   if (payload.action === 'vlm_error') {
@@ -1173,6 +1285,7 @@ const videoCardHtml = (s) => {
 const mountVideo = (src) => {
   const wrap = document.getElementById(`vw-${src.id}`);
   if (!wrap || wrap.dataset.mounted === '1') return;
+  stopFrontendAnalyzer(src.id);
   wrap.dataset.mounted = '1';
   const video = document.createElement('video');
   video.controls = true;
@@ -1249,6 +1362,7 @@ const mountVideo = (src) => {
     } else if (src.type === 'mp4') {
       video.loop = true;
       video.src = playableVideoUrl(src);
+      startFrontendAnalyzer(src, video);
       requestAutoPlay();
     } else if (src.type === 'webcam') {
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })

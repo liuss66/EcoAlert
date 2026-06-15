@@ -1015,8 +1015,7 @@ export async function onSources(handler) {
 }
 export async function onSceneState(handler) {
   if (isTauri) return listen('ecoalert://scene_state', (e) => handler(normalizeSceneState(e.payload)));
-  // 浏览器预览模式只负责 UI 和视频播放，不再伪造算法检测结果。
-  // 真实 person/light 事件只由 Tauri 后端的 ffmpeg 抽帧 + Detector 链路产生。
+  // 浏览器预览模式不伪造算法事件；本地 MP4 可由前端 Canvas 预览链路自行产生实时状态。
   return () => {};
 }
 
