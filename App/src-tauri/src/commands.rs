@@ -1,16 +1,22 @@
 // 暴露给前端的 Tauri commands
 use crate::pipeline::{
-    decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, vlm,
-    PipelineConfig,
+    decoder::{extract_gray_frame_from_url, resolve_media_tool},
+    detector::Detector,
+    notifier, scheduler, vlm, PipelineConfig,
 };
 use crate::state::{log_event, AppState};
 use crate::store::{
-    records_by_source, seed_local_hls_sources, AlarmRecord, AlgorithmConfig,
-    ChannelRuntimeStatus, DetectionSampleRecord, NotificationRecord, NotificationTarget,
-    NotificationTargetPayload, RoiConfig, SceneState, SecurityConfig, SourceGroup, StateRecord,
-    VideoSource, TEST_GROUP_IDS, TEST_SOURCE_IDS, GLOBAL_ROI_SOURCE_ID,
+    backfill_groups, records_by_source, seed_local_hls_sources, AlarmRecord, AlarmRecordFile,
+    AlgorithmConfig, AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, DetectionHistoryFile,
+    DetectionSampleRecord, HistoryFile, NotificationConfigFile, NotificationHistoryFile,
+    NotificationRecord, NotificationTarget, NotificationTargetPayload, RoiConfig, RoiConfigFile,
+    SceneState, SecurityConfig, SourceGroup, StateRecord, VideoSource, GLOBAL_ROI_SOURCE_ID,
+    TEST_GROUP_IDS, TEST_SOURCE_IDS,
 };
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 fn require_login(state: &State<Arc<AppState>>) -> Result<(), String> {
@@ -194,6 +200,141 @@ pub fn delete_source(
 
 /* -------------------- 调试菜单：测试视频源开关 -------------------- */
 
+const TEST_VIDEO_GROUP_ID: &str = "grp-test-videos";
+const VIDEO_FILE_EXTS: &[&str] = &["mp4", "m4v", "mov", "mkv", "avi", "webm"];
+
+#[derive(serde::Serialize)]
+pub struct ImportTestSourcesResult {
+    pub sources: Vec<VideoSource>,
+    pub imported: usize,
+    pub skipped: usize,
+}
+
+fn is_video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            VIDEO_FILE_EXTS
+                .iter()
+                .any(|item| item.eq_ignore_ascii_case(ext))
+        })
+        .unwrap_or(false)
+}
+
+fn collect_video_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_video_files(&path, out)?;
+        } else if path.is_file() && is_video_file(&path) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_test_sources_from_folder(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+    folder_path: String,
+) -> Result<ImportTestSourcesResult, String> {
+    require_login(&state)?;
+    let folder = PathBuf::from(folder_path.trim());
+    if !folder.is_dir() {
+        return Err("请选择有效的视频文件夹".into());
+    }
+
+    let mut files = Vec::new();
+    collect_video_files(&folder, &mut files).map_err(|e| format!("扫描视频文件失败: {e}"))?;
+    files.sort();
+    if files.is_empty() {
+        return Err("所选文件夹中没有可导入的视频文件".into());
+    }
+
+    {
+        let mut groups = state.groups.lock();
+        if !groups.iter().any(|g| g.id == TEST_VIDEO_GROUP_ID) {
+            let next_order = groups.iter().map(|g| g.order).max().unwrap_or(0) + 1;
+            groups.push(SourceGroup {
+                id: TEST_VIDEO_GROUP_ID.into(),
+                name: "测试视频".into(),
+                order: next_order,
+                collapsed: false,
+                domain_detection_enabled: false,
+                created_at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+    }
+
+    let remove_ids: std::collections::HashSet<&str> = TEST_SOURCE_IDS.iter().copied().collect();
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    {
+        let mut sources = state.sources.lock();
+        sources.retain(|s| !remove_ids.contains(s.id.as_str()));
+        let mut existing_urls: std::collections::HashSet<String> =
+            sources.iter().map(|s| s.url.clone()).collect();
+        let base_order = sources
+            .iter()
+            .filter(|s| s.group_id.as_deref() == Some(TEST_VIDEO_GROUP_ID))
+            .map(|s| s.order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+
+        for file in files {
+            let url = file.to_string_lossy().into_owned();
+            if existing_urls.contains(&url) {
+                skipped += 1;
+                continue;
+            }
+            let name = file
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("测试视频")
+                .chars()
+                .take(64)
+                .collect::<String>();
+            let location = file
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(String::new)
+                .chars()
+                .take(128)
+                .collect::<String>();
+            sources.push(VideoSource::new(
+                name,
+                url.clone().chars().take(512).collect(),
+                "mp4".into(),
+                location,
+                true,
+                Some(TEST_VIDEO_GROUP_ID.into()),
+                base_order + imported as i32,
+            ));
+            existing_urls.insert(url);
+            imported += 1;
+        }
+    }
+
+    state
+        .groups
+        .lock()
+        .retain(|g| !TEST_GROUP_IDS.contains(&g.id.as_str()));
+    state.persist_sources().map_err(|e| e.to_string())?;
+    log_event(
+        &app,
+        "info",
+        format!("已从文件夹导入测试视频源: {imported} 个，跳过 {skipped} 个"),
+    );
+    Ok(ImportTestSourcesResult {
+        sources: state.sources.lock().clone(),
+        imported,
+        skipped,
+    })
+}
+
 /// 开启时创建 8 个预设 HLS 测试源，关闭时只删除这 8 个（用户自加的源保留）。
 #[tauri::command]
 pub fn set_test_sources_enabled(
@@ -226,9 +367,11 @@ pub fn set_test_sources_enabled(
         drop(groups);
         log_event(&app, "info", "测试视频源已创建");
     } else {
-        let remove_ids: std::collections::HashSet<&str> =
-            TEST_SOURCE_IDS.iter().copied().collect();
-        state.sources.lock().retain(|s| !remove_ids.contains(s.id.as_str()));
+        let remove_ids: std::collections::HashSet<&str> = TEST_SOURCE_IDS.iter().copied().collect();
+        state.sources.lock().retain(|s| {
+            !remove_ids.contains(s.id.as_str())
+                && s.group_id.as_deref() != Some(TEST_VIDEO_GROUP_ID)
+        });
         // 仅当测试分组下已无任何源时才删除分组
         let remaining_group_ids: std::collections::HashSet<Option<String>> = state
             .sources
@@ -237,7 +380,7 @@ pub fn set_test_sources_enabled(
             .map(|s| s.group_id.clone())
             .collect();
         state.groups.lock().retain(|g| {
-            !TEST_GROUP_IDS.contains(&g.id.as_str())
+            (g.id != TEST_VIDEO_GROUP_ID && !TEST_GROUP_IDS.contains(&g.id.as_str()))
                 || remaining_group_ids.contains(&Some(g.id.clone()))
         });
         log_event(&app, "info", "测试视频源已移除");
@@ -1060,6 +1203,62 @@ pub fn update_security_config(
     Ok(payload)
 }
 
+#[tauri::command]
+pub fn reset_all_app_data(
+    app: AppHandle,
+    state: State<Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    {
+        let mut data = DataFile::default();
+        backfill_groups(&mut data);
+        *state.sources.lock() = data.sources.clone();
+        *state.groups.lock() = data.groups.clone();
+        *state.data.lock() = data;
+    }
+    {
+        *state.history.lock() = HistoryFile::default();
+        *state.detection_history.lock() = DetectionHistoryFile::default();
+        *state.algorithm_config.lock() = AlgorithmConfigFile::default();
+        *state.roi_config.lock() = RoiConfigFile::default();
+        *state.notification_config.lock() = NotificationConfigFile::default();
+        *state.security_config.lock() = SecurityConfig::default();
+        *state.alarm_records.lock() = AlarmRecordFile::default();
+        *state.notification_history.lock() = NotificationHistoryFile::default();
+        state.current_state.lock().clear();
+        state.runtime_status.lock().clear();
+    }
+
+    crate::store::save(&state.data_file, &*state.data.lock()).map_err(|e| e.to_string())?;
+    crate::store::save_history(&state.history_file, &*state.history.lock())
+        .map_err(|e| e.to_string())?;
+    crate::store::save_json(
+        &state.detection_history_file,
+        &*state.detection_history.lock(),
+    )
+    .map_err(|e| e.to_string())?;
+    state
+        .persist_algorithm_config()
+        .map_err(|e| e.to_string())?;
+    state.persist_roi_config().map_err(|e| e.to_string())?;
+    state
+        .persist_notification_config()
+        .map_err(|e| e.to_string())?;
+    state.persist_security_config().map_err(|e| e.to_string())?;
+    state.persist_alarm_records().map_err(|e| e.to_string())?;
+    crate::store::save_json(
+        &state.notification_history_file,
+        &*state.notification_history.lock(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let sources = state.sources.lock().clone();
+    app.emit("ecoalert://sources", sources.clone())
+        .map_err(|e| e.to_string())?;
+    log_event(&app, "warn", "已初始化全部业务配置和运行状态");
+    Ok(serde_json::json!({ "ok": true, "sources": sources }))
+}
+
 /* -------------------- 其它 -------------------- */
 
 #[tauri::command]
@@ -1085,6 +1284,88 @@ pub fn change_password(
 #[tauri::command]
 pub fn get_data_dir(state: State<Arc<AppState>>) -> Result<String, String> {
     Ok(state.data_dir_str())
+}
+
+#[tauri::command]
+pub fn check_ffmpeg_status() -> Result<serde_json::Value, String> {
+    fn check_tool(name: &str) -> serde_json::Value {
+        let path = resolve_media_tool(name);
+        let mut command = Command::new(&path);
+        command
+            .arg("-version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                let message = if err.kind() == std::io::ErrorKind::NotFound {
+                    format!(
+                        "未找到 {name}，请将 {name}.exe 放到程序目录，或把 ffmpeg 安装目录加入 PATH"
+                    )
+                } else {
+                    format!("{name} 启动失败: {err}")
+                };
+                return serde_json::json!({
+                    "ok": false,
+                    "path": path.to_string_lossy(),
+                    "version": null,
+                    "error": message,
+                });
+            }
+        };
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if started.elapsed() > Duration::from_secs(3) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return serde_json::json!({
+                            "ok": false,
+                            "path": path.to_string_lossy(),
+                            "version": null,
+                            "error": format!("{name} 检测超时"),
+                        });
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => {
+                    return serde_json::json!({
+                        "ok": false,
+                        "path": path.to_string_lossy(),
+                        "version": null,
+                        "error": format!("{name} 检测失败: {err}"),
+                    });
+                }
+            }
+        };
+        let mut output = String::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            let _ = std::io::Read::read_to_string(&mut stdout, &mut output);
+        }
+        let first_line = output.lines().next().unwrap_or("").trim().to_string();
+        serde_json::json!({
+            "ok": status.success(),
+            "path": path.to_string_lossy(),
+            "version": if first_line.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(first_line) },
+            "error": if status.success() { serde_json::Value::Null } else { serde_json::Value::String(format!("{name} 退出码: {status}")) },
+        })
+    }
+
+    let ffmpeg = check_tool("ffmpeg");
+    let ffprobe = check_tool("ffprobe");
+    let ok = ffmpeg["ok"].as_bool().unwrap_or(false) && ffprobe["ok"].as_bool().unwrap_or(false);
+    Ok(serde_json::json!({
+        "ok": ok,
+        "ffmpeg": ffmpeg,
+        "ffprobe": ffprobe,
+    }))
 }
 
 // ==================== OAuth / 凭证验证 ====================

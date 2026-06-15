@@ -1,6 +1,6 @@
 # EcoAlert
 
-视频监控应用：Tauri 桌面 app + 本地测试视频 + ffmpeg HLS 推流器 + 本地算法处理流水线。
+视频监控应用：Tauri 桌面 app + 本地测试视频文件导入 + 本地算法处理流水线。
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-red.svg)](./LICENSE)
 
@@ -14,7 +14,7 @@
 | [`Algo/`](./Algo/) | 算法调试代码；当前包含 MATLAB 版灯光 / 人员运动检测 |
 | [`Document/`](./Document/) | 产品需求、架构、接口、部署和 ADR |
 | [`Video/`](./Video/) | 本地测试视频，全部平铺在根目录 |
-| [`Tools/`](./Tools/) | 开发辅助脚本；当前包含 ffmpeg HLS 推流器 |
+| [`Tools/`](./Tools/) | 开发辅助脚本；保留可选 ffmpeg HLS 推流器 |
 
 ## 目录原则
 
@@ -26,10 +26,10 @@
 ## 数据流
 
 ```
-Video/*.mp4 ──► Tools/push_streamer（ffmpeg HLS 推流）
+Video/*.mp4 ──► App 调试页选择文件夹导入为 MP4 视频源
                             │
                             ▼
-                  App/webui 视频预览
+                  App/webui 循环视频预览
                             │
                             ▼
                   App/src-tauri/src/pipeline/decoder.rs  ← ffmpeg 单帧抽样
@@ -50,19 +50,17 @@ npm install
 npm run dev                # 浏览器预览
 npm run tauri:dev          # Tauri 桌面（需要 Rust）
 
-# 2) 推流器（把 Video/*.mp4 转为本地 HLS）
-cd Tools
-pip install -r requirements.txt
-python -m push_streamer.cli --config config.example.yaml
-
-# 3) App 默认源已对应 http://127.0.0.1:8080/cam-N/index.m3u8
+# 2) 测试视频
+# 在 Tauri 桌面端登录后进入：基础设置 -> 调试
+# 打开“测试视频源”开关并选择文件夹；也可点击“选择测试视频文件夹”重新导入
+# App 会递归扫描视频文件并导入为循环播放的 MP4 视频源
 ```
 
 说明：
 
 - 浏览器预览只验证 UI、视频播放和 mock 数据，不运行 Rust 检测链路。
 - Tauri dev/release 才会运行 ffmpeg 抽帧、ROI 灯光检测、报警状态机和通知发送。
-- release 包播放本地 HLS 依赖 `tauri.conf.json` 中的本地 `127.0.0.1 / localhost` CSP 白名单，以及针对 WebView2 私网请求限制的 feature 配置。
+- 本地测试不再要求启动推流器；开发者模式保留“测试视频源”开关，开启时选择文件夹自动导入测试视频源，关闭时移除测试源。`Tools/push_streamer` 仅作为需要 HLS 链路时的可选开发工具。
 - 当前灯光检测优先使用“开灯彩色、关灯红外黑白”的亮度加权色度分数，并输出明确的开灯 / 关灯状态。
 - 当前办公室固定摄像头场景下，人员检测使用 ROI 内帧间运动代理；一帧检测到人后保持 5 分钟。
 - 常规模型 5 分钟无人后触发 VLM 兜底；VLM 连续两次确认无人且灯亮才触发报警和通知。

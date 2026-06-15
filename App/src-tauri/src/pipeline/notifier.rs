@@ -191,7 +191,10 @@ fn build_alarm_payload(state: &AppState, event: &str, alarm: &AlarmRecord) -> Va
         .cloned();
     let scene = state.current_state.lock().get(&alarm.source_id).cloned();
     let now = chrono::Utc::now();
-    let ts_formatted = now.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
+    let ts_formatted = now
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     serde_json::json!({
         "event": event,
         "alarm_id": alarm.id,

@@ -415,7 +415,7 @@ impl Default for AlgorithmConfig {
             // 空启用窗口表示全天运行。演示 / release 默认需要能立即抽帧检测。
             active_windows: vec![],
             exception_windows: vec![],
-            simple_interval_sec: 10,
+            simple_interval_sec: 1,
             vlm_interval_sec: 300,
             vlm_enabled: false,
             vlm_skip_when_person: true,
@@ -429,7 +429,7 @@ impl Default for AlgorithmConfig {
             vlm_price_input_cache: 0.0,
             vlm_price_output: 0.0,
             vlm_price_output_cache: 0.0,
-            person_threshold: 0.006,
+            person_threshold: 0.003,
             light_threshold: 0.70,
             alarm_hold_sec: 300,
             alarm_recover_sec: 60,
@@ -513,12 +513,22 @@ pub struct RoiConfig {
     pub exclude_rois: Vec<RoiRect>,
     #[serde(default)]
     pub person_rois: Vec<RoiRect>,
-    pub light_on_threshold: f32,
-    pub light_off_threshold: f32,
+    #[serde(default = "default_light_threshold")]
+    pub light_threshold: f32,
+    /// 旧版开灯阈值，仅用于反序列化兼容；不再写出。
+    #[serde(default, skip_serializing, rename = "lightOnThreshold")]
+    _legacy_light_on_threshold: Option<f32>,
+    /// 旧版关灯阈值，仅用于反序列化兼容；不再写出。
+    #[serde(default, skip_serializing, rename = "lightOffThreshold")]
+    _legacy_light_off_threshold: Option<f32>,
     pub updated_at: i64,
 }
 
 pub const GLOBAL_ROI_SOURCE_ID: &str = "__global__";
+
+fn default_light_threshold() -> f32 {
+    0.015
+}
 
 impl RoiConfig {
     pub fn new(source_id: String) -> Self {
@@ -528,9 +538,25 @@ impl RoiConfig {
             light_rois: vec![],
             exclude_rois: vec![],
             person_rois: vec![],
-            light_on_threshold: 0.055,
-            light_off_threshold: 0.025,
+            light_threshold: 0.015,
+            _legacy_light_on_threshold: None,
+            _legacy_light_off_threshold: None,
             updated_at: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+
+    /// 加载旧配置时，若 `light_threshold` 仍为默认值而旧版字段存在，则用旧值覆盖。
+    pub fn apply_legacy_threshold_migration(&mut self) {
+        if (self.light_threshold - default_light_threshold()).abs() < f32::EPSILON {
+            if let Some(on) = self._legacy_light_on_threshold {
+                if on > 0.0 && on <= 0.2 {
+                    self.light_threshold = on;
+                }
+            } else if let Some(off) = self._legacy_light_off_threshold {
+                if off > 0.0 && off <= 0.2 {
+                    self.light_threshold = off;
+                }
+            }
         }
     }
 }
@@ -563,6 +589,14 @@ fn default_global_roi_config() -> RoiConfig {
 }
 
 impl RoiConfigFile {
+    /// 将旧版 `lightOnThreshold / lightOffThreshold` 迁移到 `light_threshold`。
+    pub fn migrate_legacy_thresholds(&mut self) {
+        self.global.apply_legacy_threshold_migration();
+        for cfg in self.by_source.values_mut() {
+            cfg.apply_legacy_threshold_migration();
+        }
+    }
+
     pub fn effective_for_source(&self, source_id: &str) -> RoiConfig {
         self.by_source.get(source_id).cloned().unwrap_or_else(|| {
             let mut global = self.global.clone();
@@ -869,7 +903,6 @@ pub const TEST_GROUP_IDS: &[&str] = &["grp-domain", "grp-chassis", "grp-hardware
 /// 写入 8 个本地 HLS 测试源，与 Tools/push_streamer 的 cam-1 ~ cam-8 端点保持一致。
 /// 调用方负责决定是否执行（调试菜单开关控制）；已存在的同名分组会跳过，不重复创建。
 pub fn seed_local_hls_sources(data: &mut DataFile) {
-
     let now = chrono::Utc::now().timestamp_millis();
     let group_defs = [
         ("grp-domain", "域控测试视频", 0),
@@ -988,7 +1021,6 @@ pub fn seed_local_hls_sources(data: &mut DataFile) {
 
 /// 兼容迁移：只修正旧版本内置 HLS 演示源，不改用户手动新增的视频源。
 pub fn migrate_local_hls_demo_names(data: &mut DataFile) {
-    let now = chrono::Utc::now().timestamp_millis();
     let group_defs = [
         ("grp-domain", "域控测试视频", 0),
         ("grp-chassis", "底盘测试视频", 1),
@@ -998,15 +1030,6 @@ pub fn migrate_local_hls_demo_names(data: &mut DataFile) {
         if let Some(group) = data.groups.iter_mut().find(|group| group.id == id) {
             group.name = name.into();
             group.order = order;
-        } else {
-            data.groups.push(SourceGroup {
-                id: id.into(),
-                name: name.into(),
-                order,
-                collapsed: false,
-                domain_detection_enabled: false,
-                created_at: now,
-            });
         }
     }
 
@@ -1039,16 +1062,33 @@ pub fn migrate_local_hls_demo_names(data: &mut DataFile) {
         ),
     ];
     for (id, name, location, group_id, order) in mappings {
-        if let Some(source) = data
-            .sources
-            .iter_mut()
-            .find(|source| source.id == id && source.url.starts_with("http://127.0.0.1:8080/cam-"))
-        {
-            source.name = name.into();
-            source.location = location.into();
-            source.group_id = Some(group_id.into());
-            source.order = order;
-            source.enabled = true;
+        let found =
+            if let Some(source) = data.sources.iter_mut().find(|source| {
+                source.id == id && source.url.starts_with("http://127.0.0.1:8080/cam-")
+            }) {
+                source.name = name.into();
+                source.location = location.into();
+                source.group_id = Some(group_id.into());
+                source.order = order;
+                source.enabled = true;
+                true
+            } else {
+                false
+            };
+        if found && !data.groups.iter().any(|group| group.id == group_id) {
+            let (group_name, group_order) = group_defs
+                .iter()
+                .find(|(gid, _, _)| *gid == group_id)
+                .map(|(_, gname, gorder)| (*gname, *gorder))
+                .unwrap_or(("测试视频", 999));
+            data.groups.push(SourceGroup {
+                id: group_id.into(),
+                name: group_name.into(),
+                order: group_order,
+                collapsed: false,
+                domain_detection_enabled: false,
+                created_at: chrono::Utc::now().timestamp_millis(),
+            });
         }
     }
 
@@ -1061,6 +1101,13 @@ pub fn migrate_local_hls_demo_names(data: &mut DataFile) {
     let old_demo_group_ids = ["grp-a", "grp-b", "grp-c"];
     data.groups.retain(|group| {
         !old_demo_group_ids.contains(&group.id.as_str())
+            || data
+                .sources
+                .iter()
+                .any(|source| source.group_id.as_deref() == Some(group.id.as_str()))
+    });
+    data.groups.retain(|group| {
+        !TEST_GROUP_IDS.contains(&group.id.as_str())
             || data
                 .sources
                 .iter()
@@ -1166,5 +1213,25 @@ mod tests {
         assert_eq!(restored.color_score, 0.09);
         assert_eq!(restored.motion_score, 0.12);
         assert_eq!(restored.process_ms, 2.5);
+    }
+
+    #[test]
+    fn roi_config_migrates_legacy_on_off_thresholds() {
+        let old_json = r#"{
+            "sourceId": "src-test",
+            "version": "roi-legacy",
+            "lightOnThreshold": 0.04,
+            "lightOffThreshold": 0.02,
+            "updatedAt": 1000
+        }"#;
+        let mut cfg: RoiConfig = serde_json::from_str(old_json).unwrap();
+        cfg.apply_legacy_threshold_migration();
+        assert!((cfg.light_threshold - 0.04).abs() < f32::EPSILON);
+
+        // 序列化后不应再出现旧字段。
+        let serialized = serde_json::to_string(&cfg).unwrap();
+        assert!(!serialized.contains("lightOnThreshold"));
+        assert!(!serialized.contains("lightOffThreshold"));
+        assert!(serialized.contains("lightThreshold"));
     }
 }

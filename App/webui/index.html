@@ -303,35 +303,50 @@
                   <span class="toggle-track"></span>
                 </span>
                 <span class="check-text">测试视频源</span>
-                <span class="check-hint">创建 8 个本地 HLS 测试源，需配合 push_streamer 推流器使用</span>
+                <span class="check-hint">开启时选择视频文件夹并导入；关闭时移除已导入的测试视频源</span>
               </label>
+              <div class="check-row action-row">
+                <button type="button" class="btn-primary" id="btn-import-test-sources">
+                  <span data-icon="folder-plus"></span>选择测试视频文件夹
+                </button>
+                <span class="check-text">重新导入</span>
+                <span class="check-hint">扫描所选文件夹并把视频文件导入为循环播放的 MP4 视频源</span>
+              </div>
+              <div class="check-row action-row danger-action-row">
+                <button type="button" class="btn-danger" id="btn-reset-all-data">
+                  <span data-icon="trash"></span>初始化
+                </button>
+                <span class="check-text">清空配置和状态</span>
+                <span class="check-hint">清空视频源、分组、算法、ROI、通知、报警、历史和运行状态；登录密码保留</span>
+              </div>
+              <div class="check-row action-row" id="ffmpeg-check-row">
+                <button type="button" class="btn-ghost" id="btn-check-ffmpeg">
+                  <span data-icon="wrench"></span>检测 ffmpeg
+                </button>
+                <span class="check-text">抽帧依赖</span>
+                <span class="check-hint" id="ffmpeg-status-text">尚未检测</span>
+              </div>
               <div class="form-msg success" id="developer-ok"></div>
               <div class="form-msg success" id="test-sources-ok"></div>
 
               <div class="debug-guide">
                 <div class="debug-guide-title">
                   <span data-icon="info"></span>
-                  push_streamer 推流器使用说明
+                  测试视频导入说明
                 </div>
                 <div class="debug-guide-body">
-                  <p class="debug-guide-prereq">前置依赖：Python 3.10+、ffmpeg（需加入 PATH）、测试视频文件（放在 <code>Video/</code> 目录下）</p>
-                  <p class="debug-guide-prereq">文件位置：<code>Release/push_streamer/</code>（含 <code>requirements.txt</code>、<code>config.example.yaml</code>、<code>start.bat</code>）</p>
+                  <p class="debug-guide-prereq">选择包含测试视频的文件夹，系统会递归扫描 <code>mp4</code>、<code>mov</code>、<code>mkv</code>、<code>avi</code>、<code>webm</code> 文件。</p>
                   <ol class="debug-guide-steps">
                     <li>
-                      <span class="step-label">最简单：双击 <code>start.bat</code></span>
-                      <span class="step-desc">自动检查 Python、ffmpeg 并安装依赖，一键启动</span>
+                      <span class="step-label">点击“选择测试视频文件夹”</span>
+                      <span class="step-desc">每个视频文件会生成一个启用的视频源，并归入“测试视频”分组</span>
                     </li>
                     <li>
-                      <span class="step-label">或命令行启动（先进入 <code>Release/push_streamer/</code> 目录）</span>
-                      <code class="step-cmd">pip install -r requirements.txt</code>
-                      <code class="step-cmd">python -m push_streamer.cli --config config.example.yaml</code>
-                    </li>
-                    <li>
-                      <span class="step-label">或使用自动扫描模式</span>
-                      <code class="step-cmd">python -m push_streamer.cli --auto-scan</code>
+                      <span class="step-label">导入后直接在实时监控中播放</span>
+                      <span class="step-desc">MP4 文件会自动循环播放，算法抽帧直接读取本地文件路径</span>
                     </li>
                   </ol>
-                  <p class="debug-guide-note">启动成功后，8 路 HLS 地址为 <code>http://127.0.0.1:8080/cam-{1~8}/index.m3u8</code>，App 端开启"测试视频源"即可拉流播放。</p>
+                  <p class="debug-guide-note">导入会跳过已存在的相同文件路径，并清理旧版固定 HLS 测试源。</p>
                 </div>
               </div>
             </div>
@@ -429,7 +444,7 @@
                   <label class="field full">
                     <span class="field-label">简单模型</span>
                     <div class="input-with-suffix">
-                      <input type="number" id="algo-simple-interval" class="text-input" value="10" min="1" max="3600" step="1" />
+                      <input type="number" id="algo-simple-interval" class="text-input" value="1" min="1" max="3600" step="1" />
                       <span class="suffix">秒/次</span>
                     </div>
                     <span class="field-hint">检测人/灯的轻量模型，频率越高越灵敏</span>
@@ -443,10 +458,10 @@
                   <label class="field">
                     <span class="field-label">人员运动面积阈值</span>
                     <div class="threshold-row">
-                      <input type="range" id="algo-person-threshold" min="0.001" max="0.04" step="0.001" value="0.006" />
-                      <span class="threshold-value" id="algo-person-threshold-val">0.006</span>
+                      <input type="range" id="algo-person-threshold" min="0.001" max="0.04" step="0.001" value="0.003" />
+                      <span class="threshold-value" id="algo-person-threshold-val">0.003</span>
                     </div>
-                    <span class="field-hint">工位场景建议 0.004-0.010；越低越容易捕捉坐姿微动</span>
+                    <span class="field-hint">工位场景建议 0.002-0.008；越低越容易捕捉坐姿微动</span>
                   </label>
                 </div>
                 <div class="field-row">
@@ -678,14 +693,9 @@
                   <span class="field-hint">当前窗口会同时用于灯光检测和人员运动检测；窗口外运动不会计入人员判断</span>
                   <div class="field-row">
                     <label class="field">
-                      <span class="field-label">开灯色彩阈值</span>
-                      <input type="number" id="roi-light-on" class="text-input" min="0" max="0.2" step="0.005" value="0.055" />
-                      <span class="field-hint">彩色画面达到该分数后判定为开灯</span>
-                    </label>
-                    <label class="field">
-                      <span class="field-label">关灯色彩阈值</span>
-                      <input type="number" id="roi-light-off" class="text-input" min="0" max="0.2" step="0.005" value="0.025" />
-                      <span class="field-hint">红外黑白画面低于该分数后判定为关灯</span>
+                      <span class="field-label">色彩阈值</span>
+                      <input type="number" id="roi-light" class="text-input" min="0" max="0.2" step="0.005" value="0.015" />
+                      <span class="field-hint">彩色画面达到该分数后判定为开灯，低于则判定为关灯</span>
                     </label>
                   </div>
                 </div>
@@ -1009,7 +1019,7 @@
             <span class="field-label">类型</span>
             <select id="src-type">
               <option value="hls">HLS (m3u8)</option>
-              <option value="mp4">MP4 直链</option>
+              <option value="mp4">视频文件 / MP4</option>
               <option value="webcam">摄像头 (getUserMedia)</option>
               <option value="rtsp">RTSP（需后端转码）</option>
             </select>
@@ -1020,7 +1030,10 @@
           </label>
           <label class="field full">
             <span class="field-label">视频地址 *</span>
-            <input type="text" id="src-url" required maxlength="512" placeholder="https://…/index.m3u8  或 file://…/video.mp4" />
+            <div class="input-action">
+              <input type="text" id="src-url" required maxlength="512" placeholder="https://…/index.m3u8  或 G:\path\video.mp4" />
+              <button type="button" class="btn-ghost" id="btn-pick-video-file">选择文件</button>
+            </div>
           </label>
           <label class="field full">
             <span class="field-label">位置 / 备注</span>

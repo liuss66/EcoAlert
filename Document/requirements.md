@@ -43,9 +43,9 @@
 | MVP-2 | 配置与运行状态 | 字段命名统一、配置文件框架、`ChannelRuntimeStatus`、算法调度器骨架 |
 | MVP-3 | 报警闭环 | 报警状态机、确认 / 恢复、通知配置和通知历史骨架 |
 | MVP-4 | 简单算法 | ROI 灯光规则、轻量人员检测接口、VLM mock provider |
-| 后续 | 推流和真实模型 | ffmpeg 推流器已接入；RTSP 转码、真实 ONNX / VLM 接入待实现 |
+| 后续 | 推流和真实模型 | 本地测试视频已支持文件夹导入；ffmpeg 推流器保留为可选 HLS 验证工具；RTSP 转码、真实 ONNX / VLM 接入待实现 |
 
-当前目录结构也按这个边界收敛：`App/` 是主产品，`Video/` 是平铺测试素材，`Tools/` 是开发辅助工具；其中 HLS 推流器已可用于本地联调。
+当前目录结构也按这个边界收敛：`App/` 是主产品，`Video/` 是平铺测试素材，`Tools/` 是开发辅助工具；测试视频优先通过 App 调试页选择文件夹导入，HLS 推流器仅作为可选联调工具。
 
 ---
 
@@ -81,6 +81,8 @@
 | F-SRC-4 | RTSP 需服务端转码（占位：浏览器显示"需转码"提示） | ⚠️ 占位 |
 | F-SRC-5 | webcam 调浏览器 `getUserMedia` | ✅ |
 | F-SRC-6 | 视频源数据持久化到 `%APPDATA%\com.ecoalert.monitor\sources.json` | ✅ |
+| F-SRC-7 | 新增 / 编辑视频源时可选择本地视频文件，保存为 MP4 源并循环播放 | ✅ |
+| F-SRC-8 | 开发者模式调试页保留测试视频源开关：开启时选择文件夹并递归导入测试视频源，关闭时移除测试视频源；支持跳过重复路径 | ✅ |
 
 ### 3.3 分组
 
@@ -98,6 +100,7 @@
 | F-GRP-10 | 视频管理页「新增视频源」modal 可选择所属分组 | ✅ |
 | F-GRP-11 | 首次启动自动创建「默认分组」 | ✅ |
 | F-GRP-12 | 分组标题栏提供「域检测」开关；开启后，同组所有启用视频源均进入报警态时才发送外部报警通知 | ✅ |
+| F-GRP-13 | 分组可通过标题栏拖动排序，排序持久化到配置文件 | ✅ |
 
 ### 3.4 实时监控
 
@@ -172,7 +175,7 @@
 
 当前检测状态：
 
-- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧的亮度加权 `color_score`，忽略暗部彩噪，并做 EMA + 磁滞阈值，输出 `light=true/false` 和 `light_state=on/off`。RGB 不可用时才回退到亮度阈值。
+- 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧的亮度加权 `color_score`，忽略暗部彩噪，并做 EMA 平滑后与单一色彩阈值比较，输出 `light=true/false` 和 `light_state=on/off`。RGB 不可用时才回退到亮度阈值（亮度仍保留磁滞）。
 - 人员：尚未接入人形检测模型，`person` 由低分辨率帧差运动分数临时代理；适合观察“画面有明显变化”，不适合作为生产人员存在结论。
 - 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；历史记录仍只在 `person / light` 变化时落库。
 - 默认调度：全局 `activeWindows` 为空，表示全天运行；旧版内置的“工作日 18:30-08:30”默认窗口会在启动时迁移为空，避免演示视频长期停留在“等待结果”。
@@ -194,7 +197,7 @@
 
 | 识别目标 | 推荐方案 | 理由 | 风险 | 规避 |
 | --- | --- | --- | --- | --- |
-| 是否亮灯 | 亮度加权色度检测 + 红外黑白模式识别 + 亮度兜底 | 快、稳定、无需训练，适配“开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI 和开 / 关色彩阈值；暗像素降权，无 RGB 帧时回退亮度阈值 |
+| 是否亮灯 | 亮度加权色度检测 + 红外黑白模式识别 + 亮度兜底 | 快、稳定、无需训练，适配”开灯彩色、关灯红外黑白”的摄像头 | 摄像头未切红外、画面存在彩色屏幕时需调 ROI | 每路配置灯光 ROI 和色彩阈值；暗像素降权，无 RGB 帧时回退亮度阈值 |
 | 是否有人 | 轻量 person detector（ONNX YOLOv8n / YOLO11n / RT-DETR 小模型）或动态目标识别 | 人是报警抑制条件，应优先减少误检；简单模型延迟低，可高频执行 | 静止人员、遮挡、远距离小目标漏检 | 多帧投票、置信度阈值、人员存在保持时间、VLM 低频补漏 |
 | 动态目标识别 | 帧差 / 背景建模 / 光流作为辅助信号 | 计算量低，可用于发现画面变化和触发 VLM 复核 | 动态目标不等于人；风吹、反光、画面噪声容易误触发 | 只作为触发条件，不直接作为“有人”结论；Rust 侧已实现低分辨率帧差核心 |
 
@@ -208,7 +211,7 @@
 | F-AIS-1 | 每路视频可独立启用 / 停用算法 | ✅ 通道级算法配置 UI 已接入 |
 | F-AIS-2 | 每路视频可配置算法启用时段，默认仅在下班后启用，例如 `18:30-08:30` | ✅ 全局 / 通道级时段 UI 已接入 |
 | F-AIS-3 | 支持工作日 / 周末 / 节假日三类时段配置；第一版至少支持按星期配置 | ✅ 按星期配置已接入，跨天窗口按起始日归属 |
-| F-AIS-4 | 简单模型高频执行，默认周期 5-15 秒，可按通道配置 | ✅ `simpleIntervalSec` 已接入后端真实抽帧周期 |
+| F-AIS-4 | 简单模型高频执行，默认周期 1 秒，可按通道配置 | ✅ `simpleIntervalSec` 已接入后端真实抽帧周期 |
 | F-AIS-5 | VLM 低频执行，默认周期 2-10 分钟，可按通道配置 | ⚠️ 全局 / 通道级 VLM 配置 UI 已接入，真实 VLM provider 待实现 |
 | F-AIS-6 | 当简单模型识别到“有人”时，当前周期不得调用 VLM | ⚠️ 配置项已接入，真实 VLM 调度待实现 |
 | F-AIS-7 | 当简单模型识别为“无人 + 亮灯”但置信度不足、状态刚变化、或持续时间达到复核阈值时，允许调用 VLM 复核 | ⏳ 待实现 |
@@ -503,7 +506,7 @@ pub struct AlgorithmConfig {
     pub source_id: Option<String>,        // None 表示全局默认
     pub active_windows: Vec<ActiveWindow>,
     pub exception_windows: Vec<ActiveWindow>,
-    pub simple_interval_sec: u32,         // 默认 10
+    pub simple_interval_sec: u32,         // 默认 1
     pub vlm_interval_sec: u32,            // 默认 300
     pub vlm_enabled: bool,
     pub vlm_skip_when_person: bool,       // 默认 true
@@ -570,8 +573,7 @@ pub struct RoiConfig {
     pub light_rois: Vec<RoiRect>,
     pub exclude_rois: Vec<RoiRect>,
     pub person_rois: Vec<RoiRect>,
-    pub light_on_threshold: f32,          // RGB 模式下的开灯色彩阈值，默认 0.055
-    pub light_off_threshold: f32,         // RGB 模式下的关灯色彩阈值，默认 0.025
+    pub light_threshold: f32,               // RGB 模式下的色彩阈值，默认 0.015
     pub baseline_samples: Vec<BaselineSample>,
     pub updated_at: i64,
 }
@@ -744,7 +746,7 @@ pub struct ChannelRuntimeStatus {
 
 ### 6.3 交互
 
-- 拖拽：HTML5 DnD，被拖卡片半透明；目标分组显示蓝色边框 + 浅蓝底（含已有卡片的分组整体高亮）；源分组表头半透明
+- 拖拽：视频卡可拖到其他分组；分组标题栏可拖动改变分组顺序。拖动时被拖对象半透明，目标位置显示蓝色边框 + 浅蓝底。
 - 模态：覆盖 + 缩放进入动画
 - 报警：banner 红色，报警图标 0.9s 闪烁
 
@@ -758,10 +760,10 @@ pub struct ChannelRuntimeStatus {
 Video/*.mp4
         │
         ▼
-Tools/push_streamer 生成 HLS
+调试页选择文件夹导入为 MP4 视频源
         │
         ▼
-webui 播放预览
+webui 循环播放预览
         │
         ▼
 Tauri 后端 ffmpeg 单帧抽样 + Detector
@@ -836,7 +838,7 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 - **Node.js 18+**
 - **Rust 1.77+**（仅 Tauri 模式）
 - **WebView2**（Windows 10+ / 11 自带）
-- **ffmpeg**（当前 HLS 推流器和 Tauri 后端单帧抽样依赖；RTSP 转码后续继续依赖）
+- **ffmpeg**（Tauri 后端单帧抽样依赖；RTSP / HLS 转码后续继续依赖；可选 HLS 推流器也依赖）
 
 ---
 

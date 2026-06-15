@@ -4,7 +4,10 @@
 //! 后续如果算法频率提高，再替换为常驻 ffmpeg / ffmpeg-next 解码管线。
 
 use crate::pipeline::PipelineConfig;
+use std::ffi::OsString;
 use std::fs;
+use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,11 +38,48 @@ impl Decoder {
     }
 }
 
+pub fn resolve_media_tool(name: &str) -> PathBuf {
+    let exe_name = if cfg!(windows) && !name.ends_with(".exe") {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            let candidate = dir.join(&exe_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(OsString::from(exe_name))
+}
+
+fn media_tool_spawn_error(tool: &str, err: std::io::Error) -> anyhow::Error {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        anyhow::anyhow!(
+            "未找到 {tool}，请将 {tool}.exe 和 ffprobe.exe 放到程序目录，或把 ffmpeg 安装目录加入 PATH"
+        )
+    } else {
+        anyhow::anyhow!("{tool} 启动失败: {err}")
+    }
+}
+
 pub fn extract_gray_frame_from_url(
     url: &str,
     width: u32,
     height: u32,
     timeout: Duration,
+) -> anyhow::Result<DecodedFrame> {
+    extract_gray_frame_from_url_at(url, width, height, timeout, None)
+}
+
+pub fn extract_gray_frame_from_url_at(
+    url: &str,
+    width: u32,
+    height: u32,
+    timeout: Duration,
+    seek_secs: Option<f64>,
 ) -> anyhow::Result<DecodedFrame> {
     let output = std::env::temp_dir().join(format!(
         "ecoalert_frame_{}_{}.raw",
@@ -47,12 +87,13 @@ pub fn extract_gray_frame_from_url(
         Uuid::new_v4().simple()
     ));
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = Command::new(resolve_media_tool("ffmpeg"));
+    command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+    let seek_arg = seek_secs.map(|value| format!("{:.3}", value.max(0.0)));
+    if let Some(seek) = &seek_arg {
+        command.args(["-ss", seek]);
+    }
     command.args([
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
         "-i",
         url,
         "-frames:v",
@@ -70,7 +111,9 @@ pub fn extract_gray_frame_from_url(
         command.creation_flags(0x08000000);
     }
 
-    let mut child = command.spawn()?;
+    let mut child = command
+        .spawn()
+        .map_err(|err| media_tool_spawn_error("ffmpeg", err))?;
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -105,6 +148,50 @@ pub fn extract_gray_frame_from_url(
         data,
         rgb,
     })
+}
+
+pub fn probe_media_duration_secs(url: &str, timeout: Duration) -> anyhow::Result<Option<f64>> {
+    let mut command = Command::new(resolve_media_tool("ffprobe"));
+    command.args([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        url,
+    ]);
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| media_tool_spawn_error("ffprobe", err))?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("ffprobe 探测时长超时");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    if !status.success() {
+        anyhow::bail!("ffprobe 探测时长失败，退出码: {status}");
+    }
+    let mut text = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        stdout.read_to_string(&mut text)?;
+    }
+    let duration = text.trim().parse::<f64>().ok().filter(|value| *value > 0.0);
+    Ok(duration)
 }
 
 fn rgb_to_gray(rgb: &[u8]) -> Vec<u8> {

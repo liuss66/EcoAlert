@@ -511,7 +511,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20M6 14h4"/></svg>
           </div>
           <strong>多源灵活接入</strong>
-          <span>支持 HLS、本地视频、摄像头等多种视频源，分组管理与拖拽排序。</span>
+          <span>支持 HLS、本地视频文件、摄像头等多种视频源，测试视频可直接选择文件夹导入。</span>
         </div>
         <div class="hero-card">
           <div class="ico">
@@ -598,7 +598,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </div>
           <h3>视频接入</h3>
-          <p>支持 HLS 流、本地视频文件、USB 摄像头等多种来源，按楼层或区域分组管理</p>
+          <p>支持 HLS 流、本地视频文件、USB 摄像头等多种来源，本地测试视频可批量导入并循环播放</p>
         </div>
         <div class="how-node h-green">
           <div class="how-ico">
@@ -642,7 +642,7 @@
       <div class="workflow">
         <div class="wf-step"><span class="wf-num">1</span><h3>安装启动</h3><p>运行安装程序完成安装，启动后使用默认密码登录。</p></div>
         <div class="wf-step"><span class="wf-num">2</span><h3>修改密码</h3><p>进入「基础设置」修改管理员密码，保障账户安全。</p></div>
-        <div class="wf-step"><span class="wf-num">3</span><h3>添加视频源</h3><p>在「视频管理」中录入视频地址，支持 HLS、本地视频、摄像头等类型。</p></div>
+        <div class="wf-step"><span class="wf-num">3</span><h3>添加视频源</h3><p>在「视频管理」中录入视频地址，或直接选择本地视频文件；调试页保留测试视频源开关，开启时选择文件夹批量导入测试视频。</p></div>
         <div class="wf-step"><span class="wf-num">4</span><h3>分组整理</h3><p>按楼层或区域创建分组，将视频拖入对应分组，灯光互相干扰的区域可开启域检测。</p></div>
         <div class="wf-step"><span class="wf-num">5</span><h3>检查画面</h3><p>在「实时监控」中确认每路视频画面可正常播放，如有问题使用诊断功能检查。</p></div>
         <div class="wf-step"><span class="wf-num">6</span><h3>配置检测</h3><p>在「检测配置」中设置算法启用时段、检测周期和报警参数。</p></div>
@@ -725,7 +725,7 @@
         <div class="feature panel t-cyan">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20M6 14h4"/></svg></div>
           <b>视频源管理</b>
-          <p>支持 HLS、本地视频、摄像头等多种类型。新增、编辑、删除一站式完成。位置信息会自动进入报警上下文，建议如实填写。</p>
+          <p>支持 HLS、本地视频文件、摄像头等多种类型。本地视频可选择文件导入并循环播放，位置信息会自动进入报警上下文。</p>
         </div>
         <div class="feature panel t-green">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
@@ -891,7 +891,7 @@
       <div class="timeline">
         <div class="timeline-item">
           <h3>视频无法播放</h3>
-          <p>检查视频地址是否正确、网络连接是否正常。如果使用 HLS 流，确认推流设备正在运行。可在实时监控页面使用「诊断」按钮检查连接状态。同时检查防火墙是否放行了相关端口。</p>
+          <p>本地视频先检查文件路径是否仍然存在；HLS 流检查视频地址、网络连接和推流设备。实时监控页「诊断」仅用于检查默认本地 HLS URL 的后端可达性。</p>
         </div>
         <div class="timeline-item">
           <h3>报警过于敏感</h3>

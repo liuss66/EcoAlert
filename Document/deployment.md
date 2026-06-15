@@ -14,7 +14,7 @@
 | Rust | 1.77+ |
 | Tauri | 2.x |
 | WebView2 | Windows 10+ / 11 通常自带 |
-| ffmpeg | 推流工具、RTSP / HLS 转码依赖 |
+| ffmpeg | 后端抽帧、RTSP / HLS 转码依赖 |
 
 ---
 
@@ -34,7 +34,7 @@ npm run dev
 http://localhost:1420
 ```
 
-浏览器预览模式使用 mock 数据，不依赖 Rust 后端；它只验证 UI、HLS 播放和 localStorage 持久化，不再伪造 `person / light` 检测事件。
+浏览器预览模式使用 mock 数据，不依赖 Rust 后端；它只验证 UI、视频播放和 localStorage 持久化，不再伪造 `person / light` 检测事件。
 
 ### 2.2 Tauri 桌面开发
 
@@ -46,15 +46,21 @@ npm run tauri:dev
 
 Tauri 模式会启动 Rust 后端，数据写入本机应用数据目录。真实检测、报警状态机和通知发送都只在 Tauri 模式运行。
 
-### 2.3 推流工具
+### 2.3 本地测试视频
 
-```bash
-cd Tools
-pip install -r requirements.txt
-python -m push_streamer.cli --video ../Video/sample_01_meeting.mp4 --loop
-```
+Tauri 桌面端可直接导入本地视频文件，不再要求先推流：
 
-`push_streamer` 已支持 ffmpeg 循环推流和 HLS 分片。App 联调优先使用固定映射配置启动：
+1. 登录 EcoAlert。
+2. 进入「基础设置 -> 调试」。
+3. 打开「测试视频源」开关，并在弹出的窗口中选择文件夹；也可点击「选择测试视频文件夹」重新导入。
+4. 选择包含 `mp4 / mov / mkv / avi / webm` 的文件夹。
+5. 系统会递归扫描并导入为「测试视频」分组下的 MP4 视频源，实时监控页循环播放。
+
+新增视频源弹窗也可点击「选择文件」单独添加本地视频文件。后端检测链路保存原始文件路径，使用 ffmpeg 直接抽帧。
+
+### 2.4 可选 HLS 推流工具
+
+`push_streamer` 已支持 ffmpeg 循环推流和 HLS 分片，仅在需要验证 HLS 链路时使用：
 
 ```bash
 cd Tools
@@ -67,9 +73,9 @@ python -m push_streamer.cli --config config.example.yaml
 http://127.0.0.1:8080/cam-1/index.m3u8
 ```
 
-### 2.4 本地 HLS 与 release 包
+### 2.5 本地视频 / HLS 与 release 包
 
-App 默认源和推流器使用 `http://127.0.0.1:8080/cam-N/index.m3u8` 对齐。release 包读取本地 HLS 时需要同时满足：
+release 包播放本地视频文件时需要 CSP 允许 `asset:` 媒体源；当前 `tauri.conf.json` 的 `media-src` 已包含 `asset:`。HLS 链路仍需满足：
 
 - `Tools/push_streamer` 正在运行，并且对应 `cam-N/index.m3u8` 返回 `200`。
 - `App/src-tauri/tauri.conf.json` 的 CSP 允许 `connect-src` 和 `media-src` 访问 `http://127.0.0.1:*`、`http://localhost:*`。
@@ -216,6 +222,15 @@ sources.json.bak.20260613023000
 - release 包是否保留了本地 HLS CSP 白名单和私网请求 feature 配置。
 - 点击实时监控页“诊断”只能确认后端可达；若诊断成功但视频仍失败，应继续检查 WebView 的 HLS 请求和 `.ts` 分片。
 
+### 8.1.1 本地视频文件无法播放
+
+检查：
+
+- 文件路径是否仍然存在，移动或删除文件后需要重新选择。
+- 文件扩展名是否为 `mp4 / mov / mkv / avi / webm`。
+- release 包是否保留 `asset:` 的 `media-src` CSP 白名单。
+- 播放正常但检测失败时，确认 `ffmpeg -version` 可执行。
+
 ### 8.2 Tauri 启动失败
 
 检查：
@@ -253,7 +268,8 @@ ffmpeg -version
 - `npm run tauri:dev` 可启动。
 - `npm run tauri:build` 可完成。
 - 登录、视频源 CRUD、分组 CRUD 可用。
-- 本地推流器启动后，dev 和 release 包均能播放 `cam-1` HLS。
+- 本地视频文件夹导入后，dev 和 release 包均能循环播放测试视频。
+- 如验证 HLS 链路，本地推流器启动后 dev 和 release 包均能播放 `cam-1` HLS。
 - 状态历史能正常写入。
 - 打包命令成功。
 - 安装包在目标系统能启动。

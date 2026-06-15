@@ -1075,6 +1075,33 @@ body.developer-mode .developer-only.hidden { display: flex !important; }
 .group-section.drag-source .group-header {
   opacity: 0.6;
 }
+.group-section.group-dragging {
+  opacity: 0.35;
+}
+.group-section.group-placeholder {
+  border: 1px dashed var(--primary);
+  background: rgba(59, 130, 246, 0.08);
+  min-height: 72px;
+}
+.group-drag-clone {
+  box-shadow: var(--shadow-lg);
+}
+.group-drag-clone .group-body {
+  display: none;
+}
+.group-drag-handle {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: grab;
+  transform: rotate(90deg);
+}
+.group-header:active .group-drag-handle {
+  cursor: grabbing;
+}
 
 /* ====================== 设置页 ====================== */
 .settings-tabs {
@@ -2000,6 +2027,32 @@ body.developer-mode .developer-only.hidden { display: flex !important; }
 }
 .inline-pair input[type="text"] {
   min-width: 0;
+}
+.input-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.input-action .btn-ghost {
+  white-space: nowrap;
+}
+.action-row {
+  align-items: center;
+  grid-template-columns: auto auto 1fr;
+}
+.action-row .check-hint {
+  grid-column: 2 / 4;
+}
+.action-row.tool-ok {
+  border-color: rgba(34, 197, 94, 0.25);
+  background: #f0fdf4;
+}
+.action-row.tool-error {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: #fef2f2;
+}
+.action-row.tool-error .check-hint {
+  color: #b91c1c;
 }
 .modal-footer {
   display: flex; justify-content: flex-end; gap: 10px;

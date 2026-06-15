@@ -2,15 +2,16 @@
 use crate::auth::AuthConfig;
 use crate::pipeline::vlm;
 use crate::pipeline::{
-    decoder::extract_gray_frame_from_url, detector::Detector, notifier, scheduler, PipelineConfig,
+    decoder::{extract_gray_frame_from_url_at, probe_media_duration_secs},
+    detector::Detector,
+    notifier, scheduler, PipelineConfig,
 };
 use crate::store::{
     backfill_groups, load, load_history, load_json, migrate_local_hls_demo_names, save,
-    save_history, save_json, AlarmRecord, AlarmRecordFile,
-    AlgorithmConfig, AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, DetectionHistoryFile,
-    DetectionSampleRecord, HistoryFile, NotificationConfigFile, NotificationHistoryFile,
-    NotificationRecord, RoiConfigFile, SceneState, SecurityConfig, SourceGroup, StateRecord,
-    VideoSource,
+    save_history, save_json, AlarmRecord, AlarmRecordFile, AlgorithmConfig, AlgorithmConfigFile,
+    ChannelRuntimeStatus, DataFile, DetectionHistoryFile, DetectionSampleRecord, HistoryFile,
+    NotificationConfigFile, NotificationHistoryFile, NotificationRecord, RoiConfigFile, SceneState,
+    SecurityConfig, SourceGroup, StateRecord, VideoSource,
 };
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -110,7 +111,9 @@ impl AppState {
         let detection_history: DetectionHistoryFile = load_json(&detection_history_file);
         let mut algorithm_config: AlgorithmConfigFile = load_json(&algorithm_config_file);
         migrate_legacy_default_algorithm_window(&mut algorithm_config);
+        migrate_algorithm_default_tuning(&mut algorithm_config);
         let mut roi_config: RoiConfigFile = load_json(&roi_config_file);
+        roi_config.migrate_legacy_thresholds();
         migrate_manual_source_config_mode(&mut algorithm_config, &mut roi_config);
         let notification_config: NotificationConfigFile = load_json(&notification_config_file);
         let security_config: SecurityConfig = load_json(&security_config_file);
@@ -341,6 +344,24 @@ fn migrate_legacy_default_algorithm_window(config: &mut AlgorithmConfigFile) {
     }
 }
 
+fn migrate_algorithm_default_tuning(config: &mut AlgorithmConfigFile) {
+    fn migrate_one(cfg: &mut AlgorithmConfig) {
+        if cfg.simple_interval_sec == 10 {
+            cfg.simple_interval_sec = 1;
+        }
+        if (cfg.person_threshold - 0.006).abs() < 0.0005 {
+            cfg.person_threshold = 0.003;
+        }
+    }
+    migrate_one(&mut config.global);
+    for cfg in config.groups.values_mut() {
+        migrate_one(cfg);
+    }
+    for cfg in config.sources.values_mut() {
+        migrate_one(cfg);
+    }
+}
+
 fn migrate_manual_source_config_mode(
     algorithm_config: &mut AlgorithmConfigFile,
     roi_config: &mut RoiConfigFile,
@@ -442,6 +463,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut last_vlm_run: HashMap<String, i64> = HashMap::new();
         let mut presence_trackers: HashMap<String, PresenceTracker> = HashMap::new();
         let mut vlm_hourly_usage: HashMap<String, (i64, u32)> = HashMap::new();
+        let mut media_durations: HashMap<String, Option<f64>> = HashMap::new();
         loop {
             interval.tick().await;
             let state = app.state::<Arc<AppState>>();
@@ -516,8 +538,32 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let url = s.url.clone();
                 let source_id = s.id.clone();
                 let source_enabled = s.enabled;
+                let seek_secs = if s.source_type == "mp4" {
+                    let duration = if let Some(cached) = media_durations.get(&s.id) {
+                        *cached
+                    } else {
+                        let probed = probe_media_duration_secs(&s.url, Duration::from_secs(3))
+                            .ok()
+                            .flatten();
+                        media_durations.insert(s.id.clone(), probed);
+                        probed
+                    };
+                    let base = counter.saturating_sub(1) as f64;
+                    Some(match duration {
+                        Some(duration) if duration > 0.5 => base % duration,
+                        _ => base,
+                    })
+                } else {
+                    None
+                };
                 let frame = match tokio::task::spawn_blocking(move || {
-                    extract_gray_frame_from_url(&url, 160, 120, Duration::from_secs(5))
+                    extract_gray_frame_from_url_at(
+                        &url,
+                        160,
+                        120,
+                        Duration::from_secs(5),
+                        seek_secs,
+                    )
                 })
                 .await
                 {

@@ -6,10 +6,12 @@
    - 事件订阅（替代 WebSocket）
    =========================================================== */
 import Hls from 'hls.js';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   login, logout, checkAuth,
   listSources, listGroups, createGroup, updateGroup, deleteGroup, reorder,
-  createSource, updateSource, deleteSource, setTestSourcesEnabled, TEST_SOURCE_IDS,
+  createSource, updateSource, deleteSource, importTestSourcesFromFolder, setTestSourcesEnabled, TEST_SOURCE_IDS,
   reportSceneState, getStateHistory, listDetectionHistory,
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
@@ -17,10 +19,10 @@ import {
   getRoiConfig, listRoiConfigSources, updateRoiConfig, deleteRoiConfig, testRoiConfig,
   listNotificationTargets, createNotificationTarget, updateNotificationTarget, deleteNotificationTarget,
   listNotificationHistory, testNotificationTarget, resendNotification,
-  changePassword, getDataDir,
+  changePassword, getDataDir, resetAllAppData,
   startOAuthBinding, checkOAuthStatus, verifyChannelCredentials,
   onEvent, onStatus, onRuntimeStatus, onAlgorithmSchedule, onSources, onSceneState, onAlarm, onNotification, isTauriEnv,
-  openDevtools, probeUrl,
+  openDevtools, probeUrl, checkFfmpegStatus,
 } from './api.js';
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -71,6 +73,34 @@ const escapeHtml = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+
+const VIDEO_DIALOG_FILTERS = [{
+  name: '视频文件',
+  extensions: ['mp4', 'm4v', 'mov', 'mkv', 'avi', 'webm'],
+}];
+
+const TEST_VIDEO_GROUP_ID = 'grp-test-videos';
+const isWindowsDrivePath = (value) => /^[a-zA-Z]:[\\/]/.test(value || '');
+const isUncPath = (value) => /^\\\\/.test(value || '');
+const hasUrlScheme = (value) => /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value || '');
+
+const playableVideoUrl = (src) => {
+  const url = src?.url || '';
+  if (
+    src?.type === 'mp4'
+    && isTauriEnv
+    && url
+    && (!hasUrlScheme(url) || isWindowsDrivePath(url) || isUncPath(url))
+  ) {
+    return convertFileSrc(url);
+  }
+  return url;
+};
+
+const fileNameFromPath = (path) => {
+  const name = String(path || '').split(/[\\/]/).pop() || '';
+  return name.replace(/\.[^.]+$/, '');
+};
 
 const fmtTime = (ts) => {
   const d = ts ? new Date(ts) : new Date();
@@ -421,8 +451,9 @@ const renderLive = () => {
   noGroup.sort((a, b) => a.order - b.order);
 
   const sectionHtml = (g, list) => `
-    <section class="group-section" data-group-id="${g.id}">
+    <section class="group-section" data-group-id="${g.id}" data-group-order="${g.order ?? 0}">
       <header class="group-header">
+        <span class="group-drag-handle" title="拖动排序">${icon('chevron')}</span>
         <span class="caret ${g.collapsed ? 'collapsed' : ''}" data-toggle="${g.id}">${icon('chevron')}</span>
         <div class="group-name">
           <span class="grp-label">${escapeHtml(g.name)}</span>
@@ -492,6 +523,7 @@ const renderLive = () => {
  */
 let dragSourceId = null;
 function bindDragAndDrop() {
+  bindGroupDragSort();
   $$('.video-card').forEach((card) => {
     card.addEventListener('mousedown', (e) => {
       // 仅左键
@@ -576,6 +608,112 @@ function bindDragAndDrop() {
       const card = e.target.closest('.video-card');
       if (card?._dragJustEnded) { e.preventDefault(); e.stopPropagation(); }
     }, true);
+  }
+}
+
+function bindGroupDragSort() {
+  $$('.group-header').forEach((header) => {
+    header.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest('button, input, select, textarea, a[href], .caret, .domain-toggle')) return;
+      const section = header.closest('.group-section');
+      const grid = $('#video-grid');
+      if (!section || !grid) return;
+      e.preventDefault();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragging = false;
+      let placeholder = null;
+      let clone = null;
+
+      const sortableSections = () => $$('.group-section', grid).filter((item) => item !== section);
+
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!dragging && (dx * dx + dy * dy) > 25) {
+          dragging = true;
+          section.classList.add('group-dragging');
+          placeholder = document.createElement('section');
+          placeholder.className = 'group-section group-placeholder';
+          placeholder.style.height = `${section.offsetHeight}px`;
+          section.after(placeholder);
+          clone = section.cloneNode(true);
+          clone.classList.add('group-drag-clone');
+          clone.style.cssText = `position:fixed;z-index:9998;pointer-events:none;opacity:.82;width:${section.offsetWidth}px;left:${section.getBoundingClientRect().left}px;top:${ev.clientY - 24}px;`;
+          document.body.appendChild(clone);
+        }
+        if (!dragging) return;
+        if (clone) clone.style.top = `${ev.clientY - 24}px`;
+        const target = sortableSections().find((item) => {
+          if (item === placeholder) return false;
+          const rect = item.getBoundingClientRect();
+          return ev.clientY >= rect.top && ev.clientY <= rect.bottom;
+        });
+        if (target && placeholder) {
+          const rect = target.getBoundingClientRect();
+          if (ev.clientY < rect.top + rect.height / 2) {
+            grid.insertBefore(placeholder, target);
+          } else {
+            grid.insertBefore(placeholder, target.nextSibling);
+          }
+        }
+      };
+
+      const cleanup = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (clone) clone.remove();
+        section.classList.remove('group-dragging');
+      };
+
+      const onUp = async () => {
+        if (dragging && placeholder) {
+          grid.insertBefore(section, placeholder);
+          placeholder.remove();
+          placeholder = null;
+          await persistGroupOrderFromDom();
+        }
+        cleanup();
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp, { once: true });
+    });
+  });
+}
+
+async function persistGroupOrderFromDom() {
+  const orderedIds = $$('.group-section', $('#video-grid'))
+    .map((section) => section.dataset.groupId)
+    .filter(Boolean);
+  if (orderedIds.length === 0) return;
+  const previous = new Map(groups.map((g) => [g.id, g.order]));
+  try {
+    const updates = orderedIds
+      .map((id, index) => {
+        const group = groups.find((g) => g.id === id);
+        if (!group || group.order === index) return null;
+        return { group, order: index };
+      })
+      .filter(Boolean);
+    for (const item of updates) {
+      const saved = await updateGroup(item.group.id, {
+        name: item.group.name,
+        order: item.order,
+        collapsed: item.group.collapsed,
+        domainDetectionEnabled: item.group.domainDetectionEnabled,
+      });
+      item.group.order = saved.order;
+    }
+    addLog('info', '分组排序已保存');
+  } catch (err) {
+    for (const group of groups) {
+      if (previous.has(group.id)) group.order = previous.get(group.id);
+    }
+    addLog('error', `分组排序保存失败: ${err.message || err}`);
+    renderLive();
   }
 }
 
@@ -1109,7 +1247,8 @@ const mountVideo = (src) => {
         throw new Error('浏览器不支持 HLS');
       }
     } else if (src.type === 'mp4') {
-      video.src = src.url;
+      video.loop = true;
+      video.src = playableVideoUrl(src);
       requestAutoPlay();
     } else if (src.type === 'webcam') {
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })
@@ -1599,6 +1738,29 @@ $('#modal-close').addEventListener('click', closeModal);
 $('#modal-cancel').addEventListener('click', closeModal);
 modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
+$('#btn-pick-video-file')?.addEventListener('click', async () => {
+  if (!isTauriEnv) {
+    alert('选择本地视频文件需要在 Tauri 应用中使用');
+    return;
+  }
+  try {
+    const selected = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: VIDEO_DIALOG_FILTERS,
+    });
+    if (!selected || Array.isArray(selected)) return;
+    $('#src-type').value = 'mp4';
+    $('#src-url').value = selected;
+    $('#src-location').value = selected;
+    if (!$('#src-name').value.trim()) {
+      $('#src-name').value = fileNameFromPath(selected);
+    }
+  } catch (err) {
+    alert(err.message || '选择视频文件失败');
+  }
+});
+
 $('#source-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const id = $('#src-id').value;
@@ -1699,9 +1861,9 @@ const toFloat = (value, fallback, min = 0, max = 1) => {
 
 const normalizePersonMotionThreshold = (value) => {
   const n = Number(value);
-  if (!Number.isFinite(n)) return 0.006;
+  if (!Number.isFinite(n)) return 0.003;
   if (n > 0.2) return Math.max(0.001, Math.min(1, n) * 0.03);
-  if (Math.abs(n - 0.020) < 0.0005) return 0.006;
+  if (Math.abs(n - 0.020) < 0.0005) return 0.003;
   return Math.min(0.20, Math.max(0.001, n));
 };
 
@@ -1724,9 +1886,9 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-weekdays').value = (win.weekdays || [1, 2, 3, 4, 5]).join(',');
   $('#algo-start').value = win.start || '18:30';
   $('#algo-end').value = win.end || '08:30';
-  $('#algo-simple-interval').value = cfg.simpleIntervalSec ?? 10;
+  $('#algo-simple-interval').value = cfg.simpleIntervalSec ?? 1;
   $('#algo-vlm-interval').value = cfg.vlmIntervalSec ?? 300;
-  $('#algo-person-threshold').value = normalizePersonMotionThreshold(cfg.personThreshold ?? 0.006).toFixed(3);
+  $('#algo-person-threshold').value = normalizePersonMotionThreshold(cfg.personThreshold ?? 0.003).toFixed(3);
   $('#algo-hold-sec').value = cfg.alarmHoldSec ?? 300;
   $('#algo-recover-sec').value = cfg.alarmRecoverSec ?? 60;
   $('#algo-recover-policy').value = cfg.recoverPolicy || 'either';
@@ -1801,7 +1963,7 @@ const algorithmPayloadFromForm = () => {
       timezone: 'Local',
     }],
     exceptionWindows: algorithmConfig?.exceptionWindows || [],
-    simpleIntervalSec: toInt($('#algo-simple-interval').value, 10, 1),
+    simpleIntervalSec: toInt($('#algo-simple-interval').value, 1, 1),
     vlmIntervalSec: toInt($('#algo-vlm-interval').value, 300, 30),
     vlmEnabled: $('#algo-vlm-enabled').checked,
     vlmSkipWhenPerson: $('#algo-vlm-skip-person').checked,
@@ -1815,7 +1977,7 @@ const algorithmPayloadFromForm = () => {
     vlmPriceInputCache: toFloat($('#algo-vlm-price-input-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
     vlmPriceOutput: toFloat($('#algo-vlm-price-output').value, 0, 0, Number.MAX_SAFE_INTEGER),
     vlmPriceOutputCache: toFloat($('#algo-vlm-price-output-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
-    personThreshold: toFloat($('#algo-person-threshold').value, 0.006, 0.001, 0.20),
+    personThreshold: toFloat($('#algo-person-threshold').value, 0.003, 0.001, 0.20),
     alarmHoldSec: toInt($('#algo-hold-sec').value, 300, 0),
     alarmRecoverSec: toInt($('#algo-recover-sec').value, 60, 0),
     recoverPolicy: $('#algo-recover-policy').value,
@@ -1890,14 +2052,56 @@ const renderDeveloperSettings = async () => {
     const input = $('#developer-mode');
     if (input) input.checked = developerMode;
     const testIds = new Set(TEST_SOURCE_IDS);
-    const hasTestSources = sources.some((s) => testIds.has(s.id));
+    const hasTestSources = sources.some((s) =>
+      testIds.has(s.id) || s.groupId === TEST_VIDEO_GROUP_ID || s.group_id === TEST_VIDEO_GROUP_ID
+    );
     const testToggle = $('#test-sources-toggle');
     if (testToggle) testToggle.checked = hasTestSources;
+    await refreshFfmpegStatus();
     applyStateIcons();
   } catch (err) {
     addLog('warn', `开发设置加载失败: ${err.message || err}`);
   }
 };
+
+const renderToolStatus = (status) => {
+  const el = $('#ffmpeg-status-text');
+  const row = $('#ffmpeg-check-row');
+  if (!el) return;
+  const ffmpeg = status?.ffmpeg || {};
+  const ffprobe = status?.ffprobe || {};
+  const ok = !!status?.ok;
+  row?.classList.toggle('tool-ok', ok);
+  row?.classList.toggle('tool-error', !ok);
+  if (ok) {
+    el.textContent = `可用 · ${ffmpeg.version || ffmpeg.path} · ${ffprobe.version || ffprobe.path}`;
+    el.title = `ffmpeg: ${ffmpeg.path}\n${ffmpeg.version || ''}\nffprobe: ${ffprobe.path}\n${ffprobe.version || ''}`;
+  } else {
+    const errors = [ffmpeg.error, ffprobe.error].filter(Boolean).join('；');
+    el.textContent = errors || '未找到 ffmpeg / ffprobe';
+    el.title = '请将 ffmpeg.exe 和 ffprobe.exe 放到程序目录，或把 ffmpeg 安装目录加入 PATH';
+  }
+};
+
+const refreshFfmpegStatus = async () => {
+  const el = $('#ffmpeg-status-text');
+  if (el) el.textContent = '检测中...';
+  try {
+    const status = await checkFfmpegStatus();
+    renderToolStatus(status);
+    if (!status.ok) addLog('warn', '未检测到完整 ffmpeg / ffprobe，后端抽帧检测不可用');
+    return status;
+  } catch (err) {
+    renderToolStatus({ ok: false, ffmpeg: { error: err.message || String(err) }, ffprobe: {} });
+    addLog('warn', `ffmpeg 检测失败: ${err.message || err}`);
+    return null;
+  }
+};
+
+$('#btn-check-ffmpeg')?.addEventListener('click', async () => {
+  const status = await refreshFfmpegStatus();
+  if (status?.ok) addLog('success', 'ffmpeg / ffprobe 检测通过');
+});
 
 const ensureDeveloperNotificationTarget = async () => {
   try {
@@ -1941,21 +2145,93 @@ $('#developer-mode')?.addEventListener('change', async (e) => {
   }
 });
 
-$('#test-sources-toggle')?.addEventListener('change', async (e) => {
-  const enabled = !!e.target.checked;
+const importTestSourcesWithDialog = async () => {
+  if (!isTauriEnv) {
+    alert('导入测试视频源需要在 Tauri 应用中使用');
+    return false;
+  }
   try {
-    await setTestSourcesEnabled(enabled);
-    // 重新加载源列表，renderLive 依赖模块级 sources 变量
+    addLog('info', '正在打开测试视频文件夹选择窗口...');
+    const folder = await openDialog({
+      multiple: false,
+      directory: true,
+    });
+    if (!folder || Array.isArray(folder)) return false;
+    const result = await importTestSourcesFromFolder(folder);
     await loadSources();
     await loadGroups();
     const msg = $('#test-sources-ok');
-    if (msg) msg.textContent = enabled ? '测试视频源已创建' : '测试视频源已移除';
-    addLog('info', enabled ? '测试视频源已创建' : '测试视频源已移除');
+    const imported = result?.imported ?? 0;
+    const skipped = result?.skipped ?? 0;
+    if (msg) msg.textContent = `已导入 ${imported} 个测试视频源，跳过 ${skipped} 个`;
+    addLog('info', `已导入测试视频源: ${imported} 个，跳过 ${skipped} 个`);
+    renderLive();
+    renderSourcesTable();
+    await renderDeveloperSettings();
+    return true;
+  } catch (err) {
+    addLog('error', `导入测试视频源失败: ${err.message || err}`);
+    alert(err.message || '导入测试视频源失败');
+    return false;
+  }
+};
+
+$('#btn-import-test-sources')?.addEventListener('click', async () => {
+  await importTestSourcesWithDialog();
+});
+
+$('#test-sources-toggle')?.addEventListener('change', async (e) => {
+  const enabled = !!e.target.checked;
+  if (enabled) {
+    const ok = await importTestSourcesWithDialog();
+    e.target.checked = ok;
+    return;
+  }
+  try {
+    await setTestSourcesEnabled(false);
+    await loadSources();
+    await loadGroups();
+    const msg = $('#test-sources-ok');
+    if (msg) msg.textContent = '测试视频源已移除';
+    addLog('info', '测试视频源已移除');
     renderLive();
     renderSourcesTable();
   } catch (err) {
-    e.target.checked = !enabled;
-    alert(err.message || '切换测试视频源失败');
+    e.target.checked = true;
+    addLog('error', `移除测试视频源失败: ${err.message || err}`);
+    alert(err.message || '移除测试视频源失败');
+  }
+});
+
+$('#btn-reset-all-data')?.addEventListener('click', async () => {
+  const first = confirm('确定要初始化并清空所有业务配置和状态吗？登录密码会保留，但视频源、分组、算法、ROI、通知、报警和历史都会被清空。');
+  if (!first) return;
+  const typed = prompt('请输入“初始化”确认执行。');
+  if (typed !== '初始化') return;
+  try {
+    await resetAllAppData();
+    sources = [];
+    groups = [];
+    stats = [];
+    alarms = [];
+    algorithmConfig = null;
+    roiConfig = null;
+    notificationTargets = [];
+    notificationHistory = [];
+    sceneStates = new Map();
+    runtimeStatuses = new Map();
+    vlmStates = new Map();
+    developerMode = false;
+    await loadSources();
+    await loadGroups();
+    await renderBasicSettings();
+    renderLive();
+    renderSourcesTable();
+    renderOverview();
+    addLog('warn', '已初始化全部业务配置和运行状态');
+  } catch (err) {
+    addLog('error', `初始化失败: ${err.message || err}`);
+    alert(err.message || '初始化失败');
   }
 });
 
@@ -2061,8 +2337,7 @@ const clamp01 = (value, fallback = 0) => {
   return Math.min(1, Math.max(0, n));
 };
 
-const DEFAULT_COLOR_ON_THRESHOLD = 0.055;
-const DEFAULT_COLOR_OFF_THRESHOLD = 0.025;
+const DEFAULT_COLOR_THRESHOLD = 0.015;
 const GLOBAL_ROI_SOURCE_ID = '__global__';
 let roiConfiguredSourceIds = [];
 
@@ -2158,7 +2433,8 @@ const mountRoiVideo = (src) => {
         return;
       }
     } else if (src.type === 'mp4') {
-      video.src = src.url;
+      video.loop = true;
+      video.src = playableVideoUrl(src);
       requestAutoPlay();
     } else if (src.type === 'webcam') {
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })
@@ -2226,13 +2502,10 @@ const fillRoiForm = (cfg) => {
   $('#roi-y').value = roi.y ?? 0;
   $('#roi-w').value = roi.w ?? 1;
   $('#roi-h').value = roi.h ?? 1;
-  $('#roi-light-on').value = normalizeColorThreshold(
-    cfg.lightOnThreshold ?? cfg.light_on_threshold,
-    DEFAULT_COLOR_ON_THRESHOLD,
-  ).toFixed(3);
-  $('#roi-light-off').value = normalizeColorThreshold(
-    cfg.lightOffThreshold ?? cfg.light_off_threshold,
-    DEFAULT_COLOR_OFF_THRESHOLD,
+  $('#roi-light').value = normalizeColorThreshold(
+    cfg.lightThreshold ?? cfg.light_threshold
+      ?? cfg.lightOnThreshold ?? cfg.light_on_threshold,
+    DEFAULT_COLOR_THRESHOLD,
   ).toFixed(3);
   updateRoiPreview();
 };
@@ -2243,8 +2516,7 @@ const roiPayloadFromForm = () => {
   const y = clamp01($('#roi-y').value, 0);
   const w = Math.max(0.01, Math.min(1 - x, clamp01($('#roi-w').value, 1)));
   const h = Math.max(0.01, Math.min(1 - y, clamp01($('#roi-h').value, 1)));
-  const on = normalizeColorThreshold($('#roi-light-on').value, DEFAULT_COLOR_ON_THRESHOLD);
-  const off = Math.min(on, normalizeColorThreshold($('#roi-light-off').value, DEFAULT_COLOR_OFF_THRESHOLD));
+  const lightThreshold = normalizeColorThreshold($('#roi-light').value, DEFAULT_COLOR_THRESHOLD);
   return {
     ...(roiConfig || {}),
     sourceId: sourceId || GLOBAL_ROI_SOURCE_ID,
@@ -2252,8 +2524,7 @@ const roiPayloadFromForm = () => {
     lightRois: [{ id: 'light-main', label: '主灯光区域', x, y, w, h }],
     excludeRois: roiConfig?.excludeRois || [],
     personRois: [{ id: 'person-main', label: '人员运动检测区域', x, y, w, h }],
-    lightOnThreshold: on,
-    lightOffThreshold: off,
+    lightThreshold,
     updatedAt: Date.now(),
   };
 };

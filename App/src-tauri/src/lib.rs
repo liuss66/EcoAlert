@@ -31,6 +31,7 @@ pub fn run() {
             commands::create_source,
             commands::update_source,
             commands::delete_source,
+            commands::import_test_sources_from_folder,
             commands::set_test_sources_enabled,
             commands::create_group,
             commands::update_group,
@@ -63,6 +64,7 @@ pub fn run() {
             commands::resend_notification,
             commands::get_security_config,
             commands::update_security_config,
+            commands::reset_all_app_data,
             commands::change_password,
             commands::get_data_dir,
             commands::start_oauth_binding,
@@ -70,6 +72,7 @@ pub fn run() {
             commands::verify_channel_credentials,
             commands::open_devtools,
             commands::probe_url,
+            commands::check_ffmpeg_status,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Tauri 失败");

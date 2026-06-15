@@ -1,6 +1,0 @@
-# Tools 依赖
-# 推流器用 ffmpeg 做转码，本脚本只是进程管理
-
-pyyaml>=6.0
-aiohttp>=3.9
-watchdog>=3.0

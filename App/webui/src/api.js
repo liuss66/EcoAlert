@@ -387,6 +387,14 @@ export async function probeUrl(url) {
     return { ok: false, status: 0, content_length: 0, error: String(e) };
   }
 }
+export async function checkFfmpegStatus() {
+  if (isTauri) return invoke('check_ffmpeg_status');
+  return {
+    ok: false,
+    ffmpeg: { ok: false, path: 'ffmpeg', version: null, error: '浏览器预览模式不可检测 ffmpeg' },
+    ffprobe: { ok: false, path: 'ffprobe', version: null, error: '浏览器预览模式不可检测 ffprobe' },
+  };
+}
 
 /* ---------- 命令封装 ---------- */
 export async function login(password) {
@@ -502,6 +510,17 @@ export async function deleteSource(id) {
   return { ok: true };
 }
 
+export async function importTestSourcesFromFolder(folderPath) {
+  if (isTauri) {
+    const result = await invoke('import_test_sources_from_folder', { folderPath });
+    return {
+      ...result,
+      sources: (result.sources || []).map(normalizeSource),
+    };
+  }
+  return { sources: mockLoad().map(normalizeSource), imported: 0, skipped: 0 };
+}
+
 /// 调试菜单"测试视频源"开关：enabled=true 创建 8 个预设测试源，false 仅删除这 8 个。
 export const TEST_SOURCE_IDS = [
   'cam-domain-0424', 'cam-domain-0527', 'cam-domain-0528', 'cam-domain-0507',
@@ -601,7 +620,7 @@ export async function getAlgorithmConfig(sourceId = null) {
     scopeId: null,
     activeWindows: [],
     exceptionWindows: [],
-    simpleIntervalSec: 10,
+    simpleIntervalSec: 1,
     vlmIntervalSec: 300,
     vlmEnabled: false,
     vlmSkipWhenPerson: true,
@@ -615,7 +634,7 @@ export async function getAlgorithmConfig(sourceId = null) {
     vlmPriceInputCache: 0,
     vlmPriceOutput: 0,
     vlmPriceOutputCache: 0,
-    personThreshold: 0.006,
+    personThreshold: 0.003,
     lightThreshold: 0.7,
     alarmHoldSec: 300,
     alarmRecoverSec: 60,
@@ -884,6 +903,18 @@ export async function getSecurityConfig() {
 export async function updateSecurityConfig(payload) {
   if (isTauri) return invoke('update_security_config', { payload });
   return payload;
+}
+
+export async function resetAllAppData() {
+  if (isTauri) return invoke('reset_all_app_data');
+  mockSave([]);
+  mockSaveGroups([{ id: 'grp-default', name: '默认分组', order: 0, collapsed: false, domainDetectionEnabled: false, createdAt: Date.now() }]);
+  localStorage.removeItem(MOCK_HISTORY_KEY);
+  localStorage.removeItem(MOCK_ALGO_KEY);
+  localStorage.removeItem(MOCK_ROI_KEY);
+  localStorage.removeItem(MOCK_NTF_KEY);
+  localStorage.removeItem(MOCK_NTF_HISTORY_KEY);
+  return { ok: true, sources: [] };
 }
 
 export async function changePassword(oldPw, newPw) {

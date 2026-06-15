@@ -36,15 +36,16 @@
 | `create_source` | `{ payload }` | `VideoSource` |
 | `update_source` | `{ id, payload }` | `VideoSource` |
 | `delete_source` | `{ id }` | `{ ok }` |
+| `import_test_sources_from_folder` | `{ folderPath }` | `{ sources, imported, skipped }` |
 
 `SourcePayload`：
 
 ```json
 {
   "name": "4·24 域控",
-  "url": "http://127.0.0.1:8080/cam-1/index.m3u8",
-  "type": "hls",
-  "location": "Video/4·24域控.mp4",
+  "url": "G:\\project\\EcoAlert\\Video\\4·24域控.mp4",
+  "type": "mp4",
+  "location": "G:\\project\\EcoAlert\\Video",
   "enabled": true,
   "groupId": "grp-domain",
   "order": 0
@@ -52,6 +53,8 @@
 ```
 
 注意：当前 Rust 结构体接收 `group_id`，前端 mock 使用 `groupId`。实现时需要统一字段转换。
+
+`import_test_sources_from_folder` 会递归扫描所选文件夹中的 `mp4 / m4v / mov / mkv / avi / webm` 文件，跳过已存在的相同路径，导入为启用状态的 `mp4` 视频源，并归入「测试视频」分组。导入时会移除旧版固定 HLS 测试源，避免本地测试依赖推流器。
 
 ### 2.3 分组
 
@@ -95,6 +98,9 @@
 | Command | 参数 | 返回 |
 | --- | --- | --- |
 | `get_data_dir` | `{}` | `String` |
+| `reset_all_app_data` | `{}` | `{ ok, sources }` |
+
+`reset_all_app_data` 仅用于调试初始化，会清空视频源、分组、算法配置、ROI、通知配置、报警记录、通知历史、检测历史、状态历史和运行状态，并重建默认分组；登录密码保留。
 
 ---
 
@@ -117,7 +123,7 @@
 | `update_roi_config` | `{ sourceId, payload }` | `RoiConfig` |
 | `test_roi_config` | `{ sourceId, payload? }` | `{ ok, light, lightState, person, brightness, colorScore, motionScore, confidence, processMs, version }` |
 
-`test_roi_config` 会对当前视频源 URL 调用 ffmpeg 抽取一帧 `160x90` RGB 图，同时生成灰度图，再用传入或已保存的 ROI 配置运行 `Detector::analyze_scene()`。灯光判断优先使用 ROI 内 `colorScore`：该值是亮度加权色度分数，暗像素会降权以抑制红外近黑区域和压缩噪声；彩色画面高于开灯色彩阈值输出 `light=true / lightState=on`，红外黑白画面低于关灯色彩阈值输出 `light=false / lightState=off`；无 RGB 数据时才回退亮度阈值。调用环境需要可执行的 `ffmpeg`。
+`test_roi_config` 会对当前视频源 URL 调用 ffmpeg 抽取一帧 `160x90` RGB 图，同时生成灰度图，再用传入或已保存的 ROI 配置运行 `Detector::analyze_scene()`。灯光判断优先使用 ROI 内 `colorScore`：该值是亮度加权色度分数，暗像素会降权以抑制红外近黑区域和压缩噪声；彩色画面高于色彩阈值输出 `light=true / lightState=on`，低于色彩阈值输出 `light=false / lightState=off`；无 RGB 数据时才回退亮度阈值。调用环境需要可执行的 `ffmpeg`。
 
 ### 3.3 报警（生命周期骨架已实现，静默待实现）
 
@@ -332,7 +338,7 @@ API 凭证模式示例：
       "timezone": "Asia/Shanghai"
     }
   ],
-  "simpleIntervalSec": 10,
+  "simpleIntervalSec": 1,
   "vlmIntervalSec": 300,
   "vlmEnabled": true,
   "vlmSkipWhenPerson": true,

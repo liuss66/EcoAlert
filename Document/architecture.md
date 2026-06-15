@@ -22,8 +22,9 @@ EcoAlert 是本地桌面视频监控应用，核心目标是：
 
 ```mermaid
 flowchart LR
-    Video["Video/*.mp4 测试视频"] --> WebUI["webui/src/main.js"]
-    Video --> Tools["Tools/push_streamer"]
+    Video["Video/*.mp4 测试视频"] --> Import["调试页选择文件夹导入"]
+    Import --> WebUI["webui/src/main.js"]
+    Video -.可选 HLS 验证.-> Tools["Tools/push_streamer"]
     Tools -- HLS --> WebUI
     Tools -.后续接入.-> Stream["App/src-tauri/src/stream"]
     Camera["摄像头 / RTSP / HLS / MP4"] --> Stream
@@ -56,7 +57,8 @@ flowchart LR
 | 视频输入 | `App/src-tauri/src/stream/` / `pipeline/decoder.rs` | HLS / MP4 单帧抽样，后续扩展常驻解码 | 已接 ffmpeg 抽帧 |
 | 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 已接简单模型周期和跳过原因 |
 | 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、VLM 兜底、告警 | 已接真实 RGB 抽样 + 彩色 / 红外灯光检测；办公室固定摄像头场景下以 ROI 运动检测代理人员检测，并用 VLM 做无人兜底确认 |
-| 推流工具 | `Tools/push_streamer/` | 用本地视频模拟实时 HLS 源，供 App 页面联调 | 已实现 ffmpeg + HLS |
+| 测试视频导入 | `commands.rs` / `webui/src/main.js` | 选择视频文件夹，批量导入为循环播放的 MP4 视频源 | 已实现 |
+| 推流工具 | `Tools/push_streamer/` | 可选：用本地视频模拟实时 HLS 源，供 HLS 链路验证 | 已实现 ffmpeg + HLS |
 | 文档 | `Document/` | 需求、架构、接口、部署、ADR、变更日志 | 本文档集 |
 
 ### 3.1 目录设计原则
@@ -68,7 +70,7 @@ flowchart LR
 | `App/` | 唯一产品代码目录，包含前端、Tauri 后端和桌面配置 |
 | `Document/` | 集中放产品和工程设计文档，避免说明散落到代码目录 |
 | `Video/` | 测试视频平铺存放，方便开发时复制路径 |
-| `Tools/` | 放开发辅助工具；当前包含本地 HLS 推流器和联调配置 |
+| `Tools/` | 放开发辅助工具；当前保留可选本地 HLS 推流器和联调配置 |
 
 不再维护 `Video/samples/long/benchmark` 这类多级目录；测试视频数量不大时，根目录平铺比分类目录更容易使用。测试目录、图片目录、工具子模块等只有在真实文件出现时再创建。
 
@@ -147,7 +149,7 @@ sequenceDiagram
 - 常规模型连续 5 分钟未检测到人后，触发 VLM 兜底确认。
 - VLM 检测到人后同样保持 5 分钟；5 分钟后若常规模型仍无人，再次触发 VLM。
 - VLM 连续两次确认无人，且灯亮，才进入报警触发条件。
-- 灯光规则优先使用 ROI 内亮度加权色度分数，默认开灯阈值 `0.055`、关灯阈值 `0.025`；暗像素降权以降低红外近黑区域和压缩彩噪干扰，无 RGB 数据时才使用亮度兜底阈值。
+- 灯光规则优先使用 ROI 内亮度加权色度分数，默认色彩阈值 `0.015`；暗像素降权以降低红外近黑区域和压缩彩噪干扰，无 RGB 数据时才使用亮度兜底阈值。
 - 运动检测尊重人员 ROI，ROI 外运动不会计入人员判断；小面积紧凑闪烁会被过滤。
 - 算法启用时段外不产生新报警。
 - 视频离线不能被解释为无人 + 亮灯。

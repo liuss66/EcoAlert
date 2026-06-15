@@ -15,15 +15,14 @@ const MOTION_WIDTH: u32 = 160;
 const MOTION_HEIGHT: u32 = 120;
 const MOTION_PIXEL_THRESHOLD: u8 = 16;
 const LEGACY_MOTION_AREA_SCALE: f32 = 0.03;
-const DEFAULT_PERSON_AREA_THRESHOLD: f32 = 0.006;
+const DEFAULT_PERSON_AREA_THRESHOLD: f32 = 0.003;
 const MIN_MOTION_COMPONENT_AREA: usize = 10;
 const MIN_MOTION_COMPONENT_SPAN: usize = 3;
 const BLINK_COMPONENT_MAX_AREA: usize = 140;
 const BLINK_COMPONENT_MAX_SPAN: usize = 10;
 const MICRO_MOTION_BBOX_WEIGHT: f32 = 5.0;
 const EMA_ALPHA: f32 = 0.3;
-const COLOR_ON_THRESHOLD: f32 = 0.055;
-const COLOR_OFF_THRESHOLD: f32 = 0.025;
+const COLOR_THRESHOLD: f32 = 0.015;
 const COLOR_DARK_LUMA_CUTOFF: f32 = 24.0;
 const COLOR_WEIGHT_LUMA_FLOOR: f32 = 40.0;
 
@@ -125,16 +124,12 @@ impl Detector {
         // 优先使用摄像头模式特征：开灯为彩色图像，关灯红外为黑白图像。
         // 正常 ffmpeg 抽帧始终提供 RGB；灰度兜底只保留给单元测试和异常输入。
         let has_color_signal = !frame.rgb.is_empty();
-        let (color_on_threshold, color_off_threshold) = color_thresholds(roi_config);
+        let color_threshold = color_threshold(roi_config);
         let (brightness_on_threshold, brightness_off_threshold) =
             (self.light_threshold, self.light_threshold * 0.65);
         let brightness_norm = (smoothed_brightness / 255.0).clamp(0.0, 1.0);
         if has_color_signal {
-            if smoothed_color >= color_on_threshold {
-                self.light_state = true;
-            } else if smoothed_color <= color_off_threshold {
-                self.light_state = false;
-            }
+            self.light_state = smoothed_color >= color_threshold;
         } else {
             if brightness_norm >= brightness_on_threshold {
                 self.light_state = true;
@@ -160,12 +155,7 @@ impl Detector {
         };
 
         let light_conf = if has_color_signal {
-            color_light_confidence(
-                smoothed_color,
-                self.light_state,
-                color_on_threshold,
-                color_off_threshold,
-            )
+            color_light_confidence(smoothed_color, self.light_state, color_threshold)
         } else {
             light_confidence(
                 brightness_norm,
@@ -333,13 +323,14 @@ fn filtered_motion_area(
         }
         let span_x = max_x.saturating_sub(min_x) + 1;
         let span_y = max_y.saturating_sub(min_y) + 1;
-        let compact_blink = area <= BLINK_COMPONENT_MAX_AREA
-            && span_x <= BLINK_COMPONENT_MAX_SPAN
-            && span_y <= BLINK_COMPONENT_MAX_SPAN;
         let human_like_micro_motion = area >= MIN_MOTION_COMPONENT_AREA
             && span_x >= MIN_MOTION_COMPONENT_SPAN
             && span_y >= MIN_MOTION_COMPONENT_SPAN
             && (span_x >= BLINK_COMPONENT_MAX_SPAN || span_y >= BLINK_COMPONENT_MAX_SPAN);
+        let compact_blink = !human_like_micro_motion
+            && area <= BLINK_COMPONENT_MAX_AREA
+            && span_x <= BLINK_COMPONENT_MAX_SPAN
+            && span_y <= BLINK_COMPONENT_MAX_SPAN;
         let larger_motion = area >= BLINK_COMPONENT_MAX_AREA
             && span_x >= MIN_MOTION_COMPONENT_SPAN
             && span_y >= MIN_MOTION_COMPONENT_SPAN;
@@ -444,18 +435,17 @@ fn average_color_score(frame: &DecodedFrame, roi_config: Option<&RoiConfig>) -> 
         .unwrap_or(0.0)
 }
 
-fn color_thresholds(roi_config: Option<&RoiConfig>) -> (f32, f32) {
+fn color_threshold(roi_config: Option<&RoiConfig>) -> f32 {
     let Some(cfg) = roi_config else {
-        return (COLOR_ON_THRESHOLD, COLOR_OFF_THRESHOLD);
+        return COLOR_THRESHOLD;
     };
     // 旧版本 ROI 阈值是亮度归一化阈值，常见为 0.70 / 0.45。
     // 彩色分数通常在 0.00-0.15 范围内；检测到旧值时回退默认色彩阈值。
-    if cfg.light_on_threshold > 0.2 || cfg.light_off_threshold > 0.2 {
-        return (COLOR_ON_THRESHOLD, COLOR_OFF_THRESHOLD);
+    if cfg.light_threshold > 0.2 {
+        COLOR_THRESHOLD
+    } else {
+        cfg.light_threshold.clamp(0.0, 0.2)
     }
-    let on = cfg.light_on_threshold.clamp(0.0, 0.2);
-    let off = cfg.light_off_threshold.clamp(0.0, on);
-    (on, off)
 }
 
 fn roi_color_sum(frame: &DecodedFrame, roi: &RoiRect) -> Option<(f32, usize)> {
@@ -549,19 +539,16 @@ fn light_confidence(value: f32, light: bool, on_threshold: f32, off_threshold: f
     (distance / span).clamp(0.0, 1.0)
 }
 
-fn color_light_confidence(
-    color_score: f32,
-    light: bool,
-    on_threshold: f32,
-    off_threshold: f32,
-) -> f32 {
+fn color_light_confidence(color_score: f32, light: bool, threshold: f32) -> f32 {
+    if threshold <= 0.0 {
+        return if light { 1.0 } else { 0.0 };
+    }
     let distance = if light {
-        (color_score - off_threshold).max(0.0)
+        (color_score - threshold).max(0.0)
     } else {
-        (on_threshold - color_score).max(0.0)
+        (threshold - color_score).max(0.0)
     };
-    let span = (on_threshold - off_threshold).max(0.01);
-    (distance / span).clamp(0.0, 1.0)
+    (distance / threshold).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -620,14 +607,14 @@ mod tests {
         let mut detector = Detector::new(PipelineConfig::default());
         let infrared = detector.analyze_scene(&rgb_frame(16, 16, [128, 128, 128]), None);
         assert!(!infrared.scene.light);
-        assert!(infrared.scene.color_score < COLOR_OFF_THRESHOLD);
+        assert!(infrared.scene.color_score < COLOR_THRESHOLD);
 
         let mut color = detector.analyze_scene(&rgb_frame(16, 16, [220, 120, 40]), None);
         for _ in 0..3 {
             color = detector.analyze_scene(&rgb_frame(16, 16, [220, 120, 40]), None);
         }
         assert!(color.scene.light);
-        assert!(color.scene.color_score > COLOR_ON_THRESHOLD);
+        assert!(color.scene.color_score > COLOR_THRESHOLD);
 
         let mut back_to_ir = detector.analyze_scene(&rgb_frame(16, 16, [180, 180, 180]), None);
         for _ in 0..8 {
@@ -647,19 +634,18 @@ mod tests {
     #[test]
     fn bright_near_gray_infrared_stays_off() {
         let mut detector = Detector::new(PipelineConfig::default());
-        let mut result = detector.analyze_scene(&rgb_frame(16, 16, [185, 182, 180]), None);
+        let mut result = detector.analyze_scene(&rgb_frame(16, 16, [185, 183, 181]), None);
         for _ in 0..3 {
-            result = detector.analyze_scene(&rgb_frame(16, 16, [185, 182, 180]), None);
+            result = detector.analyze_scene(&rgb_frame(16, 16, [185, 183, 181]), None);
         }
         assert!(!result.scene.light);
-        assert!(result.scene.color_score < COLOR_OFF_THRESHOLD);
+        assert!(result.scene.color_score < COLOR_THRESHOLD);
     }
 
     #[test]
     fn light_detector_uses_configured_color_thresholds() {
         let mut cfg = RoiConfig::new("src-test".into());
-        cfg.light_on_threshold = 0.03;
-        cfg.light_off_threshold = 0.015;
+        cfg.light_threshold = 0.03;
         let mut detector = Detector::new(PipelineConfig::default());
 
         let muted_color = detector.analyze_scene(&rgb_frame(16, 16, [160, 120, 110]), Some(&cfg));
@@ -676,8 +662,7 @@ mod tests {
     #[test]
     fn legacy_roi_brightness_thresholds_do_not_break_color_mode() {
         let mut cfg = RoiConfig::new("src-test".into());
-        cfg.light_on_threshold = 0.70;
-        cfg.light_off_threshold = 0.45;
+        cfg.light_threshold = 0.70;
         let mut detector = Detector::new(PipelineConfig::default());
 
         let mut color = detector.analyze_scene(&rgb_frame(16, 16, [220, 120, 40]), Some(&cfg));
@@ -685,7 +670,7 @@ mod tests {
             color = detector.analyze_scene(&rgb_frame(16, 16, [220, 120, 40]), Some(&cfg));
         }
         assert!(color.scene.light);
-        assert!(color.scene.color_score > COLOR_ON_THRESHOLD);
+        assert!(color.scene.color_score > COLOR_THRESHOLD);
     }
 
     #[test]
@@ -861,12 +846,12 @@ mod tests {
     #[test]
     fn threshold_update_affects_person_decision() {
         // 低阈值：更容易触发 person 运动代理
-        let mut detector_low = Detector::with_thresholds(PipelineConfig::default(), 0.006, 0.7);
+        let mut detector_low = Detector::with_thresholds(PipelineConfig::default(), 0.003, 0.7);
         // 第一帧建立基线
         detector_low.analyze_scene(&frame(64, 48, 100), None);
-        // 第二帧：中等运动（差值 30 > MOTION_PIXEL_THRESHOLD=20，所有像素变化）
+        // 第二帧：中等运动（差值 30 > MOTION_PIXEL_THRESHOLD=16，所有像素变化）
         // motion_raw=1.0, motion_ema=0.3
-        // direct threshold = 0.006, 0.3 >= 0.006 -> person=true
+        // direct threshold = 0.003, 0.3 >= 0.003 -> person=true
         let result_low = detector_low.analyze_scene(&frame(64, 48, 130), None);
         assert!(result_low.scene.person, "低阈值下中等运动应触发 person");
 
