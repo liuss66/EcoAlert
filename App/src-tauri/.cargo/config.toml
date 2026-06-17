@@ -1,0 +1,12 @@
+# MinGW 链接器在导出大量符号时可能超过 16-bit ordinal 上限（65535）。
+# --exclude-libs=ALL 隐藏静态库里的所有符号，仅保留当前 crate 自己需要的，
+# 从而大幅缩减 cdylib 的导出表大小。
+#
+# 项目路径含中文（"AI挑战赛"），rustc 的临时目录调度在非 ASCII 项目路径下会
+# 产生路径不一致问题（链接器期望 X/却实际生成在 X/rustc*/），所以把 target
+# 移到纯 ASCII 路径。
+[build]
+target-dir = "C:/build/ecoalert-gnu"
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--exclude-libs=ALL"]
