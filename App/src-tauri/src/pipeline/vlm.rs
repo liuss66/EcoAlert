@@ -3,6 +3,7 @@ use crate::store::AlgorithmConfig;
 use anyhow::{anyhow, Context};
 use image::codecs::jpeg::JpegEncoder;
 use image::{imageops::FilterType, DynamicImage, ImageBuffer, Rgb};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::time::Duration;
@@ -46,6 +47,26 @@ struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionChunk {
+    #[serde(default)]
+    choices: Vec<ChatChunkChoice>,
+    #[serde(default)]
+    usage: Option<RawUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChunkChoice {
+    #[serde(default)]
+    delta: ChatChunkDelta,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ChatChunkDelta {
+    #[serde(default)]
+    content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,17 +124,42 @@ pub async fn analyze_person(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .user_agent("node")
         .build()?;
     let url = chat_completions_url(api_base);
     let response = client
         .post(&url)
-        .bearer_auth(api_key)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "*/*")
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&body)
         .send()
         .await
         .context("VLM 请求发送失败")?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
+    if should_retry_as_stream(status, &text, &body) {
+        let stream_body = with_stream_enabled(&body);
+        let response = client
+            .post(&url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "*/*")
+            .header(AUTHORIZATION, format!("Bearer {api_key}"))
+            .json(&stream_body)
+            .send()
+            .await
+            .context("VLM 流式重试发送失败")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!(
+                "{}",
+                format_vlm_http_error(status, &text, &url, &stream_body)
+            );
+        }
+        let content = parse_streaming_chat_content(&text).context("VLM 流式响应解析失败")?;
+        return parse_detection_content(&content);
+    }
     if !status.is_success() {
         anyhow::bail!("{}", format_vlm_http_error(status, &text, &url, &body));
     }
@@ -161,19 +207,55 @@ async fn call_chat_completion(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .user_agent("node")
         .build()?;
     let url = chat_completions_url(api_base);
     let request_url = url.clone();
     let request_body = body.clone();
     let response = client
         .post(url)
-        .bearer_auth(api_key)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "*/*")
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&body)
         .send()
         .await
         .context("VLM 请求发送失败")?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
+    if should_retry_as_stream(status, &text, &request_body) {
+        let stream_body = with_stream_enabled(&request_body);
+        let response = client
+            .post(&request_url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "*/*")
+            .header(AUTHORIZATION, format!("Bearer {api_key}"))
+            .json(&stream_body)
+            .send()
+            .await
+            .context("VLM 流式重试发送失败")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!(
+                "{}",
+                format_vlm_http_error(status, &text, &request_url, &stream_body)
+            );
+        }
+        let content = parse_streaming_chat_content(&text).context("VLM 流式响应解析失败")?;
+        return Ok((
+            ChatCompletionResponse {
+                choices: vec![ChatChoice {
+                    message: ChatMessage {
+                        content: serde_json::Value::String(content),
+                    },
+                }],
+                usage: parse_streaming_chat_usage(&text),
+            },
+            request_url,
+            stream_body,
+        ));
+    }
     if !status.is_success() {
         anyhow::bail!(
             "{}",
@@ -182,6 +264,68 @@ async fn call_chat_completion(
     }
     let parsed = serde_json::from_str(&text).context("VLM 响应不是 OpenAI-compatible JSON")?;
     Ok((parsed, request_url, request_body))
+}
+
+fn should_retry_as_stream(
+    status: reqwest::StatusCode,
+    text: &str,
+    request_body: &serde_json::Value,
+) -> bool {
+    status.as_u16() == 400
+        && text.contains("stream_options")
+        && text.contains("stream: true")
+        && !request_body
+            .get("stream")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+}
+
+fn with_stream_enabled(request_body: &serde_json::Value) -> serde_json::Value {
+    let mut body = request_body.clone();
+    if let Some(map) = body.as_object_mut() {
+        map.insert("stream".into(), serde_json::Value::Bool(true));
+    }
+    body
+}
+
+fn parse_streaming_chat_content(text: &str) -> anyhow::Result<String> {
+    let mut content = String::new();
+    for chunk in parse_streaming_chat_chunks(text)? {
+        for choice in chunk.choices {
+            if let Some(delta_content) = choice.delta.content {
+                content.push_str(&stream_delta_content_to_string(&delta_content));
+            }
+        }
+    }
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        anyhow::bail!("流式响应缺少 delta.content");
+    }
+    Ok(content)
+}
+
+fn parse_streaming_chat_usage(text: &str) -> Option<RawUsage> {
+    parse_streaming_chat_chunks(text)
+        .ok()?
+        .into_iter()
+        .filter_map(|chunk| chunk.usage)
+        .last()
+}
+
+fn parse_streaming_chat_chunks(text: &str) -> anyhow::Result<Vec<ChatCompletionChunk>> {
+    let mut chunks = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        chunks.push(serde_json::from_str(data)?);
+    }
+    Ok(chunks)
 }
 
 fn chat_completions_url(api_base: &str) -> String {
@@ -200,40 +344,18 @@ fn build_vision_request_body(
     let prompt = config.vlm_prompt.trim();
     let max_tokens = config.vlm_max_tokens.max(16);
     let temperature = config.vlm_temperature.clamp(0.0, 2.0);
-    if is_minimax_config(config, model) {
-        serde_json::json!({
-            "model": model,
-            "thinking": { "type": "disabled" },
-            "messages": [{
-                "role": "user",
-                "content": [
-                    { "type": "text", "text": prompt },
-                    { "type": "image_url", "image_url": { "url": image_url, "detail": "default" } },
-                ],
-            }],
-            "max_completion_tokens": max_tokens,
-            "temperature": temperature,
-        })
-    } else {
-        serde_json::json!({
-            "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    { "type": "image_url", "image_url": { "url": image_url } },
-                    { "type": "text", "text": prompt },
-                ],
-            }],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        })
-    }
-}
-
-fn is_minimax_config(config: &AlgorithmConfig, model: &str) -> bool {
-    let api_base = config.vlm_api_base.to_ascii_lowercase();
-    let model = model.to_ascii_lowercase();
-    api_base.contains("minimax") || api_base.contains("minimaxi") || model.starts_with("minimax-")
+    serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "image_url", "image_url": { "url": image_url } },
+                { "type": "text", "text": prompt },
+            ],
+        }],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    })
 }
 
 fn format_vlm_http_error(
@@ -317,6 +439,22 @@ fn message_content_to_string(content: &serde_json::Value) -> String {
             .join("\n")
             .trim()
             .to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn stream_delta_content_to_string(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.to_string(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                item.get("text")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| item.get("content").and_then(|value| value.as_str()))
+            })
+            .collect::<Vec<_>>()
+            .join(""),
         other => other.to_string(),
     }
 }
@@ -407,10 +545,10 @@ mod tests {
     }
 
     #[test]
-    fn minimax_vision_body_uses_provider_parameters() {
+    fn vision_body_matches_standalone_detector_request() {
         let cfg = AlgorithmConfig {
-            vlm_api_base: "https://api.minimaxi.com/v1/chat/completions".into(),
-            vlm_model: "MiniMax-M3".into(),
+            vlm_api_base: "https://ai.hirain.com/lm/code/v1".into(),
+            vlm_model: "qwen3.6-plus".into(),
             vlm_prompt: "detect".into(),
             vlm_max_tokens: 64,
             vlm_temperature: 0.1,
@@ -418,13 +556,52 @@ mod tests {
         };
         let body =
             build_vision_request_body(&cfg, &cfg.vlm_model, "data:image/jpeg;base64,abc".into());
-        assert_eq!(body["max_completion_tokens"], 64);
-        assert!(body.get("max_tokens").is_none());
-        assert_eq!(body["thinking"]["type"], "disabled");
-        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(body["model"], "qwen3.6-plus");
+        assert_eq!(body["max_tokens"], 64);
+        let temperature = body["temperature"].as_f64().unwrap();
+        assert!((temperature - 0.1).abs() < 0.000_001);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "image_url");
         assert_eq!(
-            body["messages"][0]["content"][1]["image_url"]["detail"],
-            "default"
+            body["messages"][0]["content"][0]["image_url"]["url"],
+            "data:image/jpeg;base64,abc"
         );
+        assert_eq!(body["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(body["messages"][0]["content"][1]["text"], "detect");
+        assert!(body.get("stream").is_none());
+        assert!(body.get("stream_options").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn chat_url_matches_standalone_detector_joining() {
+        assert_eq!(
+            chat_completions_url("https://ai.hirain.com/lm/code/v1"),
+            "https://ai.hirain.com/lm/code/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_url("https://dashscope.aliyuncs.com/v1"),
+            "https://dashscope.aliyuncs.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn parses_streaming_chat_content() {
+        let text = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}],\"usage\":{\"total_tokens\":3}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        assert_eq!(parse_streaming_chat_content(text).unwrap(), "Hello world");
+        assert_eq!(parse_streaming_chat_usage(text).unwrap().total_tokens, 3);
     }
 }

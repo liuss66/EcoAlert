@@ -630,6 +630,7 @@ export async function getAlgorithmConfig(sourceId = null) {
     vlmPrompt: DEFAULT_VLM_PROMPT,
     vlmTemperature: 0.1,
     vlmMaxTokens: 2048,
+    vlmCostEnabled: false,
     vlmPriceInput: 0,
     vlmPriceInputCache: 0,
     vlmPriceOutput: 0,
@@ -691,6 +692,7 @@ export async function deleteAlgorithmConfig(sourceId) {
 }
 
 function calcVlmCost(usage, cfg) {
+  if (!cfg?.vlmCostEnabled && !cfg?.vlm_cost_enabled) return null;
   if (!usage) return 0;
   const normalInput = Math.max(0, (usage.promptTokens || usage.prompt_tokens || 0) - (usage.promptCachedTokens || usage.prompt_cached_tokens || 0));
   const cachedInput = usage.promptCachedTokens || usage.prompt_cached_tokens || 0;
@@ -717,6 +719,7 @@ export async function testVlmConfig(payload) {
     ok: true,
     reply: `mock ok: ${payload.vlmModel || '未填写模型'}`,
     usage,
+    costEnabled: !!(payload?.vlmCostEnabled ?? payload?.vlm_cost_enabled),
     cost: calcVlmCost(usage, payload || {}),
   };
 }

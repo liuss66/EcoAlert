@@ -556,6 +556,7 @@
                     <span class="field-label">API 地址</span>
                     <input type="text" id="algo-vlm-api-base" class="text-input" placeholder="https://api.openai.com/v1" />
                     <span class="field-hint">填写 OpenAI-compatible base URL；也可直接填写完整 /chat/completions 地址</span>
+                    <span class="field-hint">最终请求：<code id="algo-vlm-request-url">-</code></span>
                   </label>
                   <label class="field">
                     <span class="field-label">模型名称</span>
@@ -572,6 +573,13 @@
               </div>
               <div class="form-section">
                 <div class="form-section-title">资费统计</div>
+                <label class="check-row">
+                  <input type="checkbox" id="algo-vlm-cost-enabled" />
+                  <span>
+                    <span class="check-text">启用费用估算</span>
+                    <span class="check-hint">仅使用模型返回的 usage 在本地估算，不会额外调用计费接口</span>
+                  </span>
+                </label>
                 <div class="field-row">
                   <label class="field">
                     <span class="field-label">输入单价</span>

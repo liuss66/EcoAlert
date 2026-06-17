@@ -1994,6 +1994,42 @@ const normalizeTimeText = (value, fallback) => {
   return /^\d{2}:\d{2}$/.test(text) ? text : fallback;
 };
 
+const vlmChatCompletionsUrl = (apiBase) => {
+  const base = String(apiBase || '').trim().replace(/\/+$/, '');
+  if (!base) return '-';
+  return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
+};
+
+const validateVlmApiBase = (apiBase) => {
+  const base = String(apiBase || '').trim();
+  if (!base) return '请先填写 API 地址';
+  try {
+    new URL(base);
+  } catch (_) {
+    return 'API 地址格式不正确';
+  }
+  return '';
+};
+
+const updateVlmRequestUrlPreview = () => {
+  const el = $('#algo-vlm-request-url');
+  if (!el) return;
+  el.textContent = vlmChatCompletionsUrl($('#algo-vlm-api-base')?.value);
+};
+
+const updateVlmCostControls = () => {
+  const enabled = !!$('#algo-vlm-cost-enabled')?.checked;
+  [
+    '#algo-vlm-price-input',
+    '#algo-vlm-price-input-cache',
+    '#algo-vlm-price-output',
+    '#algo-vlm-price-output-cache',
+  ].forEach((selector) => {
+    const input = $(selector);
+    if (input) input.disabled = !enabled;
+  });
+};
+
 const fillAlgorithmForm = (cfg) => {
   const win = (cfg.activeWindows || [])[0] || { weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' };
   $('#algo-enabled').checked = !!cfg.enabled;
@@ -2015,6 +2051,7 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-vlm-temperature').value = cfg.vlmTemperature ?? cfg.vlm_temperature ?? 0.1;
   $('#algo-vlm-max-tokens').value = cfg.vlmMaxTokens ?? cfg.vlm_max_tokens ?? 2048;
   $('#algo-vlm-prompt').value = cfg.vlmPrompt ?? cfg.vlm_prompt ?? DEFAULT_VLM_PROMPT;
+  $('#algo-vlm-cost-enabled').checked = !!(cfg.vlmCostEnabled ?? cfg.vlm_cost_enabled);
   $('#algo-vlm-price-input').value = cfg.vlmPriceInput ?? cfg.vlm_price_input ?? 0;
   $('#algo-vlm-price-input-cache').value = cfg.vlmPriceInputCache ?? cfg.vlm_price_input_cache ?? 0;
   $('#algo-vlm-price-output').value = cfg.vlmPriceOutput ?? cfg.vlm_price_output ?? 0;
@@ -2030,6 +2067,8 @@ const fillAlgorithmForm = (cfg) => {
   }
   const resetBtn = $('#btn-reset-algorithm-source');
   if (resetBtn) resetBtn.style.display = selectedSourceId ? '' : 'none';
+  updateVlmRequestUrlPreview();
+  updateVlmCostControls();
   // 同步 chip 选中态 + 刷新 slider 数字显示
   syncChipsFromHidden();
   $('#algo-person-threshold')?.dispatchEvent(new Event('input'));
@@ -2087,6 +2126,7 @@ const algorithmPayloadFromForm = () => {
     vlmPrompt: $('#algo-vlm-prompt').value.trim() || DEFAULT_VLM_PROMPT,
     vlmTemperature: toFloat($('#algo-vlm-temperature').value, 0.1, 0, 2),
     vlmMaxTokens: toInt($('#algo-vlm-max-tokens').value, 2048, 16),
+    vlmCostEnabled: $('#algo-vlm-cost-enabled').checked,
     vlmPriceInput: toFloat($('#algo-vlm-price-input').value, 0, 0, Number.MAX_SAFE_INTEGER),
     vlmPriceInputCache: toFloat($('#algo-vlm-price-input-cache').value, 0, 0, Number.MAX_SAFE_INTEGER),
     vlmPriceOutput: toFloat($('#algo-vlm-price-output').value, 0, 0, Number.MAX_SAFE_INTEGER),
@@ -2122,7 +2162,8 @@ const renderVlmTestResult = (result) => {
   const totalTokens = usage.totalTokens ?? usage.total_tokens ?? 0;
   const promptCached = usage.promptCachedTokens ?? usage.prompt_cached_tokens ?? 0;
   const completionCached = usage.completionCachedTokens ?? usage.completion_cached_tokens ?? 0;
-  const cost = Number(result.cost || 0);
+  const costEnabled = !!(result.costEnabled ?? result.cost_enabled);
+  const cost = result.cost == null ? null : Number(result.cost || 0);
   el.classList.add('success');
   el.innerHTML = [
     '<div>连接成功，模型可用。</div>',
@@ -2130,7 +2171,9 @@ const renderVlmTestResult = (result) => {
     (promptCached || completionCached)
       ? `<div>缓存命中：输入 ${promptCached}，输出 ${completionCached}</div>`
       : '',
-    `<div>估算费用：¥${cost.toFixed(6)}</div>`,
+    costEnabled && cost != null
+      ? `<div>估算费用：¥${cost.toFixed(6)}</div>`
+      : '<div>费用估算：未启用</div>',
     result.requestUrl ? `<div>请求地址：${escapeHtml(result.requestUrl)}</div>` : '',
     result.requestBody ? `<pre class="inline-pre">${escapeHtml(JSON.stringify(result.requestBody, null, 2))}</pre>` : '',
     result.reply ? `<pre class="inline-pre">${escapeHtml(result.reply)}</pre>` : '',
@@ -2377,12 +2420,22 @@ $('#vlm-form')?.addEventListener('submit', async (e) => {
 
 $('#btn-reload-algorithm').addEventListener('click', renderAlgorithmSettings);
 $('#btn-reload-vlm')?.addEventListener('click', renderAlgorithmSettings);
+$('#algo-vlm-api-base')?.addEventListener('input', updateVlmRequestUrlPreview);
+$('#algo-vlm-cost-enabled')?.addEventListener('change', updateVlmCostControls);
 $('#btn-test-vlm')?.addEventListener('click', async () => {
   const btn = $('#btn-test-vlm');
   const el = $('#vlm-test-result');
+  const validationError = validateVlmApiBase($('#algo-vlm-api-base')?.value);
+  if (validationError) {
+    if (el) {
+      el.classList.remove('success');
+      el.innerHTML = `模型测试失败：${escapeHtml(validationError)}<br>请求地址：${escapeHtml(vlmChatCompletionsUrl($('#algo-vlm-api-base')?.value))}`;
+    }
+    return;
+  }
   if (el) {
     el.classList.remove('success');
-    el.textContent = '正在测试模型连接...';
+    el.innerHTML = `正在测试模型连接...<br>请求地址：${escapeHtml(vlmChatCompletionsUrl($('#algo-vlm-api-base')?.value))}`;
   }
   if (btn) btn.disabled = true;
   try {

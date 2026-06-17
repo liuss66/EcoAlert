@@ -857,15 +857,19 @@ pub async fn test_vlm_config(
     let result = vlm::test_connection(&payload)
         .await
         .map_err(|err| err.to_string())?;
-    let cost = result
-        .usage
-        .as_ref()
-        .map(|usage| calculate_vlm_cost(usage, &payload))
-        .unwrap_or(0.0);
+    let cost = if payload.vlm_cost_enabled {
+        result
+            .usage
+            .as_ref()
+            .map(|usage| calculate_vlm_cost(usage, &payload))
+    } else {
+        None
+    };
     Ok(serde_json::json!({
         "ok": true,
         "reply": result.reply,
         "usage": result.usage,
+        "costEnabled": payload.vlm_cost_enabled,
         "cost": cost,
         "requestUrl": result.request_url,
         "requestBody": result.request_body,

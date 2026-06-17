@@ -388,6 +388,8 @@ pub struct AlgorithmConfig {
     #[serde(default = "default_vlm_max_tokens")]
     pub vlm_max_tokens: u32,
     #[serde(default)]
+    pub vlm_cost_enabled: bool,
+    #[serde(default)]
     pub vlm_price_input: f32,
     #[serde(default)]
     pub vlm_price_input_cache: f32,
@@ -425,6 +427,7 @@ impl Default for AlgorithmConfig {
             vlm_prompt: default_vlm_prompt(),
             vlm_temperature: default_vlm_temperature(),
             vlm_max_tokens: default_vlm_max_tokens(),
+            vlm_cost_enabled: false,
             vlm_price_input: 0.0,
             vlm_price_input_cache: 0.0,
             vlm_price_output: 0.0,
