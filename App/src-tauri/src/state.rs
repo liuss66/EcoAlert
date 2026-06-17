@@ -466,11 +466,27 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut media_durations: HashMap<String, Option<f64>> = HashMap::new();
         loop {
             interval.tick().await;
+            let tick_start = std::time::Instant::now();
             let state = app.state::<Arc<AppState>>();
             let sources = state.sources.lock().clone();
             let algorithm_config = state.algorithm_config.lock().clone();
             let now = chrono::Utc::now().timestamp_millis();
-            for s in &sources {
+
+            // ── Phase 1: 调度决策 + 并发派发所有源的抽帧任务 ──────────────
+            // 旧版串行 .await 每路视频依次等待 ffmpeg，N 路源延迟线性累加。
+            // 现在先批量 spawn_blocking，再统一等结果，总延迟 ≈ 最慢的那一路。
+            struct PendingExtraction {
+                source_idx: usize,
+                source_id: String,
+                source_enabled: bool,
+                effective_config: AlgorithmConfig,
+                should_run_vlm: bool,
+                join_handle:
+                    tokio::task::JoinHandle<anyhow::Result<crate::pipeline::decoder::DecodedFrame>>,
+            }
+            let mut pending: Vec<PendingExtraction> = Vec::new();
+
+            for (idx, s) in sources.iter().enumerate() {
                 let decision = scheduler::decide_for_source(s, &algorithm_config);
                 let config_signature = algorithm_config_signature(&decision.effective_config);
                 let config_changed = config_signatures
@@ -532,12 +548,11 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 }
                 config_signatures.insert(s.id.clone(), config_signature);
                 last_simple_run.insert(s.id.clone(), now);
-                let (counter, prev_p, prev_l) =
+                let (counter, _prev_p, _prev_l) =
                     seeds.entry(s.id.clone()).or_insert((0, false, false));
                 *counter += 1;
+                let current_counter = *counter;
                 let url = s.url.clone();
-                let source_id = s.id.clone();
-                let source_enabled = s.enabled;
                 let seek_secs = if s.source_type == "mp4" {
                     let duration = if let Some(cached) = media_durations.get(&s.id) {
                         *cached
@@ -548,7 +563,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         media_durations.insert(s.id.clone(), probed);
                         probed
                     };
-                    let base = counter.saturating_sub(1) as f64;
+                    let base = current_counter.saturating_sub(1) as f64;
                     Some(match duration {
                         Some(duration) if duration > 0.5 => base % duration,
                         _ => base,
@@ -556,26 +571,62 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 } else {
                     None
                 };
-                let frame = match tokio::task::spawn_blocking(move || {
-                    extract_gray_frame_from_url_at(
+                let join_handle = tokio::task::spawn_blocking(move || {
+                    let t0 = std::time::Instant::now();
+                    let result = extract_gray_frame_from_url_at(
                         &url,
-                        160,
-                        120,
+                        320,
+                        240,
                         Duration::from_secs(5),
                         seek_secs,
-                    )
-                })
-                .await
-                {
-                    Ok(Ok(frame)) => frame,
+                    );
+                    let ms = t0.elapsed().as_millis();
+                    if ms > 1500 {
+                        log::warn!("[抽帧] {} 耗时 {}ms (seek={:?})", url.chars().take(40).collect::<String>(), ms, seek_secs);
+                    }
+                    result
+                });
+                pending.push(PendingExtraction {
+                    source_idx: idx,
+                    source_id: s.id.clone(),
+                    source_enabled: s.enabled,
+                    effective_config: decision.effective_config.clone(),
+                    should_run_vlm: decision.should_run_vlm,
+                    join_handle,
+                });
+            }
+
+            // ── Phase 2: 统一等待所有抽帧完成（并发，总延迟 ≈ max 单路） ──────
+            struct ExtractionResult {
+                source_idx: usize,
+                effective_config: AlgorithmConfig,
+                should_run_vlm: bool,
+                frame: crate::pipeline::decoder::DecodedFrame,
+            }
+            let mut results: Vec<ExtractionResult> = Vec::new();
+            for p in pending {
+                match p.join_handle.await {
+                    Ok(Ok(frame)) => {
+                        results.push(ExtractionResult {
+                            source_idx: p.source_idx,
+                            effective_config: p.effective_config,
+                            should_run_vlm: p.should_run_vlm,
+                            frame,
+                        });
+                    }
                     Ok(Err(err)) => {
                         let msg = format!("真实帧抽取失败: {err}");
                         {
                             let mut runtime = state.runtime_status.lock();
-                            let entry = runtime.entry(source_id.clone()).or_insert_with(|| {
-                                ChannelRuntimeStatus::new(source_id.clone(), source_enabled, now)
-                            });
-                            entry.vlm_enabled = decision.effective_config.vlm_enabled;
+                            let entry =
+                                runtime.entry(p.source_id.clone()).or_insert_with(|| {
+                                    ChannelRuntimeStatus::new(
+                                        p.source_id.clone(),
+                                        p.source_enabled,
+                                        now,
+                                    )
+                                });
+                            entry.vlm_enabled = p.effective_config.vlm_enabled;
                             entry.algorithm_status = "error".into();
                             entry.last_error = Some(msg.clone());
                             entry.ts = now;
@@ -583,43 +634,54 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         let _ = app.emit(
                             "ecoalert://algorithm_schedule",
                             serde_json::json!({
-                                "source_id": source_id,
+                                "source_id": p.source_id,
                                 "action": "frame_error",
                                 "reason": msg,
                                 "latency_ms": null,
                                 "ts": now,
                             }),
                         );
-                        continue;
                     }
                     Err(err) => {
                         let msg = format!("抽帧任务异常: {err}");
                         {
                             let mut runtime = state.runtime_status.lock();
-                            let entry = runtime.entry(source_id.clone()).or_insert_with(|| {
-                                ChannelRuntimeStatus::new(source_id.clone(), source_enabled, now)
-                            });
-                            entry.vlm_enabled = decision.effective_config.vlm_enabled;
+                            let entry =
+                                runtime.entry(p.source_id.clone()).or_insert_with(|| {
+                                    ChannelRuntimeStatus::new(
+                                        p.source_id.clone(),
+                                        p.source_enabled,
+                                        now,
+                                    )
+                                });
+                            entry.vlm_enabled = p.effective_config.vlm_enabled;
                             entry.algorithm_status = "error".into();
                             entry.last_error = Some(msg.clone());
                             entry.ts = now;
                         }
                         log::warn!("{msg}");
-                        continue;
                     }
-                };
+                }
+            }
+
+            // ── Phase 3: 顺序处理检测结果（VLM / 报警 / 事件推送） ──────────
+            for r in results {
+                let s = &sources[r.source_idx];
+                let decision_should_run_vlm = r.should_run_vlm;
+                let decision_effective_config = r.effective_config;
+                let frame = r.frame;
                 let roi_config = state.roi_config.lock().effective_for_source(&s.id);
                 let detector = detectors.entry(s.id.clone()).or_insert_with(|| {
                     Detector::with_thresholds(
                         PipelineConfig::default(),
-                        decision.effective_config.person_threshold,
-                        decision.effective_config.light_threshold,
+                        decision_effective_config.person_threshold,
+                        decision_effective_config.light_threshold,
                     )
                 });
                 // 每次循环更新阈值，响应用户配置变更而不丢失 EMA 状态
                 detector.set_thresholds(
-                    decision.effective_config.person_threshold,
-                    decision.effective_config.light_threshold,
+                    decision_effective_config.person_threshold,
+                    decision_effective_config.light_threshold,
                 );
                 let analysis = detector.analyze_scene(&frame, Some(&roi_config));
                 let mut new_state = analysis.scene;
@@ -648,7 +710,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 }
 
                 let vlm_interval_ms =
-                    decision.effective_config.vlm_interval_sec.max(30) as i64 * 1000;
+                    decision_effective_config.vlm_interval_sec.max(30) as i64 * 1000;
                 let vlm_last_run = last_vlm_run.get(&s.id).copied();
                 let vlm_interval_ready = vlm_last_run
                     .map(|last| now.saturating_sub(last) >= vlm_interval_ms)
@@ -660,14 +722,14 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 if usage_entry.0 != hour_bucket {
                     *usage_entry = (hour_bucket, 0);
                 }
-                let vlm_limit = decision.effective_config.vlm_hourly_limit;
+                let vlm_limit = decision_effective_config.vlm_hourly_limit;
                 let vlm_under_limit = vlm_limit == 0 || usage_entry.1 < vlm_limit;
                 let needs_vlm_no_person_confirmation =
                     tracker.no_person_for_at_least(now, PERSON_PRESENCE_HOLD_MS);
-                let vlm_skip_when_person = decision.effective_config.vlm_skip_when_person;
+                let vlm_skip_when_person = decision_effective_config.vlm_skip_when_person;
                 let light_off_skip = !new_state.light;
                 let mut vlm_skip_reason: Option<&'static str> = None;
-                let should_run_vlm = decision.should_run_vlm
+                let should_run_vlm = decision_should_run_vlm
                     && vlm_interval_ready
                     && vlm_under_limit
                     && needs_vlm_no_person_confirmation
@@ -708,7 +770,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 }
                 if should_run_vlm {
                     let vlm_started = chrono::Utc::now().timestamp_millis();
-                    match vlm::analyze_person(&decision.effective_config, &frame).await {
+                    match vlm::analyze_person(&decision_effective_config, &frame).await {
                         Ok(vlm_result) => {
                             last_vlm_run.insert(s.id.clone(), now);
                             usage_entry.1 = usage_entry.1.saturating_add(1);
@@ -761,13 +823,14 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                             last_vlm_run.insert(s.id.clone(), now);
                             vlm_status = "error";
                             let msg = format!("VLM 检测失败: {err}");
+                            log::warn!("VLM detection failed for source {}: {}", s.id, err);
                             vlm_error_msg = Some(msg.clone());
                             {
                                 let mut runtime = state.runtime_status.lock();
                                 let entry = runtime.entry(s.id.clone()).or_insert_with(|| {
                                     ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now)
                                 });
-                                entry.vlm_enabled = decision.effective_config.vlm_enabled;
+                                entry.vlm_enabled = decision_effective_config.vlm_enabled;
                                 entry.last_error = Some(msg.clone());
                                 entry.ts = now;
                             }
@@ -792,25 +855,25 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let vlm_confirmed_no_person =
                     tracker.vlm_no_person_streak >= VLM_NO_PERSON_CONFIRMATIONS;
                 let raw_alarm = light && !person && vlm_confirmed_no_person;
-                let vlm_progress = if light && !person && decision.should_run_vlm {
+                let vlm_progress = if light && !person && decision_should_run_vlm {
                     (tracker.vlm_no_person_streak as f32 / VLM_NO_PERSON_CONFIRMATIONS as f32)
                         .clamp(0.0, 1.0)
                 } else {
                     0.0
                 };
                 let recover_condition =
-                    should_recover_alarm(person, light, &decision.effective_config.recover_policy);
+                    should_recover_alarm(person, light, &decision_effective_config.recover_policy);
                 let alarm_transition = alarm_timers.entry(s.id.clone()).or_default().update(
                     raw_alarm,
                     recover_condition,
                     now,
-                    decision.effective_config.alarm_hold_sec,
-                    decision.effective_config.alarm_recover_sec,
+                    decision_effective_config.alarm_hold_sec,
+                    decision_effective_config.alarm_recover_sec,
                 );
                 let alarm_countdown_progress = alarm_timers
                     .get(&s.id)
                     .map(|timer| {
-                        timer.alarm_progress(now, decision.effective_config.alarm_hold_sec)
+                        timer.alarm_progress(now, decision_effective_config.alarm_hold_sec)
                     })
                     .unwrap_or(0.0);
                 let alarm_status = alarm_timers
@@ -827,7 +890,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         } else if light
                             && !person
                             && needs_vlm_no_person_confirmation
-                            && decision.should_run_vlm
+                            && decision_should_run_vlm
                         {
                             "vlm_checking"
                         } else {
@@ -845,7 +908,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         .entry(s.id.clone())
                         .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
                     entry.algorithm_status = "idle".into();
-                    entry.vlm_enabled = decision.effective_config.vlm_enabled;
+                    entry.vlm_enabled = decision_effective_config.vlm_enabled;
                     entry.last_error = vlm_error_msg.clone();
                     entry.last_algorithm_at = Some(now);
                     entry.alarm_status = alarm_status.into();
@@ -893,7 +956,11 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
 
                 // 状态历史只在 person / light 变化时落库，避免历史文件快速膨胀。
                 let mut state_record_id: Option<String> = None;
-                if person != *prev_p || light != *prev_l {
+                let state_changed = seeds
+                    .get(&s.id)
+                    .map(|(_, pp, pl)| person != *pp || light != *pl)
+                    .unwrap_or(true);
+                if state_changed {
                     let rec = StateRecord::from_change(&s.id, &new_state);
                     let rec_id = rec.id.clone();
                     if let Err(e) = state.record_state_change(rec) {
@@ -921,8 +988,10 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                             }
                         ),
                     );
-                    *prev_p = person;
-                    *prev_l = light;
+                    if let Some(seed) = seeds.get_mut(&s.id) {
+                        seed.1 = person;
+                        seed.2 = light;
+                    }
                 }
 
                 if let Some(alarm_active) = alarm_transition {
@@ -974,6 +1043,10 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         Err(e) => log::warn!("报警状态落库失败: {e}"),
                     }
                 }
+            }
+            let tick_ms = tick_start.elapsed().as_millis();
+            if tick_ms > 1500 {
+                log::warn!("[tick] 本轮耗时 {}ms，源数量={}", tick_ms, sources.len());
             }
         }
     });

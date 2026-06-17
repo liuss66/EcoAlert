@@ -61,12 +61,18 @@ struct ChatCompletionChunk {
 struct ChatChunkChoice {
     #[serde(default)]
     delta: ChatChunkDelta,
+    /// 兼容部分模型在最后一个 chunk 用 message 代替 delta
+    #[serde(default)]
+    message: Option<ChatMessage>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct ChatChunkDelta {
     #[serde(default)]
     content: Option<serde_json::Value>,
+    /// Qwen3 等模型在思考阶段使用 reasoning_content，正式回答用 content
+    #[serde(default)]
+    reasoning_content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,29 +141,63 @@ pub async fn analyze_person(
         .json(&body)
         .send()
         .await
-        .context("VLM 请求发送失败")?;
+        .with_context(|| format!("VLM 请求发送失败 (model={model}, api={api_base})"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if should_retry_as_stream(status, &text, &body) {
-        let stream_body = with_stream_enabled(&body);
-        let response = client
-            .post(&url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "*/*")
-            .header(AUTHORIZATION, format!("Bearer {api_key}"))
-            .json(&stream_body)
-            .send()
-            .await
-            .context("VLM 流式重试发送失败")?;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            anyhow::bail!(
-                "{}",
-                format_vlm_http_error(status, &text, &url, &stream_body)
-            );
-        }
-        let content = parse_streaming_chat_content(&text).context("VLM 流式响应解析失败")?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // 用 bytes() 而不是 text()：部分 API 在 chunked transfer / event-stream 下
+    // text() 可能返回空串，bytes() 更可靠。
+    let raw_bytes = response.bytes().await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&raw_bytes).into_owned();
+    let is_stream_response = content_type.contains("event-stream")
+        || content_type.contains("text/event-stream")
+        || text.contains("data:");
+    if is_stream_response || should_retry_as_stream(status, &text, &body) {
+        // 如果已经是流式响应（Content-Type: event-stream），直接解析，不用再重试
+        let stream_text = if is_stream_response && !text.is_empty() {
+            text.clone()
+        } else {
+            let stream_body = with_stream_enabled(&body);
+            let response = client
+                .post(&url)
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "text/event-stream")
+                .header(AUTHORIZATION, format!("Bearer {api_key}"))
+                .json(&stream_body)
+                .send()
+                .await
+                .with_context(|| format!("VLM 流式重试发送失败 (model={model}, api={api_base})"))?;
+            let status = response.status();
+            let stream_bytes = response.bytes().await.unwrap_or_default();
+            let stream_text = String::from_utf8_lossy(&stream_bytes).into_owned();
+            if !status.is_success() {
+                anyhow::bail!(
+                    "{}",
+                    format_vlm_http_error(status, &stream_text, &url, &stream_body)
+                );
+            }
+            if stream_text.is_empty() {
+                anyhow::bail!(
+                    "VLM 流式响应体为空 (model={model}, status={status}, url={url})"
+                );
+            }
+            stream_text
+        };
+        let content = match parse_streaming_chat_content(&stream_text) {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!(
+                    "VLM streaming parse failed for model={model} api={api_base}, raw response ({} bytes): {}",
+                    stream_text.len(),
+                    if stream_text.len() > 500 { format!("{}...", &stream_text[..500]) } else { stream_text.clone() }
+                );
+                anyhow::bail!("VLM 流式响应解析失败 (model={model}): {e}");
+            }
+        };
         return parse_detection_content(&content);
     }
     if !status.is_success() {
@@ -165,7 +205,10 @@ pub async fn analyze_person(
     }
 
     let parsed: ChatCompletionResponse =
-        serde_json::from_str(&text).context("VLM 响应不是 OpenAI-compatible JSON")?;
+        serde_json::from_str(&text).with_context(|| {
+            let snippet = if text.len() > 200 { format!("{}...", &text[..200]) } else { text.clone() };
+            format!("VLM 响应不是 OpenAI-compatible JSON (model={model}), 原始响应: {snippet}")
+        })?;
     let content = parsed
         .choices
         .first()
@@ -180,6 +223,28 @@ pub async fn test_connection(config: &AlgorithmConfig) -> anyhow::Result<VlmTest
         "messages": [{ "role": "user", "content": "Hi" }],
         "max_tokens": 16,
     });
+    let (parsed, request_url, request_body) = call_chat_completion(config, body).await?;
+    let content = parsed
+        .choices
+        .first()
+        .map(|choice| message_content_to_string(&choice.message.content))
+        .unwrap_or_default();
+    Ok(VlmTestResult {
+        reply: content,
+        usage: parsed.usage.map(Into::into),
+        request_url,
+        request_body,
+    })
+}
+
+/// 用当前配置对一帧画面做真实人员检测测试，用于在前端验证 VLM 图片识别是否正常。
+pub async fn test_vision(
+    config: &AlgorithmConfig,
+    frame: &DecodedFrame,
+) -> anyhow::Result<VlmTestResult> {
+    let model = config.vlm_model.trim();
+    let image_url = frame_to_jpeg_data_url(frame)?;
+    let body = build_vision_request_body(config, model, image_url);
     let (parsed, request_url, request_body) = call_chat_completion(config, body).await?;
     let content = parsed
         .choices
@@ -220,29 +285,60 @@ async fn call_chat_completion(
         .json(&body)
         .send()
         .await
-        .context("VLM 请求发送失败")?;
+        .with_context(|| format!("VLM 请求发送失败 (model={model}, api={api_base})"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if should_retry_as_stream(status, &text, &request_body) {
-        let stream_body = with_stream_enabled(&request_body);
-        let response = client
-            .post(&request_url)
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "*/*")
-            .header(AUTHORIZATION, format!("Bearer {api_key}"))
-            .json(&stream_body)
-            .send()
-            .await
-            .context("VLM 流式重试发送失败")?;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            anyhow::bail!(
-                "{}",
-                format_vlm_http_error(status, &text, &request_url, &stream_body)
-            );
-        }
-        let content = parse_streaming_chat_content(&text).context("VLM 流式响应解析失败")?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let raw_bytes = response.bytes().await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&raw_bytes).into_owned();
+    let is_stream_response = content_type.contains("event-stream")
+        || content_type.contains("text/event-stream")
+        || text.contains("data:");
+    if is_stream_response || should_retry_as_stream(status, &text, &request_body) {
+        let stream_text = if is_stream_response && !text.is_empty() {
+            text.clone()
+        } else {
+            let stream_body = with_stream_enabled(&request_body);
+            let response = client
+                .post(&request_url)
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "text/event-stream")
+                .header(AUTHORIZATION, format!("Bearer {api_key}"))
+                .json(&stream_body)
+                .send()
+                .await
+                .with_context(|| format!("VLM 流式重试发送失败 (model={model}, api={api_base})"))?;
+            let status = response.status();
+            let stream_bytes = response.bytes().await.unwrap_or_default();
+            let stream_text = String::from_utf8_lossy(&stream_bytes).into_owned();
+            if !status.is_success() {
+                anyhow::bail!(
+                    "{}",
+                    format_vlm_http_error(status, &stream_text, &request_url, &stream_body)
+                );
+            }
+            if stream_text.is_empty() {
+                anyhow::bail!(
+                    "VLM 流式响应体为空 (model={model}, status={status}, url={request_url})"
+                );
+            }
+            stream_text
+        };
+        let content = match parse_streaming_chat_content(&stream_text) {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!(
+                    "VLM streaming parse failed for model={model} api={api_base}, raw response ({} bytes): {}",
+                    stream_text.len(),
+                    if stream_text.len() > 500 { format!("{}...", &stream_text[..500]) } else { stream_text.clone() }
+                );
+                anyhow::bail!("VLM 流式响应解析失败 (model={model}): {e}");
+            }
+        };
         return Ok((
             ChatCompletionResponse {
                 choices: vec![ChatChoice {
@@ -250,10 +346,10 @@ async fn call_chat_completion(
                         content: serde_json::Value::String(content),
                     },
                 }],
-                usage: parse_streaming_chat_usage(&text),
+                usage: parse_streaming_chat_usage(&stream_text),
             },
             request_url,
-            stream_body,
+            request_body,
         ));
     }
     if !status.is_success() {
@@ -262,7 +358,10 @@ async fn call_chat_completion(
             format_vlm_http_error(status, &text, &request_url, &request_body)
         );
     }
-    let parsed = serde_json::from_str(&text).context("VLM 响应不是 OpenAI-compatible JSON")?;
+    let parsed = serde_json::from_str(&text).with_context(|| {
+        let snippet = if text.len() > 200 { format!("{}...", &text[..200]) } else { text.clone() };
+        format!("VLM 响应不是 OpenAI-compatible JSON (model={model}), 原始响应: {snippet}")
+    })?;
     Ok((parsed, request_url, request_body))
 }
 
@@ -271,35 +370,86 @@ fn should_retry_as_stream(
     text: &str,
     request_body: &serde_json::Value,
 ) -> bool {
-    status.as_u16() == 400
-        && text.contains("stream_options")
-        && text.contains("stream: true")
-        && !request_body
-            .get("stream")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
+    // 已经开启 stream 就不再重试
+    if request_body
+        .get("stream")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    // 服务端明确要求 stream: true
+    if status.as_u16() == 400
+        && (text.contains("stream_options") || text.contains("stream: true") || text.contains("\"stream\""))
+    {
+        return true;
+    }
+    // 部分 API 返回 400 但没有明确关键词，也尝试流式
+    if status.as_u16() == 400 && text.contains("stream") {
+        return true;
+    }
+    false
 }
 
 fn with_stream_enabled(request_body: &serde_json::Value) -> serde_json::Value {
     let mut body = request_body.clone();
     if let Some(map) = body.as_object_mut() {
         map.insert("stream".into(), serde_json::Value::Bool(true));
+        // 部分 API（如 OpenAI 兼容接口）要求 stream_options 来获取 usage
+        map.insert(
+            "stream_options".into(),
+            serde_json::json!({ "include_usage": true }),
+        );
     }
     body
 }
 
 fn parse_streaming_chat_content(text: &str) -> anyhow::Result<String> {
+    let chunks = parse_streaming_chat_chunks(text)?;
     let mut content = String::new();
-    for chunk in parse_streaming_chat_chunks(text)? {
-        for choice in chunk.choices {
-            if let Some(delta_content) = choice.delta.content {
-                content.push_str(&stream_delta_content_to_string(&delta_content));
+    let mut reasoning = String::new();
+    for chunk in &chunks {
+        for choice in &chunk.choices {
+            if let Some(delta_content) = &choice.delta.content {
+                content.push_str(&stream_delta_content_to_string(delta_content));
+            }
+            if let Some(delta_reasoning) = &choice.delta.reasoning_content {
+                reasoning.push_str(&stream_delta_content_to_string(delta_reasoning));
+            }
+            // 兼容部分模型在最后一个 chunk 用 message 而不是 delta
+            if content.is_empty() {
+                if let Some(msg) = choice.message.as_ref() {
+                    let msg_content = message_content_to_string(&msg.content);
+                    if !msg_content.is_empty() {
+                        content.push_str(&msg_content);
+                    }
+                }
             }
         }
     }
     let content = content.trim().to_string();
     if content.is_empty() {
-        anyhow::bail!("流式响应缺少 delta.content");
+        // Qwen3 等思考模型可能只输出了 reasoning_content 而 content 为空
+        if !reasoning.trim().is_empty() {
+            return Ok(reasoning.trim().to_string());
+        }
+        // Fallback: try parsing as regular (non-streaming) ChatCompletion response
+        if let Ok(parsed) = serde_json::from_str::<ChatCompletionResponse>(text.trim()) {
+            if let Some(choice) = parsed.choices.first() {
+                let fallback_content = message_content_to_string(&choice.message.content);
+                if !fallback_content.is_empty() {
+                    return Ok(fallback_content);
+                }
+            }
+        }
+        let snippet = if text.len() > 500 {
+            format!("{}...", &text[..500])
+        } else if text.is_empty() {
+            "(空响应)".to_string()
+        } else {
+            text.to_string()
+        };
+        anyhow::bail!("流式响应缺少 delta.content，原始响应: {snippet}");
     }
     Ok(content)
 }

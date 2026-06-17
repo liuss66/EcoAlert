@@ -87,15 +87,32 @@ pub fn extract_gray_frame_from_url_at(
         Uuid::new_v4().simple()
     ));
 
+    let is_rtsp = url.starts_with("rtsp://") || url.starts_with("rtsps://");
+
     let mut command = Command::new(resolve_media_tool("ffmpeg"));
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+    // 限制流探测时间，默认 5 秒太长，是每次抽帧的固定开销。
+    // 500ms 足以识别绝大多数摄像头 / MP4 的编码格式。
+    command.args([
+        "-analyzeduration",
+        "500000",
+        "-probesize",
+        "5000000",
+    ]);
+
+    // RTSP 流强制使用 TCP 传输，避免 UDP 丢包导致花屏或抽帧失败
+    if is_rtsp {
+        command.args(["-rtsp_transport", "tcp"]);
+    }
+
     let seek_arg = seek_secs.map(|value| format!("{:.3}", value.max(0.0)));
+    command.args(["-i", url]);
+    // 对 MP4 等文件类媒体，-ss 放在 -i 后面做精确Seek（慢但准确到帧级别）。
+    // 旧版 -ss 在 -i 前面只定位到最近关键帧，连续帧可能完全相同导致帧差为零。
     if let Some(seek) = &seek_arg {
         command.args(["-ss", seek]);
     }
     command.args([
-        "-i",
-        url,
         "-frames:v",
         "1",
         "-vf",

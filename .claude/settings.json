@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/lib/\" 2>&1 | head -30)",
+      "Read(//c/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/lib/**)",
+      "Bash(ls \"C:/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/lib/\" > /tmp/liblist.txt 2>&1; cat /tmp/liblist.txt | head -40)",
+      "Read(//tmp/**)",
+      "Bash(rustup component *)",
+      "Bash(ls -la \"C:/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/\" 2>&1)",
+      "Read(//c/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/**)",
+      "Bash(ls \"C:/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/components/\" 2>&1)",
+      "Read(//c/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/**)",
+      "Bash(cat \"C:/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/manifest-rust-std-x86_64-pc-windows-msvc\" 2>&1 | head -20)",
+      "Bash(ls \"C:/Users/jinsheng.liu1/.rustup/toolchains/\" 2>&1)",
+      "Read(//c/Users/jinsheng.liu1/.rustup/toolchains/**)",
+      "Bash(git checkout *)"
+    ]
+  }
+}

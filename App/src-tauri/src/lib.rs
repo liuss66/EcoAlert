@@ -50,6 +50,7 @@ pub fn run() {
             commands::update_algorithm_config,
             commands::delete_algorithm_config,
             commands::test_vlm_config,
+            commands::test_vlm_vision,
             commands::get_roi_config,
             commands::list_roi_config_sources,
             commands::update_roi_config,

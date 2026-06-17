@@ -13,15 +13,17 @@ use std::time::Instant;
 
 const MOTION_WIDTH: u32 = 160;
 const MOTION_HEIGHT: u32 = 120;
-const MOTION_PIXEL_THRESHOLD: u8 = 16;
+/// 块均值降采样会平滑像素差值，阈值需要比最近邻采样时更低。
+/// 实测块均值后人体移动产生的像素差约 5-25，8 能在噪声(~3)和真实运动之间取得平衡。
+const MOTION_PIXEL_THRESHOLD: u8 = 8;
 const LEGACY_MOTION_AREA_SCALE: f32 = 0.03;
 const DEFAULT_PERSON_AREA_THRESHOLD: f32 = 0.003;
-const MIN_MOTION_COMPONENT_AREA: usize = 10;
-const MIN_MOTION_COMPONENT_SPAN: usize = 3;
+const MIN_MOTION_COMPONENT_AREA: usize = 5;
+const MIN_MOTION_COMPONENT_SPAN: usize = 2;
 const BLINK_COMPONENT_MAX_AREA: usize = 140;
 const BLINK_COMPONENT_MAX_SPAN: usize = 10;
 const MICRO_MOTION_BBOX_WEIGHT: f32 = 5.0;
-const EMA_ALPHA: f32 = 0.3;
+const EMA_ALPHA: f32 = 0.5;
 const COLOR_THRESHOLD: f32 = 0.015;
 const COLOR_DARK_LUMA_CUTOFF: f32 = 24.0;
 const COLOR_WEIGHT_LUMA_FLOOR: f32 = 40.0;
@@ -140,6 +142,22 @@ impl Detector {
 
         let motion_raw = self.motion_score(frame, roi_config);
         self.motion_ema = self.motion_ema * (1.0 - EMA_ALPHA) + motion_raw * EMA_ALPHA;
+
+        // 周期性诊断日志：帮助定位运动检测问题
+        if self.frame_counter % 10 == 2 {
+            let eff = self.effective_person_threshold();
+            log::info!(
+                "[detector#{}] frame={}x{} motion_raw={:.4} ema={:.4} thr={:.4} person={} prev={}",
+                self.frame_counter,
+                frame.width,
+                frame.height,
+                motion_raw,
+                self.motion_ema,
+                eff,
+                self.motion_ema >= eff,
+                self.prev_low_res.as_ref().map_or(0, |b| b.len()),
+            );
+        }
 
         // 基于运动得分的近似人员检测
         let eff_threshold = self.effective_person_threshold();
@@ -515,15 +533,29 @@ fn downsample_gray(frame: &DecodedFrame, target_w: u32, target_h: u32) -> Vec<u8
     if frame.width == 0 || frame.height == 0 || frame.data.is_empty() {
         return vec![];
     }
-    let out_w = target_w.min(frame.width).max(1);
-    let out_h = target_h.min(frame.height).max(1);
-    let mut out = Vec::with_capacity((out_w * out_h) as usize);
-    for y in 0..out_h {
-        let src_y = (y as u64 * frame.height as u64 / out_h as u64) as usize;
-        for x in 0..out_w {
-            let src_x = (x as u64 * frame.width as u64 / out_w as u64) as usize;
-            let idx = src_y * frame.width as usize + src_x;
-            out.push(*frame.data.get(idx).unwrap_or(&0));
+    let out_w = target_w.min(frame.width).max(1) as usize;
+    let out_h = target_h.min(frame.height).max(1) as usize;
+    let src_w = frame.width as usize;
+    let src_h = frame.height as usize;
+    let mut out = Vec::with_capacity(out_w * out_h);
+    // 块均值降采样：对每个目标像素，取源图对应矩形块内所有像素的平均值。
+    // 相比最近邻采样，能有效抑制噪声和压缩伪影，保留真实的运动信号。
+    for oy in 0..out_h {
+        let src_y_start = oy * src_h / out_h;
+        let src_y_end = (oy + 1) * src_h / out_h;
+        for ox in 0..out_w {
+            let src_x_start = ox * src_w / out_w;
+            let src_x_end = (ox + 1) * src_w / out_w;
+            let mut sum = 0u64;
+            let mut count = 0u64;
+            for sy in src_y_start..src_y_end {
+                let row = sy * src_w;
+                for sx in src_x_start..src_x_end {
+                    sum += *frame.data.get(row + sx).unwrap_or(&0) as u64;
+                    count += 1;
+                }
+            }
+            out.push(if count > 0 { (sum / count) as u8 } else { 0 });
         }
     }
     out
