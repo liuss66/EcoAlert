@@ -724,6 +724,16 @@ export async function testVlmConfig(payload) {
   };
 }
 
+/// 用指定视频源的画面做真实 VLM 图片识别测试
+export async function testVlmVision(payload) {
+  if (isTauri) return invoke('test_vlm_vision', { payload });
+  return {
+    ok: true,
+    reply: `mock vision ok: ${payload.vlmModel || '未填写模型'} (source=${payload.sourceId})`,
+    usage: null,
+  };
+}
+
 export async function getRoiConfig(sourceId) {
   if (isTauri) return invoke('get_roi_config', { sourceId });
   try {

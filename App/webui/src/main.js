@@ -15,7 +15,7 @@ import {
   reportSceneState, getStateHistory, listDetectionHistory,
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
-  testVlmConfig,
+  testVlmConfig, testVlmVision,
   getRoiConfig, listRoiConfigSources, updateRoiConfig, deleteRoiConfig, testRoiConfig,
   listNotificationTargets, createNotificationTarget, updateNotificationTarget, deleteNotificationTarget,
   listNotificationHistory, testNotificationTarget, resendNotification,
@@ -403,7 +403,7 @@ let developerMode = false;
 let sceneStates = new Map();
 let runtimeStatuses = new Map();
 let vlmStates = new Map();
-let frontendVideoAnalyzers = new Map();
+
 
 const setDeveloperMode = (enabled) => {
   developerMode = !!enabled;
@@ -429,12 +429,8 @@ const renderLive = () => {
   const empty = $('#live-empty');
   const enabled = sources.filter((s) => s.enabled);
   const enabledIds = new Set(enabled.map((s) => s.id));
-  for (const sourceId of frontendVideoAnalyzers.keys()) {
-    if (!enabledIds.has(sourceId)) stopFrontendAnalyzer(sourceId);
-  }
   $('#live-count').textContent = `${enabled.length} 路`;
   if (enabled.length === 0) {
-    for (const sourceId of frontendVideoAnalyzers.keys()) stopFrontendAnalyzer(sourceId);
     grid.innerHTML = '';
     empty.classList.remove('hidden');
     return;
@@ -1027,19 +1023,13 @@ function applyStateIcons() {
       }
       return;
     }
-    const personPct = s.simplePersonConfidence == null ? '-' : `${(s.simplePersonConfidence * 100).toFixed(0)}%`;
-    const brightnessText = s.lightBrightness == null ? '-' : `${Number(s.lightBrightness).toFixed(0)}`;
     const colorText = s.colorScore == null ? '-' : `${Number(s.colorScore).toFixed(3)}`;
-    const motionPct  = s.motionScore == null ? '-' : `${(Number(s.motionScore) * 100).toFixed(0)}%`;
+    const motionText = s.motionScore == null ? '-' : `${Number(s.motionScore).toFixed(3)}`;
     const cost = s.processMs ?? s.modelLatencyMs;
     const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
-    const vlm = vlmStates.get(id);
-    const vlmText = isVlmEnabledForSource(id)
-      ? `  VLM:${vlm?.label || '等待'}`
-      : '';
-    el.textContent = `常规:${s.simplePerson ? '有人' : '无人'}(${personPct})  亮度:${brightnessText}  色彩:${colorText}  运动:${motionPct}${vlmText}`;
+    el.textContent = `色彩:${colorText}  运动:${motionText}  检测:${fmtTime(s.ts)}  耗时:${costText}`;
     el.dataset.brightness = s.lightBrightness ?? '';
-    el.title = `常规模型:${s.simplePerson ? '有人' : '无人'}(${personPct}) · 融合:${s.person ? '有人' : '无人'} · 亮度:${brightnessText} · 色彩:${colorText} · 运动:${motionPct} · VLM:${vlm?.label || '-'} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
+    el.title = `融合:${s.person ? '有人' : '无人'} · 色彩:${colorText} · 运动:${motionText} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
   });
 }
 
@@ -1079,111 +1069,6 @@ function updateLiveState(payload) {
   updateAlarmBanner();
 }
 
-const stopFrontendAnalyzer = (sourceId) => {
-  if (!sourceId) return;
-  const analyzer = frontendVideoAnalyzers.get(sourceId);
-  if (!analyzer) return;
-  clearInterval(analyzer.timer);
-  frontendVideoAnalyzers.delete(sourceId);
-};
-
-const localVideoThresholds = () => ({
-  person: normalizePersonMotionThreshold(algorithmConfig?.personThreshold ?? algorithmConfig?.person_threshold ?? 0.003),
-  light: Number(roiConfig?.lightThreshold ?? roiConfig?.light_threshold ?? 0.08),
-});
-
-const startFrontendAnalyzer = (src, video) => {
-  if (!src?.id || src.type !== 'mp4' || !video) return;
-  stopFrontendAnalyzer(src.id);
-
-  const canvas = document.createElement('canvas');
-  const width = 160;
-  const height = 90;
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return;
-
-  const state = {
-    frameSeq: 0,
-    lastGray: null,
-    motionEma: 0,
-    warned: false,
-  };
-
-  const analyze = () => {
-    if (!video.isConnected) {
-      stopFrontendAnalyzer(src.id);
-      return;
-    }
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth <= 0 || video.videoHeight <= 0) return;
-
-    const startedAt = performance.now();
-    try {
-      ctx.drawImage(video, 0, 0, width, height);
-      const pixels = ctx.getImageData(0, 0, width, height).data;
-      const gray = new Uint8Array(width * height);
-      let brightnessSum = 0;
-      let colorSum = 0;
-      let changed = 0;
-
-      for (let i = 0, j = 0; i < pixels.length; i += 4, j += 1) {
-        const r = pixels[i];
-        const g = pixels[i + 1];
-        const b = pixels[i + 2];
-        const luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
-        const lumaByte = Math.round(luma);
-        gray[j] = lumaByte;
-        brightnessSum += luma;
-        colorSum += (Math.abs(r - g) + Math.abs(g - b) + Math.abs(r - b)) / (3 * 255);
-        if (state.lastGray && Math.abs(lumaByte - state.lastGray[j]) > 16) changed += 1;
-      }
-
-      const pixelCount = width * height;
-      const motionRaw = state.lastGray ? changed / pixelCount : 0;
-      state.motionEma = (state.motionEma * 0.65) + (motionRaw * 0.35);
-      state.lastGray = gray;
-      state.frameSeq += 1;
-
-      const thresholds = localVideoThresholds();
-      const brightness = brightnessSum / pixelCount;
-      const colorScore = colorSum / pixelCount;
-      const personConfidence = Math.min(1, thresholds.person > 0 ? state.motionEma / thresholds.person : state.motionEma);
-      const lightConfidence = Math.min(1, thresholds.light > 0 ? colorScore / thresholds.light : colorScore);
-      const person = state.motionEma >= thresholds.person;
-      const light = colorScore >= thresholds.light;
-
-      updateLiveState({
-        sourceId: src.id,
-        person,
-        light,
-        lightState: light ? 'on' : 'off',
-        simplePerson: person,
-        simplePersonConfidence: personConfidence,
-        personConfidence,
-        lightConfidence,
-        source: 'frontend-canvas',
-        frameSeq: state.frameSeq,
-        confidence: Math.max(personConfidence, lightConfidence),
-        reason: 'local_video_canvas',
-        lightBrightness: brightness,
-        colorScore,
-        motionScore: state.motionEma,
-        processMs: performance.now() - startedAt,
-        ts: Date.now(),
-      });
-    } catch (error) {
-      if (!state.warned) {
-        state.warned = true;
-        addLog('warn', `本地视频前端检测失败: ${error?.message || error}`);
-      }
-    }
-  };
-
-  const timer = setInterval(analyze, 1000);
-  frontendVideoAnalyzers.set(src.id, { timer, analyze });
-  video.addEventListener('loadeddata', analyze, { once: true });
-};
 
 function updateVlmStateFromSchedule(payload) {
   if (!payload?.sourceId) return;
@@ -1196,6 +1081,9 @@ function updateVlmStateFromSchedule(payload) {
       ts: payload.ts || Date.now(),
       reason: payload.reason || 'vlm_error',
     });
+    const model = algorithmConfig?.vlmModel ?? algorithmConfig?.vlm_model ?? '';
+    const modelInfo = model ? ` [${model}]` : '';
+    addLog('warn', `VLM 检测失败 (${payload.sourceId})${modelInfo}: ${payload.reason || '未知错误'}`);
     applyStateIcons();
     return;
   }
@@ -1285,7 +1173,6 @@ const videoCardHtml = (s) => {
 const mountVideo = (src) => {
   const wrap = document.getElementById(`vw-${src.id}`);
   if (!wrap || wrap.dataset.mounted === '1') return;
-  stopFrontendAnalyzer(src.id);
   wrap.dataset.mounted = '1';
   const video = document.createElement('video');
   video.controls = true;
@@ -1362,7 +1249,7 @@ const mountVideo = (src) => {
     } else if (src.type === 'mp4') {
       video.loop = true;
       video.src = playableVideoUrl(src);
-      startFrontendAnalyzer(src, video);
+      // 本地视频检测由后端 ffmpeg 抽帧完成，前端只负责播放
       requestAutoPlay();
     } else if (src.type === 'webcam') {
       navigator.mediaDevices.getUserMedia({ video: true, audio: false })
@@ -2153,7 +2040,7 @@ const renderAlgorithmSettings = async () => {
   }
 };
 
-const renderVlmTestResult = (result) => {
+const renderVlmTestResult = (result, title = '连接成功，模型可用。') => {
   const el = $('#vlm-test-result');
   if (!el) return;
   const usage = result.usage || {};
@@ -2166,7 +2053,7 @@ const renderVlmTestResult = (result) => {
   const cost = result.cost == null ? null : Number(result.cost || 0);
   el.classList.add('success');
   el.innerHTML = [
-    '<div>连接成功，模型可用。</div>',
+    `<div>${title}</div>`,
     `<div>Tokens：输入 ${promptTokens}，输出 ${completionTokens}，合计 ${totalTokens}</div>`,
     (promptCached || completionCached)
       ? `<div>缓存命中：输入 ${promptCached}，输出 ${completionCached}</div>`
@@ -2176,7 +2063,7 @@ const renderVlmTestResult = (result) => {
       : '<div>费用估算：未启用</div>',
     result.requestUrl ? `<div>请求地址：${escapeHtml(result.requestUrl)}</div>` : '',
     result.requestBody ? `<pre class="inline-pre">${escapeHtml(JSON.stringify(result.requestBody, null, 2))}</pre>` : '',
-    result.reply ? `<pre class="inline-pre">${escapeHtml(result.reply)}</pre>` : '',
+    result.reply ? `<div>模型回复：</div><pre class="inline-pre">${escapeHtml(result.reply)}</pre>` : '',
   ].filter(Boolean).join('');
 };
 
@@ -2450,7 +2337,46 @@ $('#btn-test-vlm')?.addEventListener('click', async () => {
     if (btn) btn.disabled = false;
   }
 });
-$('#algo-source')?.addEventListener('change', renderAlgorithmSettings);
+$('#btn-test-vlm-vision')?.addEventListener('click', async () => {
+  const btn = $('#btn-test-vlm-vision');
+  const el = $('#vlm-test-result');
+  const validationError = validateVlmApiBase($('#algo-vlm-api-base')?.value);
+  if (validationError) {
+    if (el) {
+      el.classList.remove('success');
+      el.innerHTML = `图片识别测试失败：${escapeHtml(validationError)}`;
+    }
+    return;
+  }
+  // 用当前选择的算法源，或第一个启用的源
+  const sourceId = getSelectedAlgorithmSourceId()
+    || sources.filter((s) => s.enabled)[0]?.id;
+  if (!sourceId) {
+    if (el) {
+      el.classList.remove('success');
+      el.innerHTML = '图片识别测试失败：没有可用的视频源';
+    }
+    return;
+  }
+  const sourceName = sources.find((s) => s.id === sourceId)?.name || sourceId;
+  if (el) {
+    el.classList.remove('success');
+    el.innerHTML = `正在对「${escapeHtml(sourceName)}」抽帧并调用模型识别...<br>请求地址：${escapeHtml(vlmChatCompletionsUrl($('#algo-vlm-api-base')?.value))}`;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const payload = { ...algorithmPayloadFromForm(), sourceId };
+    const result = await testVlmVision(payload);
+    renderVlmTestResult(result, `图片识别测试（${escapeHtml(sourceName)}）`);
+  } catch (err) {
+    if (el) {
+      el.classList.remove('success');
+      el.innerHTML = `图片识别测试失败：<pre class="inline-pre">${escapeHtml(err.message || err || '未知错误')}</pre>`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
 $('#btn-add-algorithm-source')?.addEventListener('click', () => {
   populateAlgorithmAddOptions();
   $('#algo-add-row')?.classList.toggle('hidden');

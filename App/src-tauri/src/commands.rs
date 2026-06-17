@@ -876,6 +876,61 @@ pub async fn test_vlm_config(
     }))
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TestVlmVisionPayload {
+    #[serde(flatten)]
+    pub config: AlgorithmConfig,
+    #[serde(alias = "sourceId")]
+    pub source_id: String,
+}
+
+/// 用指定视频源抽一帧，走真实 VLM 图片识别流程，返回模型原始回复和请求体。
+#[tauri::command]
+pub async fn test_vlm_vision(
+    state: State<'_, Arc<AppState>>,
+    payload: TestVlmVisionPayload,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    let sources = state.sources.lock().clone();
+    let source = sources
+        .iter()
+        .find(|s| s.id == payload.source_id)
+        .ok_or_else(|| format!("未找到视频源 {}", payload.source_id))?;
+    let url = source.url.clone();
+    let frame = tokio::task::spawn_blocking(move || {
+        crate::pipeline::decoder::extract_gray_frame_from_url_at(
+            &url,
+            320,
+            240,
+            std::time::Duration::from_secs(5),
+            None,
+        )
+    })
+    .await
+    .map_err(|e| format!("抽帧任务异常: {e}"))?
+    .map_err(|e| format!("抽帧失败: {e}"))?;
+    let result = vlm::test_vision(&payload.config, &frame)
+        .await
+        .map_err(|err| err.to_string())?;
+    let cost = if payload.config.vlm_cost_enabled {
+        result
+            .usage
+            .as_ref()
+            .map(|usage| calculate_vlm_cost(usage, &payload.config))
+    } else {
+        None
+    };
+    Ok(serde_json::json!({
+        "ok": true,
+        "reply": result.reply,
+        "usage": result.usage,
+        "costEnabled": payload.config.vlm_cost_enabled,
+        "cost": cost,
+        "requestUrl": result.request_url,
+        "requestBody": result.request_body,
+    }))
+}
+
 fn calculate_vlm_cost(usage: &vlm::VlmUsage, config: &AlgorithmConfig) -> f32 {
     let normal_input = usage
         .prompt_tokens
