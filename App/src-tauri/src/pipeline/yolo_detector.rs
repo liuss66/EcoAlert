@@ -140,7 +140,7 @@ impl YoloClient {
 
         // 懒建连：第一次调用或上次连接断开了
         let need_reconnect = {
-            let mut guard = self.stream.lock().await;
+               let guard = self.stream.lock().await;
             if guard.is_none() {
                 log::info!("[yolo] 没有现有连接，需要建立新连接");
                 true
@@ -228,7 +228,7 @@ impl YoloClient {
             match ws.next().await {
                 Some(Ok(Message::Text(text))) => {
                     log::debug!("[yolo] 收到文本响应，长度 {} 字节", text.len());
-                    return Ok(text);
+                    return Ok(text.to_string());
                 }
                 Some(Ok(Message::Close(frame))) => {
                     let msg = format!("服务器主动关闭: {:?}", frame);
