@@ -139,120 +139,143 @@ impl YoloClient {
         log::debug!("[yolo] 开始检测帧，目标URL: {}", url);
 
         // 懒建连：第一次调用或上次连接断开了
-        {
+        let need_reconnect = {
             let mut guard = self.stream.lock().await;
-            let need_connect = guard.is_none();
-            if need_connect {
-                log::info!("[yolo] 建立新连接到 {}", url);
-                // 建连加 3s 超时，避免 DNS/网络问题时无限等待
-                let (ws, _resp) = tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    connect_async(&url),
-                )
-                .await
-                .map_err(|_| {
-                    log::error!("[yolo] 连接超时（>3s）");
-                    "连接超时（>3s）".to_string()
-                })?
-                .map_err(|e| {
-                    let msg = format!("连接失败: {e}");
-                    log::error!("[yolo] {}", msg);
-                    msg
-                })?;
-                log::info!("[yolo] 连接成功，保存连接对象");
-                *guard = Some(ws);
-                *self.connected_url.lock().await = Some(url.clone());
+            if guard.is_none() {
+                log::info!("[yolo] 没有现有连接，需要建立新连接");
+                true
             } else {
                 log::debug!("[yolo] 复用现有连接");
+                false
             }
+        };
+
+        if need_reconnect {
+            self.establish_connection(&url).await?;
         }
 
         // 发送二进制帧
-        log::debug!("[yolo] 准备发送 {} 字节的JPEG数据", jpeg_bytes.len());
-        let send_result = {
-            let mut guard = self.stream.lock().await;
-            let ws = guard.as_mut().ok_or_else(|| {
-                let msg = "连接已断开";
-                log::error!("[yolo] {}", msg);
-                msg.to_string()
-            })?;
-            log::debug!("[yolo] 发送二进制消息...");
-            ws.send(Message::Binary(jpeg_bytes.into()))
-                .await
-                .map_err(|e| {
-                    let msg = format!("发送失败: {e}");
-                    log::error!("[yolo] {}", msg);
-                    msg
-                })
-        };
-        if let Err(e) = send_result {
-            log::error!("[yolo] 发送失败，断开连接: {}", e);
-            self.drop_stream().await;
-            return Err(e);
-        }
-        log::debug!("[yolo] 发送成功");
+        self.send_frame(jpeg_bytes).await?;
 
-        // 等待响应：循环跳过 Ping/Pong/Frame 等控制消息，直到拿到 Text/Close 或出错。
-        // tungstenite 0.29 的 Message 多了 Ping/Pong/Frame 变体，需要主动忽略而不是报错。
-        log::debug!("[yolo] 等待服务器响应...");
-        let recv_result = {
-            let mut guard = self.stream.lock().await;
-            let ws = guard.as_mut().ok_or_else(|| {
-                let msg = "连接已断开";
-                log::error!("[yolo] {}", msg);
-                msg.to_string()
-            })?;
-            loop {
-                match ws.next().await {
-                    Some(Ok(Message::Text(text))) => {
-                        log::debug!("[yolo] 收到文本响应，长度 {} 字节", text.len());
-                        break Ok(text)
-                    },
-                    Some(Ok(Message::Close(frame))) => {
-                        let msg = format!("服务器主动关闭: {:?}", frame);
-                        log::error!("[yolo] {}", msg);
-                        break Err(msg);
-                    }
-                    Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {
-                        // 控制帧，自动响应由 tungstenite 完成（已发送 Pong），继续等数据
-                        log::debug!("[yolo] 收到控制帧，继续等待响应");
-                        continue;
-                    }
-                    Some(Ok(other)) => {
-                        let msg = format!("收到非预期消息类型: {other:?}");
-                        log::error!("[yolo] {}", msg);
-                        break Err(msg);
-                    }
-                    Some(Err(e)) => {
-                        let msg = format!("接收失败: {e}");
-                        log::error!("[yolo] {}", msg);
-                        break Err(msg)
-                    },
-                    None => {
-                        let msg = "服务器关闭连接".to_string();
-                        log::error!("[yolo] {}", msg);
-                        break Err(msg)
-                    },
-                }
-            }
-        };
-        let text = match recv_result {
-            Ok(t) => t,
-            Err(e) => {
-                log::error!("[yolo] 接收失败: {}", e);
-                self.drop_stream().await;
-                return Err(e);
-            }
-        };
+        // 等待响应
+        let text = self.receive_response().await?;
 
         // 解析响应
-        log::debug!("[yolo] 解析JSON响应: {}", truncate(&text, 100));
-        let resp: DetectResponse = serde_json::from_str(&text)
+        self.parse_response(&text).await
+    }
+
+    async fn establish_connection(&self, url: &str) -> Result<(), String> {
+        log::info!("[yolo] 建立新连接到 {}", url);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect_async(url),
+        ).await {
+            Ok(Ok((ws, _resp))) => {
+                log::info!("[yolo] WebSocket握手成功");
+                let mut guard = self.stream.lock().await;
+                *guard = Some(ws);
+                *self.connected_url.lock().await = Some(url.to_string());
+                log::info!("[yolo] 连接已保存到状态");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                let msg = format!("连接失败: {e}");
+                log::error!("[yolo] {}", msg);
+                Err(msg)
+            }
+            Err(_) => {
+                let msg = "连接超时（>5s）".to_string();
+                log::error!("[yolo] {}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    async fn send_frame(&self, jpeg_bytes: Vec<u8>) -> Result<(), String> {
+        log::debug!("[yolo] 准备发送 {} 字节的JPEG数据", jpeg_bytes.len());
+        
+        let mut guard = self.stream.lock().await;
+        let ws = guard.as_mut().ok_or_else(|| {
+            let msg = "连接已丢失".to_string();
+            log::error!("[yolo] {}", msg);
+            msg
+        })?;
+
+        log::debug!("[yolo] 发送二进制消息...");
+        if let Err(e) = ws.send(Message::Binary(jpeg_bytes.into())).await {
+            let msg = format!("发送失败: {e}");
+            log::error!("[yolo] {}", msg);
+            drop(guard); // 显式释放锁
+            self.drop_stream().await;
+            return Err(msg);
+        }
+        
+        log::debug!("[yolo] 发送成功");
+        Ok(())
+    }
+
+    async fn receive_response(&self) -> Result<String, String> {
+        log::debug!("[yolo] 等待服务器响应...");
+        
+        let mut guard = self.stream.lock().await;
+        let ws = guard.as_mut().ok_or_else(|| {
+            let msg = "连接已丢失".to_string();
+            log::error!("[yolo] {}", msg);
+            msg
+        })?;
+
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    log::debug!("[yolo] 收到文本响应，长度 {} 字节", text.len());
+                    return Ok(text);
+                }
+                Some(Ok(Message::Close(frame))) => {
+                    let msg = format!("服务器主动关闭: {:?}", frame);
+                    log::error!("[yolo] {}", msg);
+                    drop(guard);
+                    self.drop_stream().await;
+                    return Err(msg);
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {
+                    log::debug!("[yolo] 收到控制帧，继续等待响应");
+                    continue;
+                }
+                Some(Ok(other)) => {
+                    let msg = format!("收到非预期消息类型: {other:?}");
+                    log::error!("[yolo] {}", msg);
+                    drop(guard);
+                    self.drop_stream().await;
+                    return Err(msg);
+                }
+                Some(Err(e)) => {
+                    let msg = format!("接收失败: {e}");
+                    log::error!("[yolo] {}", msg);
+                    drop(guard);
+                    self.drop_stream().await;
+                    return Err(msg);
+                }
+                None => {
+                    let msg = "服务器关闭连接".to_string();
+                    log::error!("[yolo] {}", msg);
+                    drop(guard);
+                    self.drop_stream().await;
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    async fn parse_response(&self, text: &str) -> Result<YoloDetectResult, String> {
+        log::debug!("[yolo] 解析JSON响应: {}", truncate(text, 100));
+        
+        let resp: DetectResponse = serde_json::from_str(text)
             .map_err(|e| {
-                let msg = format!("解析响应失败: {e} (text={})", truncate(&text, 200));
+                let msg = format!("解析响应失败: {e} (text={})", truncate(text, 200));
                 log::error!("[yolo] {}", msg);
                 msg
             })?;
+        
         if let Some(err) = resp.error {
             let msg = format!("服务端错误: {err}");
             log::error!("[yolo] {}", msg);
@@ -267,6 +290,7 @@ impl YoloClient {
                 bbox: d.bbox,
             })
             .collect();
+        
         let person = !detections.is_empty();
         let person_confidence = detections
             .iter()
