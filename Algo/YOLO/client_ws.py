@@ -9,10 +9,27 @@ import websockets
 import time
 import argparse
 import logging
-from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def websocket_url(server_url):
+    """Normalize ws/http host URLs and append /ws before the query string."""
+    value = server_url.strip().rstrip('/')
+    if '://' not in value:
+        value = f'ws://{value}'
+    parts = urlsplit(value)
+    scheme = 'wss' if parts.scheme in ('https', 'wss') else 'ws'
+    path = parts.path if parts.path.endswith('/ws') else f"{parts.path.rstrip('/')}/ws"
+    return urlunsplit((scheme, parts.netloc, path, parts.query, ''))
+
+
+def redacted_url(url):
+    parts = urlsplit(url)
+    query = '<redacted>' if parts.query else ''
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ''))
 
 
 class YOLOWebSocketClient:
@@ -42,9 +59,10 @@ class YOLOWebSocketClient:
 
 async def process_video(args):
     client = YOLOWebSocketClient(args.server)
+    url = websocket_url(args.server)
 
-    logger.info(f"Connecting to {args.server}/ws...")
-    async with websockets.connect(f"{args.server}/ws") as ws:
+    logger.info(f"Connecting to {redacted_url(url)}...")
+    async with websockets.connect(url) as ws:
         logger.info("Connected!")
 
         # Open video
