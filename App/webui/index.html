@@ -439,6 +439,47 @@
               </div>
 
               <div class="form-section">
+                <div class="form-section-title">人员检测</div>
+                <label class="check-row toggle-row">
+                  <span class="toggle-switch">
+                    <input type="checkbox" id="algo-yolo-enabled" />
+                    <span class="toggle-track"></span>
+                  </span>
+                  <span class="check-text">启用 YOLO 目标检测</span>
+                  <span class="check-hint">开启后使用 YOLO 模型检测人员，替代运动检测；前端显示检测框</span>
+                </label>
+                <div id="yolo-config-fields" class="yolo-config-fields">
+                  <div class="field-row">
+                    <label class="field">
+                      <span class="field-label">YOLO 服务器地址</span>
+                      <input type="text" id="algo-yolo-api-base" class="text-input" placeholder="ws://localhost:8090" />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">置信度阈值</span>
+                      <input type="number" id="algo-yolo-confidence" class="text-input" value="0.45" min="0.1" max="0.95" step="0.05" />
+                    </label>
+                  </div>
+                  <div class="btn-row">
+                    <button type="button" class="btn-ghost" id="btn-test-yolo">测试连接</button>
+                  </div>
+                  <div class="form-msg" id="yolo-test-result"></div>
+                  <div class="field-row">
+                    <span class="field-hint">IOU / 推理尺寸等参数请在 YOLO 服务器 config.yaml 中配置</span>
+                  </div>
+                </div>
+                <div class="field-row" id="person-threshold-row">
+                  <label class="field">
+                    <span class="field-label">人员运动面积阈值</span>
+                    <div class="threshold-row">
+                      <input type="range" id="algo-person-threshold" min="0.001" max="0.04" step="0.001" value="0.003" />
+                      <span class="threshold-value" id="algo-person-threshold-val">0.003</span>
+                    </div>
+                    <span class="field-hint">工位场景建议 0.002-0.008；越低越容易捕捉坐姿微动</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="form-section">
                 <div class="form-section-title">推理周期</div>
                 <div class="field-row">
                   <label class="field full">
@@ -454,16 +495,6 @@
 
               <div class="form-section">
                 <div class="form-section-title">阈值与保持</div>
-                <div class="field-row">
-                  <label class="field">
-                    <span class="field-label">人员运动面积阈值</span>
-                    <div class="threshold-row">
-                      <input type="range" id="algo-person-threshold" min="0.001" max="0.04" step="0.001" value="0.003" />
-                      <span class="threshold-value" id="algo-person-threshold-val">0.003</span>
-                    </div>
-                    <span class="field-hint">工位场景建议 0.002-0.008；越低越容易捕捉坐姿微动</span>
-                  </label>
-                </div>
                 <div class="field-row">
                   <label class="field">
                     <span class="field-label">报警保持</span>
@@ -519,26 +550,10 @@
                     <input type="checkbox" id="algo-vlm-enabled" />
                     <span class="toggle-track"></span>
                   </span>
-                  <span class="check-text">启用 VLM 低频补漏</span>
-                  <span class="check-hint">当简单模型置信度低时再调 VLM 复核</span>
-                </label>
-                <label class="check-row toggle-row">
-                  <span class="toggle-switch">
-                    <input type="checkbox" id="algo-vlm-skip-person" checked />
-                    <span class="toggle-track"></span>
-                  </span>
-                  <span class="check-text">简单模型识别到"有人"时跳过 VLM</span>
-                  <span class="check-hint">节省 VLM 配额，常规情况无需复核</span>
+                  <span class="check-text">启用 VLM 报警确认</span>
+                  <span class="check-hint">报警倒计时结束后、发送通知前，调用 VLM 确认是否有人；检测到人员则取消报警重新计时</span>
                 </label>
                 <div class="field-row">
-                  <label class="field">
-                    <span class="field-label">调用周期</span>
-                    <div class="input-with-suffix">
-                      <input type="number" id="algo-vlm-interval" class="text-input" value="300" min="30" max="86400" step="10" />
-                      <span class="suffix">秒/次</span>
-                    </div>
-                    <span class="field-hint">视觉语言模型，用于复杂场景补充</span>
-                  </label>
                   <label class="field">
                     <span class="field-label">每小时上限</span>
                     <div class="input-with-suffix">
@@ -576,12 +591,13 @@
               </div>
               <div class="form-section">
                 <div class="form-section-title">资费统计</div>
-                <label class="check-row">
-                  <input type="checkbox" id="algo-vlm-cost-enabled" />
-                  <span>
-                    <span class="check-text">启用费用估算</span>
-                    <span class="check-hint">仅使用模型返回的 usage 在本地估算，不会额外调用计费接口</span>
+                <label class="check-row toggle-row">
+                  <span class="toggle-switch">
+                    <input type="checkbox" id="algo-vlm-cost-enabled" />
+                    <span class="toggle-track"></span>
                   </span>
+                  <span class="check-text">启用费用估算</span>
+                  <span class="check-hint">仅使用模型返回的 usage 在本地估算，不会额外调用计费接口</span>
                 </label>
                 <div class="field-row">
                   <label class="field">

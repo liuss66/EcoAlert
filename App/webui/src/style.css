@@ -1668,6 +1668,18 @@ body.developer-mode .developer-only.hidden { display: flex !important; }
   outline-offset: 2px;
 }
 
+/* YOLO 配置块：依赖于 YOLO 开关的缩进样式 */
+.yolo-config-fields {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--primary);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* 调试面板使用说明 */
 .debug-guide {
   margin-top: 12px;

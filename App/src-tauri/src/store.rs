@@ -141,6 +141,8 @@ pub struct ChannelRuntimeStatus {
     pub alarm_status: String,
     #[serde(default)]
     pub vlm_enabled: bool,
+    #[serde(default)]
+    pub yolo_enabled: bool,
     pub last_frame_at: Option<i64>,
     pub last_algorithm_at: Option<i64>,
     pub last_error: Option<String>,
@@ -205,6 +207,7 @@ impl ChannelRuntimeStatus {
             algorithm_status: if enabled { "idle" } else { "disabled" }.into(),
             alarm_status: "normal".into(),
             vlm_enabled: false,
+            yolo_enabled: false,
             last_frame_at: enabled.then_some(ts),
             last_algorithm_at: None,
             last_error: None,
@@ -405,6 +408,13 @@ pub struct AlgorithmConfig {
     pub vlm_hourly_limit: u32,
     #[serde(default)]
     pub roi_version: Option<String>,
+    // ── YOLO 目标检测 ─────────────────────────────────────────────────────
+    #[serde(default)]
+    pub yolo_enabled: bool,
+    #[serde(default = "default_yolo_api_base")]
+    pub yolo_api_base: String,
+    #[serde(default = "default_yolo_confidence")]
+    pub yolo_confidence: f32,
 }
 
 impl Default for AlgorithmConfig {
@@ -439,8 +449,19 @@ impl Default for AlgorithmConfig {
             recover_policy: "either".into(),
             vlm_hourly_limit: 12,
             roi_version: None,
+            yolo_enabled: false,
+            yolo_api_base: default_yolo_api_base(),
+            yolo_confidence: default_yolo_confidence(),
         }
     }
+}
+
+fn default_yolo_api_base() -> String {
+    "ws://localhost:8090".into()
+}
+
+fn default_yolo_confidence() -> f32 {
+    0.45
 }
 
 fn default_vlm_temperature() -> f32 {

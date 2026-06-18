@@ -734,6 +734,16 @@ export async function testVlmVision(payload) {
   };
 }
 
+export async function testYoloConnection(apiBase) {
+  if (isTauri) return invoke('test_yolo_connection', { apiBase });
+  return {
+    ok: true,
+    count: 0,
+    processMs: 12.3,
+    url: `${(apiBase || 'ws://localhost:8090').replace(/^http/, 'ws')}/ws`,
+  };
+}
+
 export async function getRoiConfig(sourceId) {
   if (isTauri) return invoke('get_roi_config', { sourceId });
   try {

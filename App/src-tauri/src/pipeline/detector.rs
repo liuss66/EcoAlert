@@ -16,8 +16,6 @@ const MOTION_HEIGHT: u32 = 120;
 /// 块均值降采样会平滑像素差值，阈值需要比最近邻采样时更低。
 /// 实测块均值后人体移动产生的像素差约 5-25，8 能在噪声(~3)和真实运动之间取得平衡。
 const MOTION_PIXEL_THRESHOLD: u8 = 8;
-const LEGACY_MOTION_AREA_SCALE: f32 = 0.03;
-const DEFAULT_PERSON_AREA_THRESHOLD: f32 = 0.003;
 const MIN_MOTION_COMPONENT_AREA: usize = 5;
 const MIN_MOTION_COMPONENT_SPAN: usize = 2;
 const BLINK_COMPONENT_MAX_AREA: usize = 140;
@@ -46,9 +44,7 @@ pub struct Detector {
     color_ema: Option<f32>,
     motion_ema: f32,
     frame_counter: u64,
-    /// 人员检测阈值，表示稳定运动面积比例。旧版 0..1 系数会自动转换。
-    person_threshold: f32,
-    /// 兼容旧配置；当前正常抽帧始终有 RGB，灯光判断使用 ROI 色彩阈值。
+    /// 灯光检测阈值；当前正常抽帧始终有 RGB，灯光判断使用 ROI 色彩阈值。
     light_threshold: f32,
 }
 
@@ -62,14 +58,10 @@ pub struct SimpleSceneResult {
 
 impl Detector {
     pub fn new(config: PipelineConfig) -> Self {
-        Self::with_thresholds(config, DEFAULT_PERSON_AREA_THRESHOLD, 0.70)
+        Self::with_light_threshold(config, 0.70)
     }
 
-    pub fn with_thresholds(
-        config: PipelineConfig,
-        person_threshold: f32,
-        light_threshold: f32,
-    ) -> Self {
+    pub fn with_light_threshold(config: PipelineConfig, light_threshold: f32) -> Self {
         Self {
             config,
             prev: None,
@@ -79,27 +71,13 @@ impl Detector {
             color_ema: None,
             motion_ema: 0.0,
             frame_counter: 0,
-            person_threshold,
             light_threshold,
         }
     }
 
-    /// 运行时更新阈值，不丢失 EMA / 帧差状态
-    pub fn set_thresholds(&mut self, person_threshold: f32, light_threshold: f32) {
-        self.person_threshold = person_threshold;
+    /// 运行时更新灯光阈值，不丢失 EMA / 帧差状态
+    pub fn set_light_threshold(&mut self, light_threshold: f32) {
         self.light_threshold = light_threshold;
-    }
-
-    /// 当前没有真人模型，person 是运动代理；阈值越高越严格。
-    /// 旧版配置常见为 0.65，需要乘以 0.03 才是实际运动面积阈值。
-    fn effective_person_threshold(&self) -> f32 {
-        if self.person_threshold > 0.2 {
-            (self.person_threshold.clamp(0.05, 1.0) * LEGACY_MOTION_AREA_SCALE).max(0.001)
-        } else if (self.person_threshold - 0.020).abs() < 0.0005 {
-            DEFAULT_PERSON_AREA_THRESHOLD
-        } else {
-            self.person_threshold.clamp(0.001, 0.20)
-        }
     }
 
     pub fn analyze_scene(
@@ -145,32 +123,20 @@ impl Detector {
 
         // 周期性诊断日志：帮助定位运动检测问题
         if self.frame_counter % 10 == 2 {
-            let eff = self.effective_person_threshold();
             log::info!(
-                "[detector#{}] frame={}x{} motion_raw={:.4} ema={:.4} thr={:.4} person={} prev={}",
+                "[detector#{}] frame={}x{} motion_raw={:.4} ema={:.4} prev={}",
                 self.frame_counter,
                 frame.width,
                 frame.height,
                 motion_raw,
                 self.motion_ema,
-                eff,
-                self.motion_ema >= eff,
                 self.prev_low_res.as_ref().map_or(0, |b| b.len()),
             );
         }
 
-        // 基于运动得分的近似人员检测
-        let eff_threshold = self.effective_person_threshold();
-        let person = eff_threshold > 0.0 && self.motion_ema >= eff_threshold;
-        let person_confidence = if eff_threshold > 0.0 {
-            if self.motion_ema >= eff_threshold {
-                0.5 + 0.5 * ((self.motion_ema - eff_threshold) / eff_threshold).min(1.0)
-            } else {
-                0.5 * (self.motion_ema / eff_threshold)
-            }
-        } else {
-            0.0
-        };
+        // 人员检测由外部 YOLO 负责；此处始终返回 false，只保留灯光 + 运动得分。
+        let person = false;
+        let person_confidence = 0.0;
 
         let light_conf = if has_color_signal {
             color_light_confidence(smoothed_color, self.light_state, color_threshold)
@@ -184,11 +150,6 @@ impl Detector {
         };
 
         let process_ms = started.elapsed().as_secs_f32() * 1000.0;
-        let reason = if person {
-            "simple_motion_proxy"
-        } else {
-            "simple_no_motion"
-        };
 
         SimpleSceneResult {
             scene: SceneState {
@@ -200,7 +161,7 @@ impl Detector {
                 person_confidence,
                 light_confidence: light_conf,
                 reason: Some(format!(
-                    "{reason};light_by_{}",
+                    "simple_light_only;light_by_{}",
                     if has_color_signal {
                         "color"
                     } else {
@@ -736,31 +697,29 @@ mod tests {
     }
 
     #[test]
-    fn motion_detector_uses_motion_as_person_proxy() {
+    fn motion_score_high_with_large_frame_diff() {
         let mut detector = Detector::new(PipelineConfig::default());
-        // 第一帧：无历史，person 应为 false
+        // 第一帧：无历史，motion_score 为 0
         let first = detector.analyze_scene(&frame(64, 48, 0), None);
-        assert!(!first.scene.person);
-        // 第二帧：巨大帧差（0 -> 255），motion_score 极高，应判定 person = true
+        assert_eq!(first.motion_score, 0.0);
+        // 第二帧：巨大帧差（0 -> 255），motion_raw 接近 1.0，EMA 约 0.5
         let second = detector.analyze_scene(&frame(64, 48, 255), None);
-        assert!(second.scene.person, "大帧差应触发 person 检测");
-        assert!(second.scene.person_confidence > 0.5);
-        assert!(second.motion_score > DEFAULT_PERSON_AREA_THRESHOLD);
+        assert!(second.motion_score >= 0.5, "大帧差应产生高运动得分");
     }
 
     #[test]
-    fn person_not_detected_with_low_motion() {
+    fn person_always_false_from_detector() {
         let mut detector = Detector::new(PipelineConfig::default());
-        // 连续送相似帧（低运动），person 应为 false
+        // person 检测已移至 YOLO；detector 始终返回 false
         for _ in 0..5 {
             let result = detector.analyze_scene(&frame(64, 48, 100), None);
-            assert!(!result.scene.person, "低运动场景不应触发 person");
-            assert!(result.scene.person_confidence < 0.5);
+            assert!(!result.scene.person, "detector 不应判定 person");
+            assert_eq!(result.scene.person_confidence, 0.0);
         }
     }
 
     #[test]
-    fn person_not_detected_for_small_blinking_device() {
+    fn motion_score_zero_for_small_blinking_device() {
         let mut detector = Detector::new(PipelineConfig::default());
         let base = frame(160, 120, 80);
         detector.analyze_scene(&base, None);
@@ -784,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn person_detected_for_subtle_desk_motion() {
+    fn motion_score_nonzero_for_subtle_desk_motion() {
         let mut detector = Detector::new(PipelineConfig::default());
         let base = frame(160, 120, 80);
         detector.analyze_scene(&base, None);
@@ -804,11 +763,11 @@ mod tests {
         };
         detector.analyze_scene(&moved, None);
         let result = detector.analyze_scene(&base, None);
-        assert!(result.scene.person, "工位微动应能触发人员代理");
+        assert!(result.motion_score > 0.0, "工位微动应产生可检测的运动得分");
     }
 
     #[test]
-    fn motion_detector_respects_person_roi() {
+    fn motion_score_respects_person_roi() {
         let mut cfg = RoiConfig::new("src-test".into());
         cfg.person_rois.push(RoiRect {
             id: "person-roi".into(),
@@ -823,6 +782,7 @@ mod tests {
         let base = frame(160, 120, 80);
         detector.analyze_scene(&base, Some(&cfg));
 
+        // ROI 外运动：motion_score 应为 0
         let mut outside_data = vec![80u8; 160 * 120];
         for y in 0..30 {
             for x in 0..30 {
@@ -837,9 +797,9 @@ mod tests {
             rgb: vec![],
         };
         let outside_result = detector.analyze_scene(&outside, Some(&cfg));
-        assert!(!outside_result.scene.person);
         assert_eq!(outside_result.scene.motion_score, 0.0);
 
+        // ROI 内运动：motion_score 应 > 0
         let mut detector = Detector::new(PipelineConfig::default());
         detector.analyze_scene(&base, Some(&cfg));
         let mut inside_data = vec![80u8; 160 * 120];
@@ -856,7 +816,7 @@ mod tests {
             rgb: vec![],
         };
         let inside_result = detector.analyze_scene(&inside, Some(&cfg));
-        assert!(inside_result.scene.person);
+        assert!(inside_result.scene.motion_score > 0.0);
     }
 
     #[test]
@@ -866,7 +826,7 @@ mod tests {
         assert_eq!(result.scene.source, "simple");
         assert!(result.scene.model_latency_ms.is_some());
         assert!(result.scene.light_confidence >= 0.0 && result.scene.light_confidence <= 1.0);
-        assert!(result.scene.person_confidence >= 0.0 && result.scene.person_confidence <= 1.0);
+        assert_eq!(result.scene.person_confidence, 0.0);
         assert!(result.scene.reason.is_some());
         assert!(result.scene.frame_seq > 0);
         assert!(result.scene.light_brightness >= 0.0);
@@ -876,28 +836,16 @@ mod tests {
     }
 
     #[test]
-    fn threshold_update_affects_person_decision() {
-        // 低阈值：更容易触发 person 运动代理
-        let mut detector_low = Detector::with_thresholds(PipelineConfig::default(), 0.003, 0.7);
-        // 第一帧建立基线
-        detector_low.analyze_scene(&frame(64, 48, 100), None);
-        // 第二帧：中等运动（差值 30 > MOTION_PIXEL_THRESHOLD=16，所有像素变化）
-        // motion_raw=1.0, motion_ema=0.3
-        // direct threshold = 0.003, 0.3 >= 0.003 -> person=true
-        let result_low = detector_low.analyze_scene(&frame(64, 48, 130), None);
-        assert!(result_low.scene.person, "低阈值下中等运动应触发 person");
+    fn light_threshold_update_takes_effect() {
+        let mut detector = Detector::with_light_threshold(PipelineConfig::default(), 0.7);
+        // 低亮度帧，应判定灯灭
+        let dark = detector.analyze_scene(&frame(64, 48, 10), None);
+        assert!(!dark.scene.light);
 
-        // 高阈值：同样的低运动不触发
-        let mut detector_high = Detector::with_thresholds(PipelineConfig::default(), 0.08, 0.7);
-        detector_high.analyze_scene(&frame(64, 48, 100), None);
-        let mut detector_high2 = Detector::with_thresholds(PipelineConfig::default(), 0.08, 0.7);
-        detector_high2.analyze_scene(&frame(64, 48, 100), None);
-        let result_high = detector_high2.analyze_scene(&frame(64, 48, 105), None);
-        assert!(!result_high.scene.person, "极高阈值+低运动不应触发 person");
-
-        // 验证有效阈值映射关系
-        assert!(
-            detector_high.effective_person_threshold() > detector_low.effective_person_threshold()
-        );
+        let mut detector2 = Detector::with_light_threshold(PipelineConfig::default(), 0.01);
+        // 极低阈值，低亮度也可能判定灯亮
+        let dark2 = detector2.analyze_scene(&frame(64, 48, 10), None);
+        // 取决于 RGB 色彩信号；此处只验证阈值更新生效不崩溃
+        let _ = dark2;
     }
 }

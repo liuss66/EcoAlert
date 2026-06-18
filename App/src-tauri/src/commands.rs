@@ -931,6 +931,101 @@ pub async fn test_vlm_vision(
     }))
 }
 
+/// 测试 YOLO WebSocket 服务器连通性（连接 /ws 发一帧最小占位图）
+#[tauri::command]
+pub async fn test_yolo_connection(
+    state: State<'_, Arc<AppState>>,
+    api_base: String,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+
+    let trimmed = api_base.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("请填写 YOLO 服务器地址".into());
+    }
+    let normalized = if let Some(rest) = trimmed.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
+        trimmed.to_string()
+    } else {
+        format!("ws://{trimmed}")
+    };
+    let base = normalized.trim_end_matches('/').trim_end_matches("/ws");
+    let url = format!("{base}/ws");
+
+    let connect = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .map_err(|_| "连接超时（>3s）".to_string())?
+    .map_err(|e| format!("连接失败: {e}"))?;
+    let (mut ws, _resp) = connect;
+
+    // 发一张 8x8 黑色 JPEG（最小有效帧），等响应
+    let frame = crate::pipeline::decoder::DecodedFrame {
+        width: 8,
+        height: 8,
+        pts_ms: chrono::Utc::now().timestamp_millis(),
+        data: vec![0u8; 64],
+        rgb: vec![0u8; 64 * 3],
+    };
+    let jpeg_bytes = crate::pipeline::yolo_detector::encode_frame_as_jpeg(&frame)
+        .map_err(|e| format!("测试帧编码失败: {e}"))?;
+    ws.send(tokio_tungstenite::tungstenite::Message::Binary(jpeg_bytes.into()))
+        .await
+        .map_err(|e| format!("发送测试帧失败: {e}"))?;
+
+    // 循环接收，跳过 Ping/Pong/Frame 等控制帧（tungstenite 0.29 暴露了这些变体）
+    let text = loop {
+        let recv = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .map_err(|_| "等待响应超时（>5s）".to_string())?;
+        let msg = match recv {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => return Err(format!("接收失败: {e}")),
+            None => return Err("服务器关闭连接".into()),
+        };
+        match msg {
+            tokio_tungstenite::tungstenite::Message::Text(t) => break t,
+            tokio_tungstenite::tungstenite::Message::Close(_) => {
+                return Err("服务器主动关闭".into());
+            }
+            tokio_tungstenite::tungstenite::Message::Ping(_)
+            | tokio_tungstenite::tungstenite::Message::Pong(_)
+            | tokio_tungstenite::tungstenite::Message::Frame(_) => continue,
+            other => return Err(format!("收到非预期消息类型: {other:?}")),
+        }
+    };
+
+    // 关连接
+    let _ = ws
+        .send(tokio_tungstenite::tungstenite::Message::Close(None))
+        .await;
+    let body: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("解析响应失败: {e} (text={})", &text[..text.len().min(200)]))?;
+    if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
+        return Err(format!("服务端返回错误: {err}"));
+    }
+    let count = body
+        .get("count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_default();
+    let process_ms = body
+        .get("process_ms")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_default();
+    Ok(serde_json::json!({
+        "ok": true,
+        "url": url,
+        "count": count,
+        "processMs": process_ms,
+        "raw": body,
+    }))
+}
+
 fn calculate_vlm_cost(usage: &vlm::VlmUsage, config: &AlgorithmConfig) -> f32 {
     let normal_input = usage
         .prompt_tokens
@@ -1431,6 +1526,7 @@ pub fn check_ffmpeg_status() -> Result<serde_json::Value, String> {
 
 use crate::pipeline::channel_auth;
 use crate::pipeline::oauth_server::{self, OAuthSession};
+use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 

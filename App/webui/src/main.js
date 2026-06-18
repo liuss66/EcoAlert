@@ -16,6 +16,7 @@ import {
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
   testVlmConfig, testVlmVision,
+  testYoloConnection,
   getRoiConfig, listRoiConfigSources, updateRoiConfig, deleteRoiConfig, testRoiConfig,
   listNotificationTargets, createNotificationTarget, updateNotificationTarget, deleteNotificationTarget,
   listNotificationHistory, testNotificationTarget, resendNotification,
@@ -1061,12 +1062,60 @@ function updateLiveState(payload) {
     colorScore: payload.colorScore ?? null,
     motionScore: payload.motionScore ?? null,
     processMs: payload.processMs ?? null,
+    yoloDetections: payload.yolo_detections ?? payload.yoloDetections ?? [],
   };
   sceneStates.set(payload.sourceId, next);
   const vlmState = vlmStateFromScene(next);
   if (vlmState) vlmStates.set(payload.sourceId, vlmState);
   applyStateIcons();
   updateAlarmBanner();
+  renderDetectionBoxes(payload.sourceId, next.yoloDetections);
+}
+
+function renderDetectionBoxes(sourceId, detections) {
+  const wrap = document.getElementById(`vw-${sourceId}`);
+  if (!wrap) return;
+  // 移除旧 overlay
+  wrap.querySelectorAll('.yolo-overlay').forEach((el) => el.remove());
+  if (!detections?.length) return;
+  // YOLO 检测使用 1280x720 (16:9)，SVG viewBox 用同样比例
+  // preserveAspectRatio='xMidYMid meet' 与 video 的 object-fit: contain 行为一致
+  // 这样无论容器怎么缩放，检测框都能和视频实际显示区域对齐
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('yolo-overlay');
+  svg.setAttribute('viewBox', '0 0 1280 720');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
+  for (const det of detections) {
+    const [cx, cy, w, h] = det.bbox;
+    const x = (cx - w / 2) * 1280;
+    const y = (cy - h / 2) * 720;
+    const bw = w * 1280;
+    const bh = h * 720;
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    r.setAttribute('x', x);
+    r.setAttribute('y', y);
+    r.setAttribute('width', Math.max(bw, 2));
+    r.setAttribute('height', Math.max(bh, 2));
+    r.setAttribute('fill', 'none');
+    const hue = Math.round(det.confidence * 120); // 0=红, 120=绿
+    r.setAttribute('stroke', `hsl(${hue}, 90%, 55%)`);
+    r.setAttribute('vector-effect', 'non-scaling-stroke');
+    r.setAttribute('stroke-width', '2');
+    r.setAttribute('rx', '3');
+    svg.appendChild(r);
+    // 置信度标签
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', x);
+    text.setAttribute('y', Math.max(y - 6, 16));
+    text.setAttribute('fill', `hsl(${hue}, 90%, 55%)`);
+    text.setAttribute('font-size', '14');
+    text.setAttribute('font-family', 'system-ui, sans-serif');
+    text.setAttribute('vector-effect', 'non-scaling-stroke');
+    text.textContent = `${(det.confidence * 100).toFixed(0)}%`;
+    svg.appendChild(text);
+  }
+  wrap.appendChild(svg);
 }
 
 
@@ -1917,6 +1966,14 @@ const updateVlmCostControls = () => {
   });
 };
 
+const updateYoloVisibility = () => {
+  const yoloEnabled = !!$('#algo-yolo-enabled')?.checked;
+  const yoloFields = $('#yolo-config-fields');
+  const thresholdRow = $('#person-threshold-row');
+  if (yoloFields) yoloFields.style.display = yoloEnabled ? '' : 'none';
+  if (thresholdRow) thresholdRow.style.display = yoloEnabled ? 'none' : '';
+};
+
 const fillAlgorithmForm = (cfg) => {
   const win = (cfg.activeWindows || [])[0] || { weekdays: [1, 2, 3, 4, 5], start: '18:30', end: '08:30', timezone: 'Local' };
   $('#algo-enabled').checked = !!cfg.enabled;
@@ -1924,14 +1981,12 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-start').value = win.start || '18:30';
   $('#algo-end').value = win.end || '08:30';
   $('#algo-simple-interval').value = cfg.simpleIntervalSec ?? 1;
-  $('#algo-vlm-interval').value = cfg.vlmIntervalSec ?? 300;
   $('#algo-person-threshold').value = normalizePersonMotionThreshold(cfg.personThreshold ?? 0.003).toFixed(3);
   $('#algo-hold-sec').value = cfg.alarmHoldSec ?? 300;
   $('#algo-recover-sec').value = cfg.alarmRecoverSec ?? 60;
   $('#algo-recover-policy').value = cfg.recoverPolicy || 'either';
   $('#algo-vlm-limit').value = cfg.vlmHourlyLimit ?? 12;
   $('#algo-vlm-enabled').checked = !!cfg.vlmEnabled;
-  $('#algo-vlm-skip-person').checked = cfg.vlmSkipWhenPerson !== false;
   $('#algo-vlm-api-base').value = cfg.vlmApiBase ?? cfg.vlm_api_base ?? '';
   $('#algo-vlm-api-key').value = cfg.vlmApiKey ?? cfg.vlm_api_key ?? '';
   $('#algo-vlm-model').value = cfg.vlmModel ?? cfg.vlm_model ?? '';
@@ -1943,6 +1998,11 @@ const fillAlgorithmForm = (cfg) => {
   $('#algo-vlm-price-input-cache').value = cfg.vlmPriceInputCache ?? cfg.vlm_price_input_cache ?? 0;
   $('#algo-vlm-price-output').value = cfg.vlmPriceOutput ?? cfg.vlm_price_output ?? 0;
   $('#algo-vlm-price-output-cache').value = cfg.vlmPriceOutputCache ?? cfg.vlm_price_output_cache ?? 0;
+  // YOLO 配置
+  $('#algo-yolo-enabled').checked = !!(cfg.yoloEnabled ?? cfg.yolo_enabled);
+  $('#algo-yolo-api-base').value = cfg.yoloApiBase ?? cfg.yolo_api_base ?? 'ws://localhost:8090';
+  $('#algo-yolo-confidence').value = cfg.yoloConfidence ?? cfg.yolo_confidence ?? 0.45;
+  updateYoloVisibility();
   const selectedSourceId = getSelectedAlgorithmSourceId();
   const selectedSource = selectedSourceId ? sources.find((s) => s.id === selectedSourceId) : null;
   $('#algo-scope').textContent = selectedSource
@@ -2004,9 +2064,7 @@ const algorithmPayloadFromForm = () => {
     }],
     exceptionWindows: algorithmConfig?.exceptionWindows || [],
     simpleIntervalSec: toInt($('#algo-simple-interval').value, 1, 1),
-    vlmIntervalSec: toInt($('#algo-vlm-interval').value, 300, 30),
     vlmEnabled: $('#algo-vlm-enabled').checked,
-    vlmSkipWhenPerson: $('#algo-vlm-skip-person').checked,
     vlmApiBase: $('#algo-vlm-api-base').value.trim(),
     vlmApiKey: $('#algo-vlm-api-key').value.trim(),
     vlmModel: $('#algo-vlm-model').value.trim(),
@@ -2024,6 +2082,9 @@ const algorithmPayloadFromForm = () => {
     recoverPolicy: $('#algo-recover-policy').value,
     vlmHourlyLimit: toInt($('#algo-vlm-limit').value, 12, 0),
     roiVersion: algorithmConfig?.roiVersion ?? null,
+    yoloEnabled: $('#algo-yolo-enabled').checked,
+    yoloApiBase: ($('#algo-yolo-api-base')?.value || 'ws://localhost:8090').trim(),
+    yoloConfidence: toFloat($('#algo-yolo-confidence')?.value, 0.45, 0.1, 0.95),
   };
 };
 
@@ -2309,6 +2370,40 @@ $('#btn-reload-algorithm').addEventListener('click', renderAlgorithmSettings);
 $('#btn-reload-vlm')?.addEventListener('click', renderAlgorithmSettings);
 $('#algo-vlm-api-base')?.addEventListener('input', updateVlmRequestUrlPreview);
 $('#algo-vlm-cost-enabled')?.addEventListener('change', updateVlmCostControls);
+$('#algo-yolo-enabled')?.addEventListener('change', updateYoloVisibility);
+$('#btn-test-yolo')?.addEventListener('click', async () => {
+  const btn = $('#btn-test-yolo');
+  const el = $('#yolo-test-result');
+  const apiBase = ($('#algo-yolo-api-base')?.value || 'ws://localhost:8090').trim();
+  if (!apiBase) {
+    if (el) {
+      el.classList.remove('success');
+      el.textContent = '请填写 YOLO 服务器地址';
+    }
+    return;
+  }
+  if (el) {
+    el.classList.remove('success');
+    el.textContent = `正在测试连接 ${apiBase} ...`;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const result = await testYoloConnection(apiBase);
+    if (el) {
+      el.classList.add('success');
+      const count = result.count ?? 0;
+      const processMs = result.processMs != null ? Number(result.processMs).toFixed(1) : '-';
+      el.innerHTML = `连接成功：识别到 ${count} 个目标，服务器处理耗时 ${processMs}ms<br><span class="field-hint">${escapeHtml(result.url || apiBase)}</span>`;
+    }
+  } catch (err) {
+    if (el) {
+      el.classList.remove('success');
+      el.textContent = `连接失败：${err.message || err || '未知错误'}`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
 $('#btn-test-vlm')?.addEventListener('click', async () => {
   const btn = $('#btn-test-vlm');
   const el = $('#vlm-test-result');

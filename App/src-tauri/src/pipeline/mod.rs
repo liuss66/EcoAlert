@@ -24,6 +24,7 @@ pub mod notifier;
 pub mod oauth_server;
 pub mod scheduler;
 pub mod vlm;
+pub mod yolo_detector;
 
 use crate::stream::FramePacket;
 
