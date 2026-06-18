@@ -2,7 +2,10 @@
 use crate::auth::AuthConfig;
 use crate::pipeline::vlm;
 use crate::pipeline::{
-    decoder::{extract_gray_frame_from_url_at, probe_media_duration_secs},
+    decoder::{
+        extract_gray_frame_from_url_at, extract_original_frame_from_url_at,
+        probe_media_duration_secs,
+    },
     detector::Detector,
     notifier, scheduler, yolo_detector, PipelineConfig,
 };
@@ -581,6 +584,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 };
                 // YOLO 模式直接抽高分辨率帧，避免 Phase 3 二次抽帧
                 let yolo_enabled = decision.effective_config.yolo_enabled;
+                let vlm_enabled = decision.effective_config.vlm_enabled;
                 let (frame_width, frame_height) = if yolo_enabled {
                     (1280, 720)
                 } else {
@@ -588,13 +592,17 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 };
                 let join_handle = tokio::task::spawn_blocking(move || {
                     let t0 = std::time::Instant::now();
-                    let result = extract_gray_frame_from_url_at(
-                        &url,
-                        frame_width,
-                        frame_height,
-                        Duration::from_secs(5),
-                        seek_secs,
-                    );
+                    let result = if vlm_enabled {
+                        extract_original_frame_from_url_at(&url, Duration::from_secs(5), seek_secs)
+                    } else {
+                        extract_gray_frame_from_url_at(
+                            &url,
+                            frame_width,
+                            frame_height,
+                            Duration::from_secs(5),
+                            seek_secs,
+                        )
+                    };
                     let ms = t0.elapsed().as_millis();
                     if ms > 1500 {
                         log::warn!(

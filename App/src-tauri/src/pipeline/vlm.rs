@@ -1,8 +1,7 @@
 use crate::pipeline::decoder::DecodedFrame;
 use crate::store::AlgorithmConfig;
 use anyhow::{anyhow, Context};
-use image::codecs::jpeg::JpegEncoder;
-use image::{imageops::FilterType, DynamicImage, ImageBuffer, Rgb};
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -125,7 +124,7 @@ pub async fn analyze_person(
         anyhow::bail!("VLM API 地址、API Key、模型名称不能为空");
     }
 
-    let image_url = frame_to_jpeg_data_url(frame)?;
+    let image_url = frame_to_lossless_png_data_url(frame)?;
     let body = build_vision_request_body(config, model, image_url);
 
     let client = reqwest::Client::builder()
@@ -136,7 +135,7 @@ pub async fn analyze_person(
     let response = client
         .post(&url)
         .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "*/*")
+        .header(ACCEPT, "application/json")
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&body)
         .send()
@@ -151,7 +150,10 @@ pub async fn analyze_person(
         .to_string();
     // 用 bytes() 而不是 text()：部分 API 在 chunked transfer / event-stream 下
     // text() 可能返回空串，bytes() 更可靠。
-    let raw_bytes = response.bytes().await.unwrap_or_default();
+    let raw_bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("读取 VLM 响应体失败 (model={model}, url={url})"))?;
     let text = String::from_utf8_lossy(&raw_bytes).into_owned();
     let is_stream_response = content_type.contains("event-stream")
         || content_type.contains("text/event-stream")
@@ -172,7 +174,10 @@ pub async fn analyze_person(
                 .await
                 .with_context(|| format!("VLM 流式重试发送失败 (model={model}, api={api_base})"))?;
             let status = response.status();
-            let stream_bytes = response.bytes().await.unwrap_or_default();
+            let stream_bytes = response
+                .bytes()
+                .await
+                .with_context(|| format!("读取 VLM 流式响应体失败 (model={model}, url={url})"))?;
             let stream_text = String::from_utf8_lossy(&stream_bytes).into_owned();
             if !status.is_success() {
                 anyhow::bail!(
@@ -181,9 +186,7 @@ pub async fn analyze_person(
                 );
             }
             if stream_text.is_empty() {
-                anyhow::bail!(
-                    "VLM 流式响应体为空 (model={model}, status={status}, url={url})"
-                );
+                anyhow::bail!("VLM 流式响应体为空 (model={model}, status={status}, url={url})");
             }
             stream_text
         };
@@ -193,7 +196,7 @@ pub async fn analyze_person(
                 log::debug!(
                     "VLM streaming parse failed for model={model} api={api_base}, raw response ({} bytes): {}",
                     stream_text.len(),
-                    if stream_text.len() > 500 { format!("{}...", &stream_text[..500]) } else { stream_text.clone() }
+                    text_snippet(&stream_text, 500)
                 );
                 anyhow::bail!("VLM 流式响应解析失败 (model={model}): {e}");
             }
@@ -204,11 +207,10 @@ pub async fn analyze_person(
         anyhow::bail!("{}", format_vlm_http_error(status, &text, &url, &body));
     }
 
-    let parsed: ChatCompletionResponse =
-        serde_json::from_str(&text).with_context(|| {
-            let snippet = if text.len() > 200 { format!("{}...", &text[..200]) } else { text.clone() };
-            format!("VLM 响应不是 OpenAI-compatible JSON (model={model}), 原始响应: {snippet}")
-        })?;
+    let parsed: ChatCompletionResponse = serde_json::from_str(&text).with_context(|| {
+        let snippet = text_snippet(&text, 200);
+        format!("VLM 响应不是 OpenAI-compatible JSON (model={model}), 原始响应: {snippet}")
+    })?;
     let content = parsed
         .choices
         .first()
@@ -243,7 +245,7 @@ pub async fn test_vision(
     frame: &DecodedFrame,
 ) -> anyhow::Result<VlmTestResult> {
     let model = config.vlm_model.trim();
-    let image_url = frame_to_jpeg_data_url(frame)?;
+    let image_url = frame_to_lossless_png_data_url(frame)?;
     let body = build_vision_request_body(config, model, image_url);
     let (parsed, request_url, request_body) = call_chat_completion(config, body).await?;
     let content = parsed
@@ -274,13 +276,15 @@ async fn call_chat_completion(
         .timeout(Duration::from_secs(30))
         .user_agent("node")
         .build()?;
+    // 明确声明非流式，避免部分兼容网关在省略 stream 时默认返回空 SSE。
+    let body = with_stream_disabled(&body);
     let url = chat_completions_url(api_base);
     let request_url = url.clone();
     let request_body = body.clone();
     let response = client
         .post(url)
         .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "*/*")
+        .header(ACCEPT, "application/json")
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&body)
         .send()
@@ -293,7 +297,10 @@ async fn call_chat_completion(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let raw_bytes = response.bytes().await.unwrap_or_default();
+    let raw_bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("读取 VLM 响应体失败 (model={model}, url={request_url})"))?;
     let text = String::from_utf8_lossy(&raw_bytes).into_owned();
     let is_stream_response = content_type.contains("event-stream")
         || content_type.contains("text/event-stream")
@@ -313,7 +320,9 @@ async fn call_chat_completion(
                 .await
                 .with_context(|| format!("VLM 流式重试发送失败 (model={model}, api={api_base})"))?;
             let status = response.status();
-            let stream_bytes = response.bytes().await.unwrap_or_default();
+            let stream_bytes = response.bytes().await.with_context(|| {
+                format!("读取 VLM 流式响应体失败 (model={model}, url={request_url})")
+            })?;
             let stream_text = String::from_utf8_lossy(&stream_bytes).into_owned();
             if !status.is_success() {
                 anyhow::bail!(
@@ -334,7 +343,7 @@ async fn call_chat_completion(
                 log::debug!(
                     "VLM streaming parse failed for model={model} api={api_base}, raw response ({} bytes): {}",
                     stream_text.len(),
-                    if stream_text.len() > 500 { format!("{}...", &stream_text[..500]) } else { stream_text.clone() }
+                    text_snippet(&stream_text, 500)
                 );
                 anyhow::bail!("VLM 流式响应解析失败 (model={model}): {e}");
             }
@@ -359,7 +368,7 @@ async fn call_chat_completion(
         );
     }
     let parsed = serde_json::from_str(&text).with_context(|| {
-        let snippet = if text.len() > 200 { format!("{}...", &text[..200]) } else { text.clone() };
+        let snippet = text_snippet(&text, 200);
         format!("VLM 响应不是 OpenAI-compatible JSON (model={model}), 原始响应: {snippet}")
     })?;
     Ok((parsed, request_url, request_body))
@@ -378,9 +387,15 @@ fn should_retry_as_stream(
     {
         return false;
     }
+    // 个别兼容网关在非流式请求上返回 200 空体，但实际只实现了 SSE。
+    if status.is_success() && text.trim().is_empty() {
+        return true;
+    }
     // 服务端明确要求 stream: true
     if status.as_u16() == 400
-        && (text.contains("stream_options") || text.contains("stream: true") || text.contains("\"stream\""))
+        && (text.contains("stream_options")
+            || text.contains("stream: true")
+            || text.contains("\"stream\""))
     {
         return true;
     }
@@ -395,11 +410,18 @@ fn with_stream_enabled(request_body: &serde_json::Value) -> serde_json::Value {
     let mut body = request_body.clone();
     if let Some(map) = body.as_object_mut() {
         map.insert("stream".into(), serde_json::Value::Bool(true));
-        // 部分 API（如 OpenAI 兼容接口）要求 stream_options 来获取 usage
-        map.insert(
-            "stream_options".into(),
-            serde_json::json!({ "include_usage": true }),
-        );
+        // stream_options 在部分私有 OpenAI-compatible 网关上会导致 200 空响应，
+        // 因此只启用基础流式协议；usage 缺失时按 None 处理。
+        map.remove("stream_options");
+    }
+    body
+}
+
+fn with_stream_disabled(request_body: &serde_json::Value) -> serde_json::Value {
+    let mut body = request_body.clone();
+    if let Some(map) = body.as_object_mut() {
+        map.insert("stream".into(), serde_json::Value::Bool(false));
+        map.remove("stream_options");
     }
     body
 }
@@ -442,12 +464,10 @@ fn parse_streaming_chat_content(text: &str) -> anyhow::Result<String> {
                 }
             }
         }
-        let snippet = if text.len() > 500 {
-            format!("{}...", &text[..500])
-        } else if text.is_empty() {
+        let snippet = if text.is_empty() {
             "(空响应)".to_string()
         } else {
-            text.to_string()
+            text_snippet(text, 500)
         };
         anyhow::bail!("流式响应缺少 delta.content，原始响应: {snippet}");
     }
@@ -505,6 +525,7 @@ fn build_vision_request_body(
         }],
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "stream": false,
     })
 }
 
@@ -553,24 +574,15 @@ impl From<RawUsage> for VlmUsage {
     }
 }
 
-fn frame_to_jpeg_data_url(frame: &DecodedFrame) -> anyhow::Result<String> {
+fn frame_to_lossless_png_data_url(frame: &DecodedFrame) -> anyhow::Result<String> {
     let img =
         ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(frame.width, frame.height, frame.rgb.clone())
             .ok_or_else(|| anyhow!("RGB 帧大小异常"))?;
-    let mut dyn_img = DynamicImage::ImageRgb8(img);
-    let max_side = frame.width.max(frame.height);
-    if max_side > 1280 {
-        let scale = 1280.0 / max_side as f32;
-        let width = (frame.width as f32 * scale).round().max(1.0) as u32;
-        let height = (frame.height as f32 * scale).round().max(1.0) as u32;
-        dyn_img = dyn_img.resize(width, height, FilterType::Triangle);
-    }
-
+    let dyn_img = DynamicImage::ImageRgb8(img);
     let mut encoded = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut encoded, 85);
-    encoder.encode_image(&dyn_img)?;
+    dyn_img.write_to(&mut encoded, ImageFormat::Png)?;
     Ok(format!(
-        "data:image/jpeg;base64,{}",
+        "data:image/png;base64,{}",
         base64_encode(encoded.get_ref())
     ))
 }
@@ -673,6 +685,16 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+fn text_snippet(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let snippet = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{snippet}...")
+    } else {
+        snippet
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -718,7 +740,7 @@ mod tests {
         );
         assert_eq!(body["messages"][0]["content"][1]["type"], "text");
         assert_eq!(body["messages"][0]["content"][1]["text"], "detect");
-        assert!(body.get("stream").is_none());
+        assert_eq!(body["stream"], false);
         assert!(body.get("stream_options").is_none());
         assert!(body.get("thinking").is_none());
         assert!(body.get("max_completion_tokens").is_none());
@@ -753,5 +775,28 @@ mod tests {
         );
         assert_eq!(parse_streaming_chat_content(text).unwrap(), "Hello world");
         assert_eq!(parse_streaming_chat_usage(text).unwrap().total_tokens, 3);
+    }
+
+    #[test]
+    fn vlm_image_is_lossless_png_at_frame_resolution() {
+        let frame = DecodedFrame {
+            width: 1920,
+            height: 1080,
+            pts_ms: 0,
+            data: vec![0; 1920 * 1080],
+            rgb: vec![128; 1920 * 1080 * 3],
+        };
+        let data_url = frame_to_lossless_png_data_url(&frame).unwrap();
+        assert!(data_url.starts_with("data:image/png;base64,iVBOR"));
+    }
+
+    #[test]
+    fn stream_retry_omits_incompatible_stream_options() {
+        let body = with_stream_enabled(&serde_json::json!({
+            "model": "qwen3.6-plus",
+            "stream_options": {"include_usage": true}
+        }));
+        assert_eq!(body["stream"], true);
+        assert!(body.get("stream_options").is_none());
     }
 }
