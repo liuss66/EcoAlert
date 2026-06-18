@@ -128,38 +128,41 @@ impl YoloClient {
     }
 
     /// 推出一帧并等待结果。整体由调用方加 tokio::time::timeout 保护。
-    pub async fn detect_frame(&self, jpeg_bytes: Vec<u8>) -> Result<YoloDetectResult, String> {
+    pub async fn detect_frame(
+        &self,
+        jpeg_bytes: Vec<u8>,
+        confidence: f32,
+    ) -> Result<YoloDetectResult, String> {
         let url = self.ws_url()?;
-        log::debug!("[yolo] 开始检测帧，目标URL: {}", url);
+        log::debug!("[yolo] 开始检测帧，目标URL: {}", redact_url(&url));
 
-        // 懒建连：第一次调用或上次连接断开了
-        let need_reconnect = {
-            let guard = self.stream.lock().await;
-            if guard.is_none() {
-                log::info!("[yolo] 没有现有连接，需要建立新连接");
-                true
-            } else {
-                log::debug!("[yolo] 复用现有连接");
-                false
+        let mut last_error = String::new();
+        for attempt in 0..2 {
+            if self.stream.lock().await.is_none() {
+                self.establish_connection(&url).await?;
             }
-        };
 
-        if need_reconnect {
-            self.establish_connection(&url).await?;
+            match self
+                .send_frame(&jpeg_bytes, confidence.clamp(0.0, 1.0))
+                .await
+                .and_then(|_| Ok(()))
+            {
+                Ok(()) => match self.receive_response().await {
+                    Ok(text) => return self.parse_response(&text).await,
+                    Err(error) => last_error = error,
+                },
+                Err(error) => last_error = error,
+            }
+            self.drop_stream().await;
+            if attempt == 0 {
+                log::warn!("[yolo] 连接传输失败，重连后重试当前帧: {}", last_error);
+            }
         }
-
-        // 发送二进制帧
-        self.send_frame(jpeg_bytes).await?;
-
-        // 等待响应
-        let text = self.receive_response().await?;
-
-        // 解析响应
-        self.parse_response(&text).await
+        Err(last_error)
     }
 
     async fn establish_connection(&self, url: &str) -> Result<(), String> {
-        log::info!("[yolo] 建立新连接到 {}", url);
+        log::info!("[yolo] 建立新连接到 {}", redact_url(url));
         match tokio::time::timeout(std::time::Duration::from_secs(5), connect_async(url)).await {
             Ok(Ok((ws, _resp))) => {
                 log::info!("[yolo] WebSocket握手成功");
@@ -181,7 +184,7 @@ impl YoloClient {
         }
     }
 
-    async fn send_frame(&self, jpeg_bytes: Vec<u8>) -> Result<(), String> {
+    async fn send_frame(&self, jpeg_bytes: &[u8], confidence: f32) -> Result<(), String> {
         log::debug!("[yolo] 准备发送 {} 字节的JPEG数据", jpeg_bytes.len());
 
         let mut guard = self.stream.lock().await;
@@ -191,8 +194,16 @@ impl YoloClient {
             msg
         })?;
 
+        let options = serde_json::json!({
+            "type": "options",
+            "confidence": confidence,
+        })
+        .to_string();
+        ws.send(Message::Text(options.into()))
+            .await
+            .map_err(|e| format!("发送检测参数失败: {e}"))?;
         log::debug!("[yolo] 发送二进制消息...");
-        if let Err(e) = ws.send(Message::Binary(jpeg_bytes.into())).await {
+        if let Err(e) = ws.send(Message::Binary(jpeg_bytes.to_vec().into())).await {
             let msg = format!("发送失败: {e}");
             log::error!("[yolo] {}", msg);
             drop(guard); // 显式释放锁
@@ -286,7 +297,7 @@ impl YoloClient {
             .map(|d| d.confidence)
             .fold(0.0_f32, f32::max);
 
-        log::info!(
+        log::debug!(
             "[yolo] 检测完成: {} 个目标, 最高置信度 {:.2}, 耗时 {}ms",
             detections.len(),
             person_confidence,
@@ -320,7 +331,7 @@ impl YoloClient {
         }
     }
 
-    fn ws_url(&self) -> Result<String, String> {
+    pub fn ws_url(&self) -> Result<String, String> {
         let trimmed = self.api_base.trim().trim_end_matches('/');
         if trimmed.is_empty() {
             return Err("YOLO 服务器地址为空".into());
@@ -337,9 +348,18 @@ impl YoloClient {
             format!("ws://{trimmed}")
         };
         // 强制 /ws 路径（覆盖用户填的路径，避免误连）
-        let base = normalized.trim_end_matches('/');
+        let (address, query) = normalized
+            .split_once('?')
+            .map(|(address, query)| (address, Some(query)))
+            .unwrap_or((normalized.as_str(), None));
+        let base = address.trim_end_matches('/');
         let without_ws = base.trim_end_matches("/ws");
-        Ok(format!("{without_ws}/ws"))
+        let mut url = format!("{without_ws}/ws");
+        if let Some(query) = query.filter(|value| !value.is_empty()) {
+            url.push('?');
+            url.push_str(query);
+        }
+        Ok(url)
     }
 }
 
@@ -371,6 +391,12 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}…", s.chars().take(max).collect::<String>())
     }
+}
+
+pub fn redact_url(url: &str) -> String {
+    url.split_once('?')
+        .map(|(base, _)| format!("{base}?<redacted>"))
+        .unwrap_or_else(|| url.to_string())
 }
 
 // 编译期 sanity check：JPEG 编码必须能跑通（实际图片数据由测试覆盖）
@@ -429,7 +455,21 @@ mod tests {
     }
 
     #[test]
+    fn ws_url_preserves_auth_query() {
+        let c = YoloClient::new("ws://localhost:8090?token=secret".into());
+        assert_eq!(c.ws_url().unwrap(), "ws://localhost:8090/ws?token=secret");
+    }
+
+    #[test]
     fn truncate_handles_multibyte_text() {
         assert_eq!(truncate("检测服务器错误", 4), "检测服务…");
+    }
+
+    #[test]
+    fn redact_url_hides_auth_query() {
+        assert_eq!(
+            redact_url("ws://localhost:8090/ws?token=secret"),
+            "ws://localhost:8090/ws?<redacted>"
+        );
     }
 }

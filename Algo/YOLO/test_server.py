@@ -30,7 +30,7 @@ def health_url(server_url: str) -> str:
     return urlunsplit((scheme, parts.netloc, "/health", "", ""))
 
 
-async def detect(image_path: Path, server_url: str) -> dict:
+async def detect(image_path: Path, server_url: str, confidence: float) -> dict:
     image = cv2.imread(str(image_path))
     if image is None:
         raise ValueError(f"cannot read image: {image_path}")
@@ -38,6 +38,7 @@ async def detect(image_path: Path, server_url: str) -> dict:
     if not ok:
         raise ValueError(f"cannot encode image: {image_path}")
     async with websockets.connect(websocket_url(server_url), open_timeout=5) as ws:
+        await ws.send(json.dumps({"type": "options", "confidence": confidence}))
         await ws.send(encoded.tobytes())
         result = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
     if result.get("error"):
@@ -49,6 +50,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Test the YOLO WebSocket server")
     parser.add_argument("--url", default="ws://localhost:8090")
     parser.add_argument("--image", type=Path)
+    parser.add_argument("--confidence", type=float, default=0.45)
     parser.add_argument("--health", action="store_true")
     args = parser.parse_args()
 
@@ -57,7 +59,7 @@ async def main() -> None:
         response.raise_for_status()
         print(json.dumps(response.json(), ensure_ascii=False, indent=2))
     if args.image:
-        print(json.dumps(await detect(args.image, args.url), ensure_ascii=False, indent=2))
+        print(json.dumps(await detect(args.image, args.url, args.confidence), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

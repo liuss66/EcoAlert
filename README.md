@@ -11,7 +11,7 @@
 | 目录 | 用途 |
 | --- | --- |
 | [`App/`](./App/) | 产品代码：Tauri 2 桌面端、Vite 前端、Rust 后端 |
-| [`Algo/`](./Algo/) | 算法调试代码；当前包含 MATLAB 版灯光 / 人员运动检测 |
+| [`Algo/`](./Algo/) | 算法服务与调试代码，包含 YOLO WebSocket 检测服务 |
 | [`Document/`](./Document/) | 产品需求、架构、接口、部署和 ADR |
 | [`Video/`](./Video/) | 本地测试视频，全部平铺在根目录 |
 | [`Tools/`](./Tools/) | 开发辅助脚本；保留可选 ffmpeg HLS 推流器 |
@@ -54,6 +54,11 @@ npm run tauri:dev          # Tauri 桌面（需要 Rust）
 # 在 Tauri 桌面端登录后进入：基础设置 -> 调试
 # 打开“测试视频源”开关并选择文件夹；也可点击“选择测试视频文件夹”重新导入
 # App 会递归扫描视频文件并导入为循环播放的 MP4 视频源
+
+# 3) 可选：启用 YOLO 人员检测
+cd ..
+./scripts/start_yolo.ps1
+# 然后在算法设置中启用 YOLO，地址填写 ws://127.0.0.1:8090
 ```
 
 说明：

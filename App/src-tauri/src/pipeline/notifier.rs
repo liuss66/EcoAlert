@@ -42,7 +42,14 @@ pub async fn dispatch_alarm_event(
         if is_in_cooldown_for_event(&state, &target, &event, Some(alarm.source_id.as_str())) {
             continue;
         }
-        let record = send_to_target(&mut target, &event, &payload, Some(&alarm)).await;
+        let record = send_to_target(
+            &mut target,
+            &event,
+            &payload,
+            Some(alarm.source_id.clone()),
+            Some(alarm.id.clone()),
+        )
+        .await;
         // 如果 token 被刷新了，记录下来
         if target.is_api_mode() && !target.access_token.is_empty() {
             updated_targets.push(target.clone());
@@ -83,7 +90,7 @@ pub async fn dispatch_system_event(
         if is_in_cooldown_for_event(&state, &target, &event, source_id.as_deref()) {
             continue;
         }
-        let record = send_to_target(&mut target, &event, &payload, None).await;
+        let record = send_to_target(&mut target, &event, &payload, source_id.clone(), None).await;
         if target.is_api_mode() && !target.access_token.is_empty() {
             updated_targets.push(target.clone());
         }
@@ -121,7 +128,7 @@ pub async fn send_test(
         "ts": now,
         "ts_formatted": ts_formatted,
     });
-    let record = send_to_target(&mut target, "test", &payload, None).await;
+    let record = send_to_target(&mut target, "test", &payload, None, None).await;
     persist_and_emit(&app, &state, record.clone());
     // 如果 token 被刷新了，持久化
     if target.is_api_mode() && !target.access_token.is_empty() {
@@ -290,17 +297,12 @@ async fn send_to_target(
     target: &mut NotificationTarget,
     event: &str,
     payload: &Value,
-    alarm: Option<&AlarmRecord>,
+    source_id: Option<String>,
+    alarm_id: Option<String>,
 ) -> NotificationRecord {
     let now = chrono::Utc::now().timestamp_millis();
-    let mut record = NotificationRecord::new_pending(
-        target,
-        event.to_string(),
-        alarm.map(|item| item.source_id.clone()),
-        alarm.map(|item| item.id.clone()),
-        None,
-        now,
-    );
+    let mut record =
+        NotificationRecord::new_pending(target, event.to_string(), source_id, alarm_id, None, now);
 
     if target.url.starts_with("mock://") {
         record.ok = true;
@@ -457,6 +459,7 @@ fn event_label(event: &str) -> Cow<'_, str> {
         "alarm_triggered" => Cow::Borrowed("报警触发"),
         "alarm_resolved" => Cow::Borrowed("报警恢复"),
         "test" => Cow::Borrowed("测试通知"),
+        "yolo_error" => Cow::Borrowed("YOLO 服务器失效"),
         _ => Cow::Borrowed(event),
     }
 }
@@ -469,6 +472,8 @@ fn format_message(payload: &Value) -> String {
     let person = payload["person"].as_bool().unwrap_or(false);
     let light = payload["light"].as_bool().unwrap_or(false);
     let ts = payload["ts"].as_i64().unwrap_or(0);
+    let explicit_title = payload["title"].as_str();
+    let explicit_message = payload["message"].as_str();
 
     let time_str = if ts > 0 {
         chrono::DateTime::from_timestamp_millis(ts)
@@ -481,6 +486,20 @@ fn format_message(payload: &Value) -> String {
     } else {
         "-".into()
     };
+
+    if let Some(message) = explicit_message {
+        let title = explicit_title
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| event_label(event));
+        return format!(
+            "⚠️ [EcoAlert] {title}\n视频源: {source}\n区域: {location}\n详情: {message}\n时间: {time}",
+            title = title,
+            source = source,
+            location = location,
+            message = message,
+            time = time_str,
+        );
+    }
 
     let alarm_icon = if alarm { "🚨" } else { "✅" };
     format!(
@@ -578,5 +597,26 @@ fn persist_and_emit(app: &AppHandle, state: &AppState, record: NotificationRecor
                 record.error.as_deref().unwrap_or("unknown")
             ),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_message_uses_explicit_error_detail() {
+        let payload = serde_json::json!({
+            "event": "yolo_error",
+            "source_name": "camera-1",
+            "location": "office",
+            "title": "YOLO 服务器失效",
+            "message": "连接超时",
+            "ts": 1_700_000_000_000_i64,
+        });
+        let message = format_message(&payload);
+        assert!(message.contains("YOLO 服务器失效"));
+        assert!(message.contains("连接超时"));
+        assert!(message.contains("camera-1"));
     }
 }

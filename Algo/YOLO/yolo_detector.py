@@ -20,7 +20,7 @@ class YOLODetector:
         model_name: str = "model/yolo11s.pt",
         confidence: float = 0.45,
         iou_threshold: float = 0.35,
-        classes: List[int] = [0],
+        classes: Optional[List[int]] = None,
         device: str = "auto",
         imgsz: int = 640,
         max_workers: int = 1
@@ -41,7 +41,7 @@ class YOLODetector:
         self.model_name = model_name
         self.confidence = confidence
         self.iou_threshold = iou_threshold
-        self.classes = classes
+        self.classes = classes if classes is not None else [0]
         self.imgsz = imgsz
         self.max_workers = max_workers
 
@@ -76,6 +76,10 @@ class YOLODetector:
 
         # Thread pool for async detection
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    def close(self) -> None:
+        """Release the inference worker during orderly shutdown."""
+        self.executor.shutdown(wait=False, cancel_futures=True)
 
     def decode_image(self, image_base64: str) -> np.ndarray:
         """

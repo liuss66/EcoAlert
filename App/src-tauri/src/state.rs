@@ -463,7 +463,8 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut presence_trackers: HashMap<String, PresenceTracker> = HashMap::new();
         // YOLO 成功计数器：每源每 10 次成功打一条 INFO 日志，验证多路源都进了 YOLO
         let mut yolo_success_count: HashMap<String, u32> = HashMap::new();
-        let mut yolo_logged_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut yolo_logged_sources: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut vlm_hourly_usage: HashMap<String, (i64, u32)> = HashMap::new();
         let mut media_durations: HashMap<String, Option<f64>> = HashMap::new();
         // YOLO 检测：每源一个 WebSocket 客户端 + 熔断器
@@ -487,7 +488,6 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 source_id: String,
                 source_enabled: bool,
                 effective_config: AlgorithmConfig,
-                should_run_vlm: bool,
                 join_handle:
                     tokio::task::JoinHandle<anyhow::Result<crate::pipeline::decoder::DecodedFrame>>,
             }
@@ -597,7 +597,14 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     );
                     let ms = t0.elapsed().as_millis();
                     if ms > 1500 {
-                        log::warn!("[抽帧] {} {}x{} 耗时 {}ms (seek={:?})", url.chars().take(40).collect::<String>(), frame_width, frame_height, ms, seek_secs);
+                        log::warn!(
+                            "[抽帧] {} {}x{} 耗时 {}ms (seek={:?})",
+                            url.chars().take(40).collect::<String>(),
+                            frame_width,
+                            frame_height,
+                            ms,
+                            seek_secs
+                        );
                     }
                     result
                 });
@@ -606,7 +613,6 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     source_id: s.id.clone(),
                     source_enabled: s.enabled,
                     effective_config: decision.effective_config.clone(),
-                    should_run_vlm: decision.should_run_vlm,
                     join_handle,
                 });
             }
@@ -615,7 +621,6 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             struct ExtractionResult {
                 source_idx: usize,
                 effective_config: AlgorithmConfig,
-                should_run_vlm: bool,
                 frame: crate::pipeline::decoder::DecodedFrame,
             }
             let mut results: Vec<ExtractionResult> = Vec::new();
@@ -625,7 +630,6 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         results.push(ExtractionResult {
                             source_idx: p.source_idx,
                             effective_config: p.effective_config,
-                            should_run_vlm: p.should_run_vlm,
                             frame,
                         });
                     }
@@ -633,14 +637,13 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         let msg = format!("真实帧抽取失败: {err}");
                         {
                             let mut runtime = state.runtime_status.lock();
-                            let entry =
-                                runtime.entry(p.source_id.clone()).or_insert_with(|| {
-                                    ChannelRuntimeStatus::new(
-                                        p.source_id.clone(),
-                                        p.source_enabled,
-                                        now,
-                                    )
-                                });
+                            let entry = runtime.entry(p.source_id.clone()).or_insert_with(|| {
+                                ChannelRuntimeStatus::new(
+                                    p.source_id.clone(),
+                                    p.source_enabled,
+                                    now,
+                                )
+                            });
                             entry.vlm_enabled = p.effective_config.vlm_enabled;
                             entry.algorithm_status = "error".into();
                             entry.last_error = Some(msg.clone());
@@ -661,14 +664,13 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         let msg = format!("抽帧任务异常: {err}");
                         {
                             let mut runtime = state.runtime_status.lock();
-                            let entry =
-                                runtime.entry(p.source_id.clone()).or_insert_with(|| {
-                                    ChannelRuntimeStatus::new(
-                                        p.source_id.clone(),
-                                        p.source_enabled,
-                                        now,
-                                    )
-                                });
+                            let entry = runtime.entry(p.source_id.clone()).or_insert_with(|| {
+                                ChannelRuntimeStatus::new(
+                                    p.source_id.clone(),
+                                    p.source_enabled,
+                                    now,
+                                )
+                            });
                             entry.vlm_enabled = p.effective_config.vlm_enabled;
                             entry.algorithm_status = "error".into();
                             entry.last_error = Some(msg.clone());
@@ -703,23 +705,28 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     if yolo_logged_sources.insert(s.id.clone()) {
                         log::info!(
                             "[yolo] 通道 {} 首次进入 YOLO 检测分支 (api={}, conf={})",
-                            s.id, decision_effective_config.yolo_api_base,
+                            s.id,
+                            yolo_detector::redact_url(&decision_effective_config.yolo_api_base),
                             decision_effective_config.yolo_confidence
                         );
                     }
                     let breaker = yolo_breakers.entry(s.id.clone()).or_default();
                     if breaker.is_open(now) {
                         new_state.reason = Some("yolo_cooldown".into());
+                        yolo_error_msg = state
+                            .runtime_status
+                            .lock()
+                            .get(&s.id)
+                            .and_then(|entry| entry.yolo_error.clone())
+                            .or_else(|| Some("YOLO 服务熔断冷却中".into()));
                         log::debug!("[yolo] {} 处于熔断冷却期，跳过检测", s.id);
                     } else {
                         // 配置或地址变化时重建连接
-                        let client = yolo_clients
-                            .entry(s.id.clone())
-                            .or_insert_with(|| {
-                                yolo_detector::YoloClient::new(
-                                    decision_effective_config.yolo_api_base.clone(),
-                                )
-                            });
+                        let client = yolo_clients.entry(s.id.clone()).or_insert_with(|| {
+                            yolo_detector::YoloClient::new(
+                                decision_effective_config.yolo_api_base.clone(),
+                            )
+                        });
                         if client.api_base() != decision_effective_config.yolo_api_base {
                             *client = yolo_detector::YoloClient::new(
                                 decision_effective_config.yolo_api_base.clone(),
@@ -732,15 +739,17 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                 // 顶层超时 7s：建连 + 发送 + 接收
                                 let yolo_result = tokio::time::timeout(
                                     Duration::from_secs(7),
-                                    client.detect_frame(jpeg_bytes),
+                                    client.detect_frame(
+                                        jpeg_bytes,
+                                        decision_effective_config.yolo_confidence,
+                                    ),
                                 )
                                 .await;
                                 match yolo_result {
                                     Ok(Ok(result)) => {
                                         breaker.record_success();
-                                        let cnt = yolo_success_count
-                                            .entry(s.id.clone())
-                                            .or_insert(0);
+                                        let cnt =
+                                            yolo_success_count.entry(s.id.clone()).or_insert(0);
                                         *cnt += 1;
                                         if *cnt % 10 == 1 {
                                             log::info!(
@@ -752,8 +761,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                         new_state.person = result.person;
                                         new_state.person_confidence = result.person_confidence;
                                         new_state.source = "yolo".into();
-                                        new_state.model_latency_ms =
-                                            Some(result.process_ms as u32);
+                                        new_state.model_latency_ms = Some(result.process_ms as u32);
                                         yolo_detections = result.detections;
                                     }
                                     Ok(Err(e)) => {
@@ -787,8 +795,27 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         .get(&s.id)
                         .and_then(|entry| entry.yolo_error.clone())
                 };
-                let yolo_failure_active = decision_effective_config.yolo_enabled
-                    && yolo_error_msg.is_some();
+                let yolo_failure_active =
+                    decision_effective_config.yolo_enabled && yolo_error_msg.is_some();
+                if yolo_failure_active && previous_yolo_error.is_none() {
+                    let app_for_notify = app.clone();
+                    let state_for_notify = state.inner().clone();
+                    let source_id = s.id.clone();
+                    let detail = yolo_error_msg
+                        .clone()
+                        .unwrap_or_else(|| "YOLO 服务器失效".into());
+                    tauri::async_runtime::spawn(async move {
+                        notifier::dispatch_system_event(
+                            app_for_notify,
+                            state_for_notify,
+                            "yolo_error".into(),
+                            Some(source_id),
+                            "YOLO 服务器失效".into(),
+                            detail,
+                        )
+                        .await;
+                    });
+                }
                 let tracker = presence_trackers.entry(s.id.clone()).or_default();
                 let simple_person = new_state.person;
                 let simple_person_confidence = new_state.person_confidence;
@@ -838,13 +865,13 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     decision_effective_config.alarm_hold_sec,
                     decision_effective_config.alarm_recover_sec,
                 );
-                let alarm_countdown_progress = alarm_timers
+                let mut alarm_countdown_progress = alarm_timers
                     .get(&s.id)
                     .map(|timer| {
                         timer.alarm_progress(now, decision_effective_config.alarm_hold_sec)
                     })
                     .unwrap_or(0.0);
-                let alarm_status = alarm_timers
+                let mut alarm_status = alarm_timers
                     .get(&s.id)
                     .map(|timer| {
                         if timer.active {
@@ -860,71 +887,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         }
                     })
                     .unwrap_or("normal");
-                {
-                    let mut current = state.current_state.lock();
-                    current.insert(s.id.clone(), new_state.clone());
-                }
                 let mut vlm_error_msg: Option<String> = None;
-                {
-                    let mut runtime = state.runtime_status.lock();
-                    let entry = runtime
-                        .entry(s.id.clone())
-                        .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
-                    entry.algorithm_status = "idle".into();
-                    entry.vlm_enabled = decision_effective_config.vlm_enabled;
-                    entry.yolo_enabled = decision_effective_config.yolo_enabled;
-                    entry.yolo_error = yolo_error_msg.clone();
-                    // YOLO 错误优先于 VLM 错误显示
-                    entry.last_error = yolo_error_msg
-                        .clone()
-                        .or_else(|| vlm_error_msg.clone());
-                    entry.last_algorithm_at = Some(now);
-                    entry.alarm_status = alarm_status.into();
-                    entry.ts = now;
-                }
-                let yolo_error_for_scene = yolo_error_msg.clone();
-                let scene_payload = serde_json::json!({
-                    "source_id": s.id,
-                    "person": person,
-                    "light": light,
-                    "light_state": if light { "on" } else { "off" },
-                    "alarm": alarm_status == "alarm_active",
-                    "alarm_record_active": alarm_timers.get(&s.id).map(|timer| timer.active).unwrap_or(false),
-                    "alarm_status": alarm_status,
-                    "alarm_progress": alarm_countdown_progress,
-                    "alarm_countdown_progress": alarm_countdown_progress,
-                    "simple_person": simple_person,
-                    "simple_person_confidence": simple_person_confidence,
-                    "vlm_person": vlm_person,
-                    "vlm_person_confidence": vlm_person_confidence,
-                    "vlm_status": vlm_status,
-                    "yolo_error": yolo_error_for_scene,
-                    "person_confidence": new_state.person_confidence,
-                    "light_confidence": new_state.light_confidence,
-                    "confidence": new_state.confidence,
-                    "source": new_state.source,
-                    "reason": new_state.reason,
-                    "frame_seq": new_state.frame_seq,
-                    "model_latency_ms": new_state.model_latency_ms,
-                    "light_brightness": new_state.light_brightness,
-                    "color_score": new_state.color_score,
-                    "motion_score": new_state.motion_score,
-                    "process_ms": new_state.process_ms,
-                    "yolo_detections": yolo_detections.iter().map(|d| {
-                        serde_json::json!({ "confidence": d.confidence, "bbox": d.bbox })
-                    }).collect::<Vec<_>>(),
-                    "ts": now,
-                });
-                let _ = app.emit("ecoalert://scene_state", scene_payload);
-
-                if let Err(e) = state.record_detection_sample(DetectionSampleRecord::from_scene(
-                    &s.id,
-                    &new_state,
-                    alarm_status,
-                    now,
-                )) {
-                    log::warn!("详细检测历史落库失败: {e}");
-                }
 
                 // 状态历史只在 person / light 变化时落库，避免历史文件快速膨胀。
                 let mut state_record_id: Option<String> = None;
@@ -966,9 +929,14 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     }
                 }
 
+                let mut alarm_cancelled_by_vlm = false;
                 if let Some(alarm_active) = alarm_transition {
                     // 报警触发时，如果 VLM 启用，先调用 VLM 确认是否有人
-                    if alarm_active && decision_effective_config.vlm_enabled && vlm_under_limit && !light_off_skip {
+                    if alarm_active
+                        && decision_effective_config.vlm_enabled
+                        && vlm_under_limit
+                        && !light_off_skip
+                    {
                         let vlm_started = chrono::Utc::now().timestamp_millis();
                         match vlm::analyze_person(&decision_effective_config, &frame).await {
                             Ok(vlm_result) => {
@@ -992,8 +960,9 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                     if let Some(timer) = alarm_timers.get_mut(&s.id) {
                                         timer.reset();
                                     }
-                                    // 不继续处理报警
-                                    continue;
+                                    alarm_status = "normal";
+                                    alarm_countdown_progress = 0.0;
+                                    alarm_cancelled_by_vlm = true;
                                 } else {
                                     // VLM 确认无人，正常报警
                                     vlm_status = "no_person_alarm_confirmed";
@@ -1020,40 +989,33 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                 // VLM 调用失败，继续报警（按用户要求：失败则正常报警）
                                 vlm_status = "error";
                                 let msg = format!("VLM 检测失败: {err}");
-                                log::warn!("[vlm] 报警确认失败，继续报警 source={} error={}", s.id, err);
+                                log::warn!(
+                                    "[vlm] 报警确认失败，继续报警 source={} error={}",
+                                    s.id,
+                                    err
+                                );
                                 vlm_error_msg = Some(msg.clone());
                             }
                         }
                     }
 
-                    match state.apply_alarm_state(&s.id, alarm_active, state_record_id, now) {
-                        Ok(Some(alarm_record)) => {
-                            {
-                                let mut runtime = state.runtime_status.lock();
-                                if let Some(entry) = runtime.get_mut(&s.id) {
-
-                    if yolo_failure_active && previous_yolo_error.is_none() {
-                        let app_for_notify = app.clone();
-                        let state_for_notify = state.inner().clone();
-                        let source_id = s.id.clone();
-                        let detail = yolo_error_msg.clone().unwrap_or_else(|| "YOLO 服务器失效".into());
-                        tauri::async_runtime::spawn(async move {
-                            notifier::dispatch_system_event(
-                                app_for_notify,
-                                state_for_notify,
-                                "yolo_error".into(),
-                                Some(source_id),
-                                "YOLO 服务器失效".into(),
-                                detail,
-                            )
-                            .await;
-                        });
-                    }
-                                    entry.alarm_status = alarm_record.status.clone();
-                                    entry.ts = now;
+                    if !alarm_cancelled_by_vlm {
+                        // 通知任务会读取 current_state；先写入本轮最终检测结果，
+                        // 避免异步通知拿到上一帧状态。
+                        state
+                            .current_state
+                            .lock()
+                            .insert(s.id.clone(), new_state.clone());
+                        match state.apply_alarm_state(&s.id, alarm_active, state_record_id, now) {
+                            Ok(Some(alarm_record)) => {
+                                {
+                                    let mut runtime = state.runtime_status.lock();
+                                    if let Some(entry) = runtime.get_mut(&s.id) {
+                                        entry.alarm_status = alarm_record.status.clone();
+                                        entry.ts = now;
+                                    }
                                 }
-                            }
-                            let _ = app.emit(
+                                let _ = app.emit(
                                 "ecoalert://alarm",
                                 serde_json::json!({
                                     "alarm_id": alarm_record.id,
@@ -1063,34 +1025,96 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                                     "ts": now,
                                 }),
                             );
-                            let event = if alarm_active {
-                                "alarm_triggered"
-                            } else {
-                                "alarm_resolved"
+                                let event = if alarm_active {
+                                    "alarm_triggered"
+                                } else {
+                                    "alarm_resolved"
+                                }
+                                .to_string();
+                                if should_dispatch_alarm_notification(
+                                    &event,
+                                    &alarm_record.source_id,
+                                    state.inner(),
+                                    &mut domain_notified_groups,
+                                ) {
+                                    let app_for_notify = app.clone();
+                                    let state_for_notify = state.inner().clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        notifier::dispatch_alarm_event(
+                                            app_for_notify,
+                                            state_for_notify,
+                                            event,
+                                            alarm_record,
+                                        )
+                                        .await;
+                                    });
+                                }
                             }
-                            .to_string();
-                            if should_dispatch_alarm_notification(
-                                &event,
-                                &alarm_record.source_id,
-                                state.inner(),
-                                &mut domain_notified_groups,
-                            ) {
-                                let app_for_notify = app.clone();
-                                let state_for_notify = state.inner().clone();
-                                tauri::async_runtime::spawn(async move {
-                                    notifier::dispatch_alarm_event(
-                                        app_for_notify,
-                                        state_for_notify,
-                                        event,
-                                        alarm_record,
-                                    )
-                                    .await;
-                                });
-                            }
+                            Ok(None) => {}
+                            Err(e) => log::warn!("报警状态落库失败: {e}"),
                         }
-                        Ok(None) => {}
-                        Err(e) => log::warn!("报警状态落库失败: {e}"),
                     }
+                }
+
+                // VLM 决策完成后再一次性提交最终状态，避免前端收到半成品状态。
+                {
+                    let mut current = state.current_state.lock();
+                    current.insert(s.id.clone(), new_state.clone());
+                }
+                {
+                    let mut runtime = state.runtime_status.lock();
+                    let entry = runtime
+                        .entry(s.id.clone())
+                        .or_insert_with(|| ChannelRuntimeStatus::new(s.id.clone(), s.enabled, now));
+                    entry.algorithm_status = "idle".into();
+                    entry.vlm_enabled = decision_effective_config.vlm_enabled;
+                    entry.yolo_enabled = decision_effective_config.yolo_enabled;
+                    entry.yolo_error = yolo_error_msg.clone();
+                    entry.last_error = yolo_error_msg.clone().or_else(|| vlm_error_msg.clone());
+                    entry.last_algorithm_at = Some(now);
+                    entry.alarm_status = alarm_status.into();
+                    entry.ts = now;
+                }
+                let scene_payload = serde_json::json!({
+                    "source_id": s.id,
+                    "person": person,
+                    "light": light,
+                    "light_state": if light { "on" } else { "off" },
+                    "alarm": alarm_status == "alarm_active",
+                    "alarm_record_active": alarm_timers.get(&s.id).map(|timer| timer.active).unwrap_or(false),
+                    "alarm_status": alarm_status,
+                    "alarm_progress": alarm_countdown_progress,
+                    "alarm_countdown_progress": alarm_countdown_progress,
+                    "simple_person": simple_person,
+                    "simple_person_confidence": simple_person_confidence,
+                    "vlm_person": vlm_person,
+                    "vlm_person_confidence": vlm_person_confidence,
+                    "vlm_status": vlm_status,
+                    "yolo_error": yolo_error_msg,
+                    "person_confidence": new_state.person_confidence,
+                    "light_confidence": new_state.light_confidence,
+                    "confidence": new_state.confidence,
+                    "source": new_state.source,
+                    "reason": new_state.reason,
+                    "frame_seq": new_state.frame_seq,
+                    "model_latency_ms": new_state.model_latency_ms,
+                    "light_brightness": new_state.light_brightness,
+                    "color_score": new_state.color_score,
+                    "motion_score": new_state.motion_score,
+                    "process_ms": new_state.process_ms,
+                    "yolo_detections": yolo_detections.iter().map(|d| {
+                        serde_json::json!({ "confidence": d.confidence, "bbox": d.bbox })
+                    }).collect::<Vec<_>>(),
+                    "ts": now,
+                });
+                let _ = app.emit("ecoalert://scene_state", scene_payload);
+                if let Err(e) = state.record_detection_sample(DetectionSampleRecord::from_scene(
+                    &s.id,
+                    &new_state,
+                    alarm_status,
+                    now,
+                )) {
+                    log::warn!("详细检测历史落库失败: {e}");
                 }
             }
             let tick_ms = tick_start.elapsed().as_millis();
@@ -1185,26 +1209,10 @@ impl PresenceTracker {
         }
     }
 
-    fn mark_vlm_no_person(&mut self) {
-        self.vlm_no_person_streak = self.vlm_no_person_streak.saturating_add(1);
-    }
-
     fn person_is_held(&self, now: i64) -> bool {
         self.last_person_seen_at
             .map(|seen_at| now.saturating_sub(seen_at) < PERSON_PRESENCE_HOLD_MS)
             .unwrap_or(false)
-    }
-
-    fn no_person_since(&self) -> Option<i64> {
-        self.last_person_seen_at.or(self.first_no_person_at)
-    }
-
-    fn no_person_for_at_least(&self, now: i64, duration_ms: i64) -> bool {
-        !self.person_is_held(now)
-            && self
-                .no_person_since()
-                .map(|since| now.saturating_sub(since) >= duration_ms)
-                .unwrap_or(false)
     }
 }
 

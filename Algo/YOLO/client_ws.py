@@ -19,7 +19,7 @@ class YOLOWebSocketClient:
     def __init__(self, server_url="ws://localhost:8090"):
         self.server_url = server_url
 
-    async def detect_frame(self, ws, frame, max_width=1280, quality=60):
+    async def detect_frame(self, ws, frame, max_width=1280, quality=60, confidence=0.45):
         # Resize
         h, w = frame.shape[:2]
         if w > max_width:
@@ -32,6 +32,7 @@ class YOLOWebSocketClient:
 
         # Send and receive
         start = time.time()
+        await ws.send(json.dumps({"type": "options", "confidence": confidence}))
         await ws.send(img_bytes)
         result = await ws.recv()
         elapsed = (time.time() - start) * 1000
@@ -76,7 +77,9 @@ async def process_video(args):
                 continue
 
             # Detect
-            result, elapsed = await client.detect_frame(ws, frame, args.max_width, args.quality)
+            result, elapsed = await client.detect_frame(
+                ws, frame, args.max_width, args.quality, args.confidence
+            )
             times.append(elapsed)
             count = result.get('count', 0)
             total_detections += count
@@ -137,6 +140,7 @@ if __name__ == "__main__":
     parser.add_argument("--frame-interval", type=int, default=1)
     parser.add_argument("--max-width", type=int, default=1280)
     parser.add_argument("--quality", type=int, default=60)
+    parser.add_argument("--confidence", type=float, default=0.45)
     parser.add_argument("--display", action="store_true")
     args = parser.parse_args()
 

@@ -939,21 +939,7 @@ pub async fn test_yolo_connection(
 ) -> Result<serde_json::Value, String> {
     require_login(&state)?;
 
-    let trimmed = api_base.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("请填写 YOLO 服务器地址".into());
-    }
-    let normalized = if let Some(rest) = trimmed.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
-        trimmed.to_string()
-    } else {
-        format!("ws://{trimmed}")
-    };
-    let base = normalized.trim_end_matches('/').trim_end_matches("/ws");
-    let url = format!("{base}/ws");
+    let url = crate::pipeline::yolo_detector::YoloClient::new(api_base).ws_url()?;
 
     let connect = tokio::time::timeout(
         std::time::Duration::from_secs(3),
@@ -974,9 +960,11 @@ pub async fn test_yolo_connection(
     };
     let jpeg_bytes = crate::pipeline::yolo_detector::encode_frame_as_jpeg(&frame)
         .map_err(|e| format!("测试帧编码失败: {e}"))?;
-    ws.send(tokio_tungstenite::tungstenite::Message::Binary(jpeg_bytes.into()))
-        .await
-        .map_err(|e| format!("发送测试帧失败: {e}"))?;
+    ws.send(tokio_tungstenite::tungstenite::Message::Binary(
+        jpeg_bytes.into(),
+    ))
+    .await
+    .map_err(|e| format!("发送测试帧失败: {e}"))?;
 
     // 循环接收，跳过 Ping/Pong/Frame 等控制帧（tungstenite 0.29 暴露了这些变体）
     let text = loop {
@@ -1004,8 +992,10 @@ pub async fn test_yolo_connection(
     let _ = ws
         .send(tokio_tungstenite::tungstenite::Message::Close(None))
         .await;
-    let body: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("解析响应失败: {e} (text={})", &text[..text.len().min(200)]))?;
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        let snippet = text.chars().take(200).collect::<String>();
+        format!("解析响应失败: {e} (text={snippet})")
+    })?;
     if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
         return Err(format!("服务端返回错误: {err}"));
     }
@@ -1019,7 +1009,7 @@ pub async fn test_yolo_connection(
         .unwrap_or_default();
     Ok(serde_json::json!({
         "ok": true,
-        "url": url,
+        "url": crate::pipeline::yolo_detector::redact_url(&url),
         "count": count,
         "processMs": process_ms,
         "raw": body,
