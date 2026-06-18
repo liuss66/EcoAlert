@@ -1,0 +1,14 @@
+# YOLO Person Detection Server Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 8090
+  workers: 1  # 并发 worker 数（建议：GPU=1-2，CPU=核心数）
+
+model:
+  name: "model/yolo11x.pt"  # yolo11n.pt, yolo11s.pt, yolo11m.pt, yolo11l.pt, yolo11x.pt
+  confidence: 0.45
+  iou_threshold: 0.35
+  classes: [0]  # COCO class 0 = person
+  device: "auto"  # auto, cpu, cuda:0
+  imgsz: 640

@@ -727,6 +727,12 @@ body.developer-mode .developer-only.hidden { display: flex !important; }
   border-color: #a7f3d0;
   opacity: 1;
 }
+.video-card .state-icon.person.is-error {
+  color: #b91c1c;
+  background: #fee2e2;
+  border-color: #fecaca;
+  opacity: 1;
+}
 .video-card .state-icon.light.is-active {
   color: #b45309;
   background: #fef3c7;

@@ -958,6 +958,8 @@ function applyStateIcons() {
   $$('.state-icons').forEach((el) => {
     const id = el.dataset.state;
     const s = sceneStates.get(id) || { person: false, light: false };
+    const rt = runtimeStatuses.get(id);
+    const yoloError = !!(rt?.yoloError ?? rt?.yolo_error);
     const person = el.querySelector('.person');
     const light = el.querySelector('.light');
     const alarm = el.querySelector('.alarm');
@@ -965,9 +967,14 @@ function applyStateIcons() {
       const simplePerson = s.simplePerson ?? s.person;
       const simpleConfidence = s.simplePersonConfidence ?? s.personConfidence ?? 0;
       person.classList.toggle('is-active', !!simplePerson);
+      person.classList.toggle('is-error', yoloError);
       person.title = simplePerson
         ? `常规模型：有人 (置信度 ${(simpleConfidence * 100).toFixed(0)}%)`
         : `常规模型：无人 (置信度 ${(simpleConfidence * 100).toFixed(0)}%)`;
+      if (yoloError) {
+        const err = rt?.yoloError ?? rt?.yolo_error ?? rt?.lastError ?? rt?.last_error ?? 'YOLO 服务器失效';
+        person.title = `YOLO 服务器失效：${err}`;
+      }
     }
     if (light) {
       light.classList.toggle('is-active', !!s.light);
@@ -999,6 +1006,7 @@ function applyStateIcons() {
     el.classList.remove('hidden');
     const id = el.dataset.scene;
     const s = sceneStates.get(id);
+    const rt = runtimeStatuses.get(id);
     if (!s) {
       const rt = runtimeStatuses.get(id);
       if (rt) {
@@ -1028,9 +1036,10 @@ function applyStateIcons() {
     const motionText = s.motionScore == null ? '-' : `${Number(s.motionScore).toFixed(3)}`;
     const cost = s.processMs ?? s.modelLatencyMs;
     const costText = cost == null ? '-' : `${Number(cost).toFixed(1)}ms`;
+    const yoloError = rt?.yoloError ?? rt?.yolo_error;
     el.textContent = `色彩:${colorText}  运动:${motionText}  检测:${fmtTime(s.ts)}  耗时:${costText}`;
     el.dataset.brightness = s.lightBrightness ?? '';
-    el.title = `融合:${s.person ? '有人' : '无人'} · 色彩:${colorText} · 运动:${motionText} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}`;
+    el.title = `融合:${s.person ? '有人' : '无人'} · 色彩:${colorText} · 运动:${motionText} · 来源:${s.source || 'simple'} · ${s.reason || '-'} · #${s.frameSeq || 0} · ${costText} · ${fmtTime(s.ts)}${yoloError ? ` · YOLO失效:${yoloError}` : ''}`;
   });
 }
 
@@ -3488,7 +3497,10 @@ const subscribeEvents = async () => {
     }
   });
   await onNotification(async (payload) => {
-    addLog(payload.ok ? 'info' : 'warn', `通知${payload.ok ? '成功' : '失败'}: ${payload.event || '-'}`);
+    const eventLabel = payload.event === 'yolo_error'
+      ? 'YOLO服务器失效通知'
+      : `通知${payload.ok ? '成功' : '失败'}`;
+    addLog(payload.ok ? 'info' : 'warn', `${eventLabel}: ${payload.event || '-'}`);
     if (!$('#view-notification-settings').classList.contains('hidden')) {
       await renderNotificationSettings();
     }

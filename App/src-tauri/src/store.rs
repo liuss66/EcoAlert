@@ -143,6 +143,8 @@ pub struct ChannelRuntimeStatus {
     pub vlm_enabled: bool,
     #[serde(default)]
     pub yolo_enabled: bool,
+    #[serde(default)]
+    pub yolo_error: Option<String>,
     pub last_frame_at: Option<i64>,
     pub last_algorithm_at: Option<i64>,
     pub last_error: Option<String>,
@@ -208,6 +210,7 @@ impl ChannelRuntimeStatus {
             alarm_status: "normal".into(),
             vlm_enabled: false,
             yolo_enabled: false,
+            yolo_error: None,
             last_frame_at: enabled.then_some(ts),
             last_algorithm_at: None,
             last_error: None,

@@ -780,6 +780,15 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         }
                     }
                 }
+                let previous_yolo_error = {
+                    state
+                        .runtime_status
+                        .lock()
+                        .get(&s.id)
+                        .and_then(|entry| entry.yolo_error.clone())
+                };
+                let yolo_failure_active = decision_effective_config.yolo_enabled
+                    && yolo_error_msg.is_some();
                 let tracker = presence_trackers.entry(s.id.clone()).or_default();
                 let simple_person = new_state.person;
                 let simple_person_confidence = new_state.person_confidence;
@@ -819,7 +828,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let person = new_state.person;
                 let light = new_state.light;
                 // 报警条件：灯亮且无人
-                let raw_alarm = light && !person;
+                let raw_alarm = light && !person && !yolo_failure_active;
                 let recover_condition =
                     should_recover_alarm(person, light, &decision_effective_config.recover_policy);
                 let alarm_transition = alarm_timers.entry(s.id.clone()).or_default().update(
@@ -864,6 +873,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     entry.algorithm_status = "idle".into();
                     entry.vlm_enabled = decision_effective_config.vlm_enabled;
                     entry.yolo_enabled = decision_effective_config.yolo_enabled;
+                    entry.yolo_error = yolo_error_msg.clone();
                     // YOLO 错误优先于 VLM 错误显示
                     entry.last_error = yolo_error_msg
                         .clone()
@@ -872,6 +882,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     entry.alarm_status = alarm_status.into();
                     entry.ts = now;
                 }
+                let yolo_error_for_scene = yolo_error_msg.clone();
                 let scene_payload = serde_json::json!({
                     "source_id": s.id,
                     "person": person,
@@ -887,6 +898,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "vlm_person": vlm_person,
                     "vlm_person_confidence": vlm_person_confidence,
                     "vlm_status": vlm_status,
+                    "yolo_error": yolo_error_for_scene,
                     "person_confidence": new_state.person_confidence,
                     "light_confidence": new_state.light_confidence,
                     "confidence": new_state.confidence,
@@ -1019,6 +1031,24 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                             {
                                 let mut runtime = state.runtime_status.lock();
                                 if let Some(entry) = runtime.get_mut(&s.id) {
+
+                    if yolo_failure_active && previous_yolo_error.is_none() {
+                        let app_for_notify = app.clone();
+                        let state_for_notify = state.inner().clone();
+                        let source_id = s.id.clone();
+                        let detail = yolo_error_msg.clone().unwrap_or_else(|| "YOLO 服务器失效".into());
+                        tauri::async_runtime::spawn(async move {
+                            notifier::dispatch_system_event(
+                                app_for_notify,
+                                state_for_notify,
+                                "yolo_error".into(),
+                                Some(source_id),
+                                "YOLO 服务器失效".into(),
+                                detail,
+                            )
+                            .await;
+                        });
+                    }
                                     entry.alarm_status = alarm_record.status.clone();
                                     entry.ts = now;
                                 }
@@ -1263,7 +1293,7 @@ fn should_recover_alarm(person: bool, light: bool, policy: &str) -> bool {
 
 fn algorithm_config_signature(config: &AlgorithmConfig) -> String {
     format!(
-        "enabled={};dev={};simple={};person={:.5};hold={};recover={};policy={};vlm={};vlm_interval={};vlm_skip={};vlm_limit={}",
+        "enabled={};dev={};simple={};person={:.5};hold={};recover={};policy={};vlm={};vlm_interval={};vlm_skip={};vlm_limit={};yolo={};yolo_api={};yolo_conf={:.3}",
         config.enabled,
         config.developer_mode,
         config.simple_interval_sec,
@@ -1275,6 +1305,9 @@ fn algorithm_config_signature(config: &AlgorithmConfig) -> String {
         config.vlm_interval_sec,
         config.vlm_skip_when_person,
         config.vlm_hourly_limit,
+        config.yolo_enabled,
+        config.yolo_api_base,
+        config.yolo_confidence,
     )
 }
 

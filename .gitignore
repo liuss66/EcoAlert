@@ -16,6 +16,8 @@ Test/.venv/
 Test/output/
 Algo/Python/output/
 Algo/*
+!Algo/YOLO/
+!Algo/YOLO/**
 # Windows
 nul
 

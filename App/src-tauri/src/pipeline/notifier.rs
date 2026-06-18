@@ -39,7 +39,7 @@ pub async fn dispatch_alarm_event(
         if !target_accepts_event(&target, &event) {
             continue;
         }
-        if is_in_cooldown(&state, &target, &event, &alarm) {
+        if is_in_cooldown_for_event(&state, &target, &event, Some(alarm.source_id.as_str())) {
             continue;
         }
         let record = send_to_target(&mut target, &event, &payload, Some(&alarm)).await;
@@ -50,6 +50,45 @@ pub async fn dispatch_alarm_event(
         persist_and_emit(&app, &state, record);
     }
     // 持久化更新的 token
+    if !updated_targets.is_empty() {
+        let mut cfg = state.notification_config.lock();
+        for updated in &updated_targets {
+            if let Some(t) = cfg.targets.iter_mut().find(|t| t.id == updated.id) {
+                t.access_token = updated.access_token.clone();
+                t.token_expires_at = updated.token_expires_at;
+            }
+        }
+    }
+}
+
+pub async fn dispatch_system_event(
+    app: AppHandle,
+    state: Arc<AppState>,
+    event: String,
+    source_id: Option<String>,
+    title: String,
+    message: String,
+) {
+    let targets = state.notification_config.lock().targets.clone();
+    if targets.is_empty() {
+        return;
+    }
+
+    let payload = build_system_payload(&state, &event, source_id.as_deref(), &title, &message);
+    let mut updated_targets = Vec::new();
+    for mut target in targets {
+        if !target_accepts_event(&target, &event) {
+            continue;
+        }
+        if is_in_cooldown_for_event(&state, &target, &event, source_id.as_deref()) {
+            continue;
+        }
+        let record = send_to_target(&mut target, &event, &payload, None).await;
+        if target.is_api_mode() && !target.access_token.is_empty() {
+            updated_targets.push(target.clone());
+        }
+        persist_and_emit(&app, &state, record);
+    }
     if !updated_targets.is_empty() {
         let mut cfg = state.notification_config.lock();
         for updated in &updated_targets {
@@ -161,11 +200,11 @@ fn target_accepts_event(target: &NotificationTarget, event: &str) -> bool {
         && (target.event_types.is_empty() || target.event_types.iter().any(|item| item == event))
 }
 
-fn is_in_cooldown(
+fn is_in_cooldown_for_event(
     state: &AppState,
     target: &NotificationTarget,
     event: &str,
-    alarm: &AlarmRecord,
+    source_id: Option<&str>,
 ) -> bool {
     let cutoff = chrono::Utc::now().timestamp_millis() - (target.cooldown_sec as i64 * 1000);
     state
@@ -177,9 +216,43 @@ fn is_in_cooldown(
             record.ok
                 && record.target_id == target.id
                 && record.event == event
-                && record.source_id.as_deref() == Some(alarm.source_id.as_str())
+                && record.source_id.as_deref() == source_id
                 && record.request_at >= cutoff
         })
+}
+
+fn build_system_payload(
+    state: &AppState,
+    event: &str,
+    source_id: Option<&str>,
+    title: &str,
+    message: &str,
+) -> Value {
+    let source = source_id.and_then(|id| {
+        state
+            .sources
+            .lock()
+            .iter()
+            .find(|source| source.id == id)
+            .cloned()
+    });
+    let now = chrono::Utc::now();
+    let ts_formatted = now
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    serde_json::json!({
+        "event": event,
+        "source_id": source_id,
+        "source_name": source.as_ref().map(|s| s.name.as_str()).unwrap_or("YOLO服务器"),
+        "location": source.as_ref().map(|s| s.location.as_str()).unwrap_or(""),
+        "source_url": source.as_ref().map(|s| s.url.as_str()).unwrap_or(""),
+        "title": title,
+        "message": message,
+        "state_source": "yolo_error",
+        "ts": now.timestamp_millis(),
+        "ts_formatted": ts_formatted,
+    })
 }
 
 fn build_alarm_payload(state: &AppState, event: &str, alarm: &AlarmRecord) -> Value {
