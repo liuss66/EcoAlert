@@ -414,7 +414,7 @@ async fn send_platform_message(target: &mut NotificationTarget, body: &str) -> R
         other => return Err(format!("不支持的渠道类型: {other}")),
     };
 
-    Ok(response.status().as_u16())
+    validate_http_response(response, "平台通知").await
 }
 
 async fn send_http(target: &NotificationTarget, body: String) -> Result<u16, String> {
@@ -433,7 +433,52 @@ async fn send_http(target: &NotificationTarget, body: String) -> Result<u16, Str
         }
     }
     let response = request.send().await.map_err(|err| err.to_string())?;
-    Ok(response.status().as_u16())
+    validate_http_response(response, "Webhook").await
+}
+
+async fn validate_http_response(response: reqwest::Response, channel: &str) -> Result<u16, String> {
+    let status = response.status().as_u16();
+    let text = response
+        .text()
+        .await
+        .map_err(|err| format!("读取{channel}响应失败: {err}"))?;
+    if let Ok(json) = serde_json::from_str::<Value>(&text) {
+        if business_response_failed(&json) {
+            return Err(format!(
+                "{channel}返回 HTTP {status}，但业务结果失败: {}",
+                text_snippet(&text, 500)
+            ));
+        }
+    }
+    Ok(status)
+}
+
+fn business_response_failed(json: &Value) -> bool {
+    json.get("success")
+        .and_then(Value::as_bool)
+        .map(|value| !value)
+        .unwrap_or(false)
+        || json
+            .get("errcode")
+            .map(|value| value.as_i64() != Some(0) && value.as_str() != Some("0"))
+            .unwrap_or(false)
+        || json
+            .get("code")
+            .map(|value| {
+                !matches!(value.as_i64(), Some(0 | 200))
+                    && !matches!(value.as_str(), Some("0" | "200"))
+            })
+            .unwrap_or(false)
+}
+
+fn text_snippet(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let snippet = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{snippet}...")
+    } else {
+        snippet
+    }
 }
 
 fn render_body(target: &NotificationTarget, payload: &Value) -> String {
@@ -461,6 +506,13 @@ fn render_body(target: &NotificationTarget, payload: &Value) -> String {
 }
 
 fn apply_template(template: &str, payload: &Value) -> String {
+    // JSON 模板必须在结构化值中替换，否则 Windows 路径中的反斜杠、换行和
+    // 引号会破坏请求体。测试通知没有这些字符，因此旧实现只在真实报警暴露。
+    if let Ok(mut json) = serde_json::from_str::<Value>(template) {
+        render_json_template_value(&mut json, payload);
+        return serde_json::to_string(&json).unwrap_or_else(|_| template.to_string());
+    }
+
     let mut body = template.to_string();
     if let Some(obj) = payload.as_object() {
         for (key, value) in obj {
@@ -472,6 +524,37 @@ fn apply_template(template: &str, payload: &Value) -> String {
         }
     }
     body
+}
+
+fn render_json_template_value(value: &mut Value, payload: &Value) {
+    match value {
+        Value::String(text) => *text = apply_text_template(text, payload),
+        Value::Array(items) => {
+            for item in items {
+                render_json_template_value(item, payload);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                render_json_template_value(item, payload);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_text_template(template: &str, payload: &Value) -> String {
+    let mut text = template.to_string();
+    if let Some(obj) = payload.as_object() {
+        for (key, value) in obj {
+            let replacement = value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            text = text.replace(&format!("{{{{{key}}}}}"), &replacement);
+        }
+    }
+    text
 }
 
 fn event_label(event: &str) -> Cow<'_, str> {
@@ -663,6 +746,33 @@ mod tests {
             Some("alarm-new"),
             0,
         ));
+    }
+
+    #[test]
+    fn json_template_escapes_windows_paths_and_newlines() {
+        let template = r#"{"text":{"content":"区域: {{location}}\n来源: {{source_name}}"}}"#;
+        let rendered = apply_template(
+            template,
+            &serde_json::json!({
+                "location": r"G:\project\EcoAlert\Video",
+                "source_name": "一号\n摄像头",
+            }),
+        );
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            parsed["text"]["content"],
+            "区域: G:\\project\\EcoAlert\\Video\n来源: 一号\n摄像头"
+        );
+    }
+
+    #[test]
+    fn http_200_business_error_is_recognized() {
+        let body = serde_json::json!({"errcode": 40003, "errmsg": "invalid user"});
+        assert!(business_response_failed(&body));
+        assert!(!business_response_failed(
+            &serde_json::json!({"errcode": 0})
+        ));
+        assert!(!business_response_failed(&serde_json::json!({"code": 200})));
     }
 
     #[test]

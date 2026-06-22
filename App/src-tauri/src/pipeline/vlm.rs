@@ -633,12 +633,12 @@ fn parse_detection_content(content: &str) -> anyhow::Result<VlmDetection> {
     let result = parse_detection_json(content)
         .or_else(|| extract_code_block(content).and_then(|text| parse_detection_json(&text)))
         .or_else(|| extract_braced_json(content).and_then(|text| parse_detection_json(&text)))
-        .unwrap_or_else(|| ModelDetectionResult {
-            has_person: content.to_ascii_lowercase().contains("yes")
-                || content.contains('有')
-                || content.contains('人'),
-            detections: vec![],
-        });
+        .ok_or_else(|| {
+            anyhow!(
+                "VLM 未返回约定的检测 JSON，原始响应: {}",
+                text_snippet(content, 300)
+            )
+        })?;
     let confidence = result
         .detections
         .iter()
@@ -722,6 +722,12 @@ mod tests {
         let parsed = parse_detection_content("{\"has_person\":false,\"detections\":[]}").unwrap();
         assert!(!parsed.has_person);
         assert_eq!(parsed.confidence, 0.0);
+    }
+
+    #[test]
+    fn negative_chinese_prose_is_not_misclassified_as_person() {
+        let error = parse_detection_content("画面中没有人").unwrap_err();
+        assert!(error.to_string().contains("未返回约定的检测 JSON"));
     }
 
     #[test]

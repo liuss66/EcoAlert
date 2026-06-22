@@ -882,6 +882,8 @@ pub struct TestVlmVisionPayload {
     pub config: AlgorithmConfig,
     #[serde(alias = "sourceId")]
     pub source_id: String,
+    #[serde(default, alias = "seekSeconds")]
+    pub seek_seconds: Option<f64>,
 }
 
 /// 用指定视频源抽一帧，走真实 VLM 图片识别流程，返回模型原始回复和请求体。
@@ -897,11 +899,14 @@ pub async fn test_vlm_vision(
         .find(|s| s.id == payload.source_id)
         .ok_or_else(|| format!("未找到视频源 {}", payload.source_id))?;
     let url = source.url.clone();
+    let seek_seconds = (source.source_type == "mp4")
+        .then_some(payload.seek_seconds)
+        .flatten();
     let frame = tokio::task::spawn_blocking(move || {
         crate::pipeline::decoder::extract_original_frame_from_url_at(
             &url,
             std::time::Duration::from_secs(10),
-            None,
+            seek_seconds,
         )
     })
     .await
