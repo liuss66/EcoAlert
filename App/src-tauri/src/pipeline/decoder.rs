@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// 解码出的单帧（最小可用结构，具体像素格式后续定）
-#[derive(Clone)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
@@ -92,7 +91,7 @@ pub fn extract_gray_frame_from_url_at(
     let is_rtsp = url.starts_with("rtsp://") || url.starts_with("rtsps://");
 
     let mut command = Command::new(resolve_media_tool("ffmpeg"));
-    command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+    command.args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "1"]);
     // 限制流探测时间，默认 5 秒太长，是每次抽帧的固定开销。
     // 500ms 足以识别绝大多数摄像头 / MP4 的编码格式。
     command.args(["-analyzeduration", "500000", "-probesize", "5000000"]);
@@ -103,12 +102,12 @@ pub fn extract_gray_frame_from_url_at(
     }
 
     let seek_arg = seek_secs.map(|value| format!("{:.3}", value.max(0.0)));
-    command.args(["-i", url]);
-    // 对 MP4 等文件类媒体，-ss 放在 -i 后面做精确Seek（慢但准确到帧级别）。
-    // 旧版 -ss 在 -i 前面只定位到最近关键帧，连续帧可能完全相同导致帧差为零。
+    // 本地 MP4 的 -ss 放在输入前，直接定位到邻近关键帧。输入后精确 Seek 会从
+    // 文件前部持续解码，时间点越靠后 CPU 成本越高，最终拖垮弱性能机器。
     if let Some(seek) = &seek_arg {
         command.args(["-ss", seek]);
     }
+    command.args(["-i", url]);
     command.args([
         "-frames:v",
         "1",
@@ -183,6 +182,8 @@ pub fn extract_original_frame_from_url_at(
         "-loglevel",
         "error",
         "-y",
+        "-threads",
+        "1",
         "-analyzeduration",
         "500000",
         "-probesize",
@@ -191,10 +192,10 @@ pub fn extract_original_frame_from_url_at(
     if is_rtsp {
         command.args(["-rtsp_transport", "tcp"]);
     }
-    command.args(["-i", url]);
     if let Some(seek) = seek_secs {
         command.args(["-ss", &format!("{:.3}", seek.max(0.0))]);
     }
+    command.args(["-i", url]);
     command.args(["-frames:v", "1", "-c:v", "png"]);
     command.arg(&output);
     command.stdout(Stdio::null()).stderr(Stdio::null());

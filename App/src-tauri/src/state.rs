@@ -481,6 +481,14 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         // WS 长连接复用，避免每帧建连/拆连的开销
         let mut yolo_clients: HashMap<String, Arc<yolo_detector::YoloClient>> = HashMap::new();
         let mut yolo_breakers: HashMap<String, yolo_detector::YoloCircuitBreaker> = HashMap::new();
+        let ffmpeg_concurrency = std::thread::available_parallelism()
+            .map(|count| (count.get() / 4).clamp(1, 2))
+            .unwrap_or(1);
+        let ffmpeg_slots = Arc::new(tokio::sync::Semaphore::new(ffmpeg_concurrency));
+        let vlm_ffmpeg_slots = Arc::new(tokio::sync::Semaphore::new(1));
+        log::info!(
+            "[抽帧] 常规 ffmpeg 最大并发数={ffmpeg_concurrency}，VLM 原图抽帧并发数=1，每进程线程数=1"
+        );
         loop {
             interval.tick().await;
             let tick_start = std::time::Instant::now();
@@ -498,6 +506,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 source_id: String,
                 source_enabled: bool,
                 effective_config: AlgorithmConfig,
+                seek_secs: Option<f64>,
                 join_handle:
                     tokio::task::JoinHandle<anyhow::Result<crate::pipeline::decoder::DecodedFrame>>,
             }
@@ -592,27 +601,28 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 } else {
                     None
                 };
-                // YOLO 模式直接抽高分辨率帧，避免 Phase 3 二次抽帧
+                // 常规检测仅在 YOLO 模式使用 1280x720。VLM 原始分辨率帧在真正
+                // 触发确认时通过独立、单并发的 ffmpeg 路径按需抽取。
                 let yolo_enabled = decision.effective_config.yolo_enabled;
-                let vlm_enabled = decision.effective_config.vlm_enabled;
                 let (frame_width, frame_height) = if yolo_enabled {
                     (1280, 720)
                 } else {
                     (320, 240)
                 };
+                let permit = Arc::clone(&ffmpeg_slots)
+                    .acquire_owned()
+                    .await
+                    .expect("ffmpeg semaphore is open");
                 let join_handle = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
                     let t0 = std::time::Instant::now();
-                    let result = if vlm_enabled {
-                        extract_original_frame_from_url_at(&url, Duration::from_secs(5), seek_secs)
-                    } else {
-                        extract_gray_frame_from_url_at(
-                            &url,
-                            frame_width,
-                            frame_height,
-                            Duration::from_secs(5),
-                            seek_secs,
-                        )
-                    };
+                    let result = extract_gray_frame_from_url_at(
+                        &url,
+                        frame_width,
+                        frame_height,
+                        Duration::from_secs(5),
+                        seek_secs,
+                    );
                     let ms = t0.elapsed().as_millis();
                     if ms > 1500 {
                         log::warn!(
@@ -631,6 +641,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     source_id: s.id.clone(),
                     source_enabled: s.enabled,
                     effective_config: decision.effective_config.clone(),
+                    seek_secs,
                     join_handle,
                 });
             }
@@ -639,6 +650,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             struct ExtractionResult {
                 source_idx: usize,
                 effective_config: AlgorithmConfig,
+                seek_secs: Option<f64>,
                 frame: crate::pipeline::decoder::DecodedFrame,
             }
             let mut results: Vec<ExtractionResult> = Vec::new();
@@ -648,6 +660,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         results.push(ExtractionResult {
                             source_idx: p.source_idx,
                             effective_config: p.effective_config,
+                            seek_secs: p.seek_secs,
                             frame,
                         });
                     }
@@ -770,6 +783,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             for r in results {
                 let s = &sources[r.source_idx];
                 let decision_effective_config = r.effective_config;
+                let frame_seek_secs = r.seek_secs;
                 let frame = r.frame;
                 let roi_config = state.roi_config.lock().effective_for_source(&s.id);
                 let detector = detectors.entry(s.id.clone()).or_insert_with(|| {
@@ -1053,10 +1067,26 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     && !light_off_skip
                 {
                     let config = decision_effective_config.clone();
-                    let vlm_frame = frame.clone();
+                    let source_url = s.url.clone();
+                    let vlm_slots = Arc::clone(&vlm_ffmpeg_slots);
                     let started = chrono::Utc::now().timestamp_millis();
-                    let job =
-                        tokio::spawn(async move { vlm::analyze_person(&config, &vlm_frame).await });
+                    let job = tokio::spawn(async move {
+                        let permit = vlm_slots
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| anyhow::anyhow!("VLM ffmpeg 调度器已关闭"))?;
+                        let vlm_frame = tokio::task::spawn_blocking(move || {
+                            extract_original_frame_from_url_at(
+                                &source_url,
+                                Duration::from_secs(10),
+                                frame_seek_secs,
+                            )
+                        })
+                        .await
+                        .map_err(|err| anyhow::anyhow!("VLM 原图抽帧任务异常: {err}"))??;
+                        drop(permit);
+                        vlm::analyze_person(&config, &vlm_frame).await
+                    });
                     pending_vlm_jobs.insert(s.id.clone(), (started, job));
                     alarm_transition = None;
                     alarm_status = "vlm_checking";
