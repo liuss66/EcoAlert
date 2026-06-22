@@ -512,9 +512,11 @@ fn build_vision_request_body(
     image_url: String,
 ) -> serde_json::Value {
     let prompt = config.vlm_prompt.trim();
-    let max_tokens = config.vlm_max_tokens.max(16);
+    // 人员检测只需要返回很短的 JSON。沿用聊天测试的 2048 等大值会让
+    // Qwen 思考模型生成大量 reasoning_content，容易耗尽 30 秒请求超时。
+    let max_tokens = config.vlm_max_tokens.clamp(64, 512);
     let temperature = config.vlm_temperature.clamp(0.0, 2.0);
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [{
             "role": "user",
@@ -526,7 +528,13 @@ fn build_vision_request_body(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": false,
-    })
+    });
+    // DashScope 的 Qwen 思考模型支持该开关。关闭隐藏推理后，实测同一
+    // 原始视频帧从数百 token 降到约 20 token，并稳定在超时前返回。
+    if model.to_ascii_lowercase().starts_with("qwen") {
+        body["enable_thinking"] = serde_json::Value::Bool(false);
+    }
+    body
 }
 
 fn format_vlm_http_error(
@@ -730,6 +738,7 @@ mod tests {
             build_vision_request_body(&cfg, &cfg.vlm_model, "data:image/jpeg;base64,abc".into());
         assert_eq!(body["model"], "qwen3.6-plus");
         assert_eq!(body["max_tokens"], 64);
+        assert_eq!(body["enable_thinking"], false);
         let temperature = body["temperature"].as_f64().unwrap();
         assert!((temperature - 0.1).abs() < 0.000_001);
         assert_eq!(body["messages"][0]["role"], "user");
@@ -744,6 +753,18 @@ mod tests {
         assert!(body.get("stream_options").is_none());
         assert!(body.get("thinking").is_none());
         assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn vision_request_caps_large_token_budget_and_keeps_generic_models_compatible() {
+        let cfg = AlgorithmConfig {
+            vlm_max_tokens: 2048,
+            ..AlgorithmConfig::default()
+        };
+        let body =
+            build_vision_request_body(&cfg, "generic-vision", "data:image/png;base64,x".into());
+        assert_eq!(body["max_tokens"], 512);
+        assert!(body.get("enable_thinking").is_none());
     }
 
     #[test]

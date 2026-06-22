@@ -39,7 +39,13 @@ pub async fn dispatch_alarm_event(
         if !target_accepts_event(&target, &event) {
             continue;
         }
-        if is_in_cooldown_for_event(&state, &target, &event, Some(alarm.source_id.as_str())) {
+        if is_in_cooldown_for_event(
+            &state,
+            &target,
+            &event,
+            Some(alarm.source_id.as_str()),
+            Some(alarm.id.as_str()),
+        ) {
             continue;
         }
         let record = send_to_target(
@@ -87,7 +93,7 @@ pub async fn dispatch_system_event(
         if !target_accepts_event(&target, &event) {
             continue;
         }
-        if is_in_cooldown_for_event(&state, &target, &event, source_id.as_deref()) {
+        if is_in_cooldown_for_event(&state, &target, &event, source_id.as_deref(), None) {
             continue;
         }
         let record = send_to_target(&mut target, &event, &payload, source_id.clone(), None).await;
@@ -212,6 +218,7 @@ fn is_in_cooldown_for_event(
     target: &NotificationTarget,
     event: &str,
     source_id: Option<&str>,
+    alarm_id: Option<&str>,
 ) -> bool {
     let cutoff = chrono::Utc::now().timestamp_millis() - (target.cooldown_sec as i64 * 1000);
     state
@@ -219,13 +226,26 @@ fn is_in_cooldown_for_event(
         .lock()
         .records
         .iter()
-        .any(|record| {
-            record.ok
-                && record.target_id == target.id
-                && record.event == event
-                && record.source_id.as_deref() == source_id
-                && record.request_at >= cutoff
-        })
+        .any(|record| cooldown_record_matches(record, target, event, source_id, alarm_id, cutoff))
+}
+
+fn cooldown_record_matches(
+    record: &NotificationRecord,
+    target: &NotificationTarget,
+    event: &str,
+    source_id: Option<&str>,
+    alarm_id: Option<&str>,
+    cutoff: i64,
+) -> bool {
+    record.ok
+        && record.target_id == target.id
+        && record.event == event
+        && match alarm_id {
+            // 每个报警生命周期都必须发送一次，不能被同一视频源的上一条报警抑制。
+            Some(id) => record.alarm_id.as_deref() == Some(id),
+            None => record.source_id.as_deref() == source_id,
+        }
+        && record.request_at >= cutoff
 }
 
 fn build_system_payload(
@@ -603,6 +623,47 @@ fn persist_and_emit(app: &AppHandle, state: &AppState, record: NotificationRecor
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_target() -> NotificationTarget {
+        NotificationTarget::new(NotificationTargetPayload {
+            name: "target".into(),
+            enabled: true,
+            channel_type: "webhook".into(),
+            url: "mock://local".into(),
+            ..NotificationTargetPayload::default()
+        })
+    }
+
+    #[test]
+    fn cooldown_does_not_suppress_a_new_alarm_for_the_same_source() {
+        let target = test_target();
+        let record = NotificationRecord::new_pending(
+            &target,
+            "alarm_triggered".into(),
+            Some("camera-1".into()),
+            Some("alarm-old".into()),
+            None,
+            10_000,
+        );
+        let record = NotificationRecord { ok: true, ..record };
+
+        assert!(cooldown_record_matches(
+            &record,
+            &target,
+            "alarm_triggered",
+            Some("camera-1"),
+            Some("alarm-old"),
+            0,
+        ));
+        assert!(!cooldown_record_matches(
+            &record,
+            &target,
+            "alarm_triggered",
+            Some("camera-1"),
+            Some("alarm-new"),
+            0,
+        ));
+    }
 
     #[test]
     fn system_message_uses_explicit_error_detail() {
