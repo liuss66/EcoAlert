@@ -983,7 +983,7 @@ function applyStateIcons() {
         : '灯：关';
     }
     if (alarm) {
-      const isAlarm = !!s.alarm;
+      const isAlarm = !!s.alarm || ['alarm_active', 'acknowledged', 'recovering'].includes(s.alarmStatus);
       const vlmProgress = Math.max(0, Math.min(1, Number(s.vlmProgress ?? s.alarmProgress ?? 0)));
       const countdownProgress = Math.max(0, Math.min(1, Number(s.alarmCountdownProgress ?? 0)));
       alarm.classList.toggle('is-active', isAlarm);
@@ -1045,6 +1045,7 @@ function applyStateIcons() {
 
 function updateLiveState(payload) {
   if (!payload || !payload.sourceId) return;
+  const alarmStatus = payload.alarmStatus || payload.alarm_status || 'normal';
   const next = {
     person: !!payload.person,
     light: !!payload.light,
@@ -1054,8 +1055,9 @@ function updateLiveState(payload) {
     vlmPerson: payload.vlmPerson ?? payload.vlm_person ?? null,
     vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
     vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
-    alarm: !!payload.alarm,
-    alarmStatus: payload.alarmStatus || payload.alarm_status || 'normal',
+    alarm: !!payload.alarm || ['alarm_active', 'acknowledged', 'recovering'].includes(alarmStatus),
+    alarmStatus,
+    alarmRecordActive: !!(payload.alarmRecordActive ?? payload.alarm_record_active),
     alarmProgress: payload.alarmProgress ?? payload.alarm_progress ?? 0,
     vlmProgress: payload.vlmProgress ?? payload.vlm_progress ?? 0,
     alarmCountdownProgress: payload.alarmCountdownProgress ?? payload.alarm_countdown_progress ?? 0,

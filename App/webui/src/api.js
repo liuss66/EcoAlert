@@ -70,6 +70,8 @@ function normalizeStateRecord(r) {
 
 function normalizeSceneState(payload) {
   if (!payload) return payload;
+  const alarmStatus = payload.alarmStatus ?? payload.alarm_status ?? 'normal';
+  const alarmRecordActive = payload.alarmRecordActive ?? payload.alarm_record_active ?? false;
   return {
     ...payload,
     sourceId: payload.sourceId ?? payload.source_id,
@@ -81,6 +83,9 @@ function normalizeSceneState(payload) {
     vlmPerson: payload.vlmPerson ?? payload.vlm_person ?? null,
     vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
     vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
+    alarm: !!payload.alarm || ['alarm_active', 'acknowledged', 'recovering'].includes(alarmStatus),
+    alarmStatus,
+    alarmRecordActive: !!alarmRecordActive,
     alarmProgress: payload.alarmProgress ?? payload.alarm_progress ?? 0,
     vlmProgress: payload.vlmProgress ?? payload.vlm_progress ?? 0,
     alarmCountdownProgress: payload.alarmCountdownProgress ?? payload.alarm_countdown_progress ?? 0,

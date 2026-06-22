@@ -1192,7 +1192,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "person": person,
                     "light": light,
                     "light_state": if light { "on" } else { "off" },
-                    "alarm": alarm_status == "alarm_active",
+                    "alarm": is_formal_alarm_status(alarm_status),
                     "alarm_record_active": alarm_timers.get(&s.id).map(|timer| timer.active).unwrap_or(false),
                     "alarm_status": alarm_status,
                     "alarm_progress": alarm_countdown_progress,
@@ -1280,12 +1280,7 @@ fn should_dispatch_alarm_notification(
     let all_group_sources_alarm = group_sources.iter().all(|item| {
         runtime
             .get(&item.id)
-            .map(|status| {
-                matches!(
-                    status.alarm_status.as_str(),
-                    "alarm_active" | "acknowledged" | "recovering"
-                )
-            })
+            .map(|status| is_formal_alarm_status(status.alarm_status.as_str()))
             .unwrap_or(false)
     });
     drop(runtime);
@@ -1309,6 +1304,10 @@ fn should_dispatch_alarm_notification(
         }
         _ => true,
     }
+}
+
+fn is_formal_alarm_status(status: &str) -> bool {
+    matches!(status, "alarm_active" | "acknowledged" | "recovering")
 }
 
 #[derive(Default)]
@@ -1468,7 +1467,9 @@ pub fn log_event(app: &AppHandle, level: &str, text: impl Into<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{migrate_algorithm_default_tuning, should_recover_alarm, AlarmTimer};
+    use super::{
+        is_formal_alarm_status, migrate_algorithm_default_tuning, should_recover_alarm, AlarmTimer,
+    };
     use crate::store::AlgorithmConfigFile;
 
     #[test]
@@ -1507,6 +1508,16 @@ mod tests {
         assert!(!should_recover_alarm(true, true, "both"));
         assert!(should_recover_alarm(false, false, "either"));
         assert!(should_recover_alarm(true, true, "either"));
+    }
+
+    #[test]
+    fn formal_alarm_status_matches_notification_lifecycle() {
+        assert!(is_formal_alarm_status("alarm_active"));
+        assert!(is_formal_alarm_status("acknowledged"));
+        assert!(is_formal_alarm_status("recovering"));
+        assert!(!is_formal_alarm_status("suspected"));
+        assert!(!is_formal_alarm_status("vlm_checking"));
+        assert!(!is_formal_alarm_status("resolved"));
     }
 
     #[test]
