@@ -469,10 +469,17 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
         let mut yolo_logged_sources: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut vlm_hourly_usage: HashMap<String, (i64, u32)> = HashMap::new();
+        let mut pending_vlm_jobs: HashMap<
+            String,
+            (
+                i64,
+                tokio::task::JoinHandle<anyhow::Result<vlm::VlmDetection>>,
+            ),
+        > = HashMap::new();
         let mut media_durations: HashMap<String, Option<f64>> = HashMap::new();
         // YOLO 检测：每源一个 WebSocket 客户端 + 熔断器
         // WS 长连接复用，避免每帧建连/拆连的开销
-        let mut yolo_clients: HashMap<String, yolo_detector::YoloClient> = HashMap::new();
+        let mut yolo_clients: HashMap<String, Arc<yolo_detector::YoloClient>> = HashMap::new();
         let mut yolo_breakers: HashMap<String, yolo_detector::YoloCircuitBreaker> = HashMap::new();
         loop {
             interval.tick().await;
@@ -574,7 +581,10 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         media_durations.insert(s.id.clone(), probed);
                         probed
                     };
-                    let base = current_counter.saturating_sub(1) as f64;
+                    // 检测每 N 秒运行一次，本地视频也必须前进 N 秒。旧逻辑每轮只
+                    // 前进 1 秒，运行 5 分钟后检测帧会比播放器画面落后数分钟。
+                    let base = current_counter.saturating_sub(1) as f64
+                        * decision.effective_config.simple_interval_sec.max(1) as f64;
                     Some(match duration {
                         Some(duration) if duration > 0.5 => base % duration,
                         _ => base,
@@ -689,6 +699,73 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 }
             }
 
+            // YOLO 网络调用按视频源并发执行。旧实现虽然并发抽帧，但随后逐路
+            // 等待最多 7 秒，8 路视频会把 10 秒周期拖成 20 秒甚至更长。
+            let mut yolo_results: HashMap<String, Result<yolo_detector::YoloDetectResult, String>> =
+                HashMap::new();
+            let mut yolo_jobs = Vec::new();
+            for r in &results {
+                let s = &sources[r.source_idx];
+                let cfg = &r.effective_config;
+                if !cfg.yolo_enabled {
+                    continue;
+                }
+                if yolo_logged_sources.insert(s.id.clone()) {
+                    log::info!(
+                        "[yolo] 通道 {} 首次进入 YOLO 检测分支 (api={}, conf={})",
+                        s.id,
+                        yolo_detector::redact_url(&cfg.yolo_api_base),
+                        cfg.yolo_confidence
+                    );
+                }
+                let breaker = yolo_breakers.entry(s.id.clone()).or_default();
+                if breaker.is_open(now) {
+                    yolo_results.insert(s.id.clone(), Err("YOLO 服务熔断冷却中".into()));
+                    continue;
+                }
+                let client = yolo_clients.entry(s.id.clone()).or_insert_with(|| {
+                    Arc::new(yolo_detector::YoloClient::new(cfg.yolo_api_base.clone()))
+                });
+                if client.api_base() != cfg.yolo_api_base {
+                    *client = Arc::new(yolo_detector::YoloClient::new(cfg.yolo_api_base.clone()));
+                }
+                let jpeg = match yolo_detector::encode_frame_as_jpeg(&r.frame) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        breaker.record_failure(now);
+                        yolo_results.insert(s.id.clone(), Err(format!("YOLO 帧编码失败: {err}")));
+                        continue;
+                    }
+                };
+                let source_id = s.id.clone();
+                let confidence = cfg.yolo_confidence;
+                let client = Arc::clone(client);
+                yolo_jobs.push(async move {
+                    let result = match tokio::time::timeout(
+                        Duration::from_secs(7),
+                        client.detect_frame(jpeg, confidence),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            client.disconnect().await;
+                            Err("YOLO 检测超时（>7s）".into())
+                        }
+                    };
+                    (source_id, result)
+                });
+            }
+            for (source_id, result) in futures_util::future::join_all(yolo_jobs).await {
+                let breaker = yolo_breakers.entry(source_id.clone()).or_default();
+                if result.is_ok() {
+                    breaker.record_success();
+                } else {
+                    breaker.record_failure(now);
+                }
+                yolo_results.insert(source_id, result);
+            }
+
             // ── Phase 3: 顺序处理检测结果（VLM / 报警 / 事件推送） ──────────
             for r in results {
                 let s = &sources[r.source_idx];
@@ -710,89 +787,31 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let mut yolo_detections: Vec<yolo_detector::YoloDetection> = Vec::new();
                 let mut yolo_error_msg: Option<String> = None;
                 if decision_effective_config.yolo_enabled {
-                    if yolo_logged_sources.insert(s.id.clone()) {
-                        log::info!(
-                            "[yolo] 通道 {} 首次进入 YOLO 检测分支 (api={}, conf={})",
-                            s.id,
-                            yolo_detector::redact_url(&decision_effective_config.yolo_api_base),
-                            decision_effective_config.yolo_confidence
-                        );
-                    }
-                    let breaker = yolo_breakers.entry(s.id.clone()).or_default();
-                    if breaker.is_open(now) {
-                        new_state.reason = Some("yolo_cooldown".into());
-                        yolo_error_msg = state
-                            .runtime_status
-                            .lock()
-                            .get(&s.id)
-                            .and_then(|entry| entry.yolo_error.clone())
-                            .or_else(|| Some("YOLO 服务熔断冷却中".into()));
-                        log::debug!("[yolo] {} 处于熔断冷却期，跳过检测", s.id);
-                    } else {
-                        // 配置或地址变化时重建连接
-                        let client = yolo_clients.entry(s.id.clone()).or_insert_with(|| {
-                            yolo_detector::YoloClient::new(
-                                decision_effective_config.yolo_api_base.clone(),
-                            )
-                        });
-                        if client.api_base() != decision_effective_config.yolo_api_base {
-                            *client = yolo_detector::YoloClient::new(
-                                decision_effective_config.yolo_api_base.clone(),
-                            );
+                    match yolo_results.remove(&s.id) {
+                        Some(Ok(result)) => {
+                            let cnt = yolo_success_count.entry(s.id.clone()).or_insert(0);
+                            *cnt += 1;
+                            if *cnt % 10 == 1 {
+                                log::info!(
+                                    "[yolo] {} 检测成功 person={} detections={} conf={:.2} latency={}ms (tick #{cnt})",
+                                    s.id, result.person, result.detections.len(),
+                                    result.person_confidence, result.process_ms
+                                );
+                            }
+                            new_state.person = result.person;
+                            new_state.person_confidence = result.person_confidence;
+                            new_state.source = "yolo".into();
+                            new_state.model_latency_ms = Some(result.process_ms as u32);
+                            yolo_detections = result.detections;
                         }
-
-                        // 直接使用 Phase 2 抽取的高分辨率帧（YOLO 模式下已抽 1280x720）
-                        match yolo_detector::encode_frame_as_jpeg(&frame) {
-                            Ok(jpeg_bytes) => {
-                                // 顶层超时 7s：建连 + 发送 + 接收
-                                let yolo_result = tokio::time::timeout(
-                                    Duration::from_secs(7),
-                                    client.detect_frame(
-                                        jpeg_bytes,
-                                        decision_effective_config.yolo_confidence,
-                                    ),
-                                )
-                                .await;
-                                match yolo_result {
-                                    Ok(Ok(result)) => {
-                                        breaker.record_success();
-                                        let cnt =
-                                            yolo_success_count.entry(s.id.clone()).or_insert(0);
-                                        *cnt += 1;
-                                        if *cnt % 10 == 1 {
-                                            log::info!(
-                                                "[yolo] {} 检测成功 person={} detections={} conf={:.2} latency={}ms (tick #{cnt})",
-                                                s.id, result.person, result.detections.len(),
-                                                result.person_confidence, result.process_ms
-                                            );
-                                        }
-                                        new_state.person = result.person;
-                                        new_state.person_confidence = result.person_confidence;
-                                        new_state.source = "yolo".into();
-                                        new_state.model_latency_ms = Some(result.process_ms as u32);
-                                        yolo_detections = result.detections;
-                                    }
-                                    Ok(Err(e)) => {
-                                        breaker.record_failure(now);
-                                        log::error!("[yolo] {} 检测失败: {}", s.id, e);
-                                        new_state.reason = Some(format!("yolo_error: {e}"));
-                                        yolo_error_msg = Some(format!("YOLO 检测失败: {e}"));
-                                    }
-                                    Err(_) => {
-                                        breaker.record_failure(now);
-                                        log::error!("[yolo] {} 检测超时（>7s）", s.id);
-                                        new_state.reason = Some("yolo_error: 调用超时".into());
-                                        yolo_error_msg = Some("YOLO 检测超时（>7s）".into());
-                                        // 超时主动断开，下次重建
-                                        client.disconnect().await;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("[yolo] {} 帧编码失败: {}", s.id, e);
-                                new_state.reason = Some(format!("yolo_error: {e}"));
-                                yolo_error_msg = Some(format!("YOLO 帧编码失败: {e}"));
-                            }
+                        Some(Err(err)) => {
+                            log::error!("[yolo] {} 检测失败: {}", s.id, err);
+                            new_state.reason = Some(format!("yolo_error: {err}"));
+                            yolo_error_msg = Some(err);
+                        }
+                        None => {
+                            new_state.reason = Some("yolo_error: 结果缺失".into());
+                            yolo_error_msg = Some("YOLO 检测结果缺失".into());
                         }
                     }
                 }
@@ -866,7 +885,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let raw_alarm = light && !person && !yolo_failure_active;
                 let recover_condition =
                     should_recover_alarm(person, light, &decision_effective_config.recover_policy);
-                let alarm_transition = alarm_timers.entry(s.id.clone()).or_default().update(
+                let mut alarm_transition = alarm_timers.entry(s.id.clone()).or_default().update(
                     raw_alarm,
                     recover_condition,
                     now,
@@ -938,75 +957,113 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 }
 
                 let mut alarm_cancelled_by_vlm = false;
-                if let Some(alarm_active) = alarm_transition {
-                    // 报警触发时，如果 VLM 启用，先调用 VLM 确认是否有人
-                    if alarm_active
-                        && decision_effective_config.vlm_enabled
-                        && vlm_under_limit
-                        && !light_off_skip
-                    {
-                        let vlm_started = chrono::Utc::now().timestamp_millis();
-                        match vlm::analyze_person(&decision_effective_config, &frame).await {
-                            Ok(vlm_result) => {
-                                usage_entry.1 = usage_entry.1.saturating_add(1);
-                                vlm_person = Some(vlm_result.has_person);
-                                vlm_person_confidence = Some(vlm_result.confidence);
-                                let latency = chrono::Utc::now()
-                                    .timestamp_millis()
-                                    .saturating_sub(vlm_started);
+                let mut vlm_confirmation_completed = false;
 
-                                if vlm_result.has_person {
-                                    // VLM 检测到人，取消报警，重置计时器
-                                    vlm_status = "person_alarm_cancelled";
-                                    log::info!(
-                                        "[vlm] 报警确认：检测到人员，取消报警 source={} confidence={:.2} latency={}ms",
-                                        s.id,
-                                        vlm_result.confidence,
-                                        latency
-                                    );
-                                    // 重置报警计时器
-                                    if let Some(timer) = alarm_timers.get_mut(&s.id) {
-                                        timer.reset();
-                                    }
-                                    alarm_status = "normal";
-                                    alarm_countdown_progress = 0.0;
-                                    alarm_cancelled_by_vlm = true;
-                                } else {
-                                    // VLM 确认无人，正常报警
-                                    vlm_status = "no_person_alarm_confirmed";
-                                    log::info!(
-                                        "[vlm] 报警确认：无人，继续报警 source={} confidence={:.2} latency={}ms",
-                                        s.id,
-                                        vlm_result.confidence,
-                                        latency
-                                    );
+                // 异常条件已消失时，不再等待旧画面的 VLM 结果。
+                if !raw_alarm {
+                    if let Some((_started, job)) = pending_vlm_jobs.remove(&s.id) {
+                        job.abort();
+                        if let Some(timer) = alarm_timers.get_mut(&s.id) {
+                            timer.reset();
+                        }
+                        alarm_transition = None;
+                        alarm_status = "normal";
+                        alarm_countdown_progress = 0.0;
+                    }
+                }
+
+                let vlm_job_finished = pending_vlm_jobs
+                    .get(&s.id)
+                    .map(|(_, job)| job.is_finished())
+                    .unwrap_or(false);
+                if vlm_job_finished {
+                    let (started, job) = pending_vlm_jobs.remove(&s.id).expect("VLM job exists");
+                    let latency = chrono::Utc::now()
+                        .timestamp_millis()
+                        .saturating_sub(started);
+                    vlm_confirmation_completed = true;
+                    match job.await {
+                        Ok(Ok(vlm_result)) => {
+                            usage_entry.1 = usage_entry.1.saturating_add(1);
+                            vlm_person = Some(vlm_result.has_person);
+                            vlm_person_confidence = Some(vlm_result.confidence);
+                            new_state.model_latency_ms = Some(latency as u32);
+                            if vlm_result.has_person {
+                                vlm_status = "person_alarm_cancelled";
+                                if let Some(timer) = alarm_timers.get_mut(&s.id) {
+                                    timer.reset();
                                 }
-                                new_state.model_latency_ms = Some(latency as u32);
-                                let _ = app.emit(
-                                    "ecoalert://algorithm_schedule",
-                                    serde_json::json!({
-                                        "source_id": s.id,
-                                        "action": "run_vlm",
-                                        "reason": if vlm_result.has_person { "vlm_person_detected" } else { "vlm_no_person" },
-                                        "latency_ms": latency,
-                                        "ts": now,
-                                    }),
+                                alarm_transition = None;
+                                alarm_status = "normal";
+                                alarm_countdown_progress = 0.0;
+                                alarm_cancelled_by_vlm = true;
+                                log::info!(
+                                    "[vlm] 报警确认：检测到人员，取消报警 source={} confidence={:.2} latency={}ms",
+                                    s.id, vlm_result.confidence, latency
+                                );
+                            } else {
+                                vlm_status = "no_person_alarm_confirmed";
+                                alarm_transition = Some(true);
+                                alarm_status = "alarm_active";
+                                log::info!(
+                                    "[vlm] 报警确认：无人，继续报警 source={} confidence={:.2} latency={}ms",
+                                    s.id, vlm_result.confidence, latency
                                 );
                             }
-                            Err(err) => {
-                                // VLM 调用失败，继续报警（按用户要求：失败则正常报警）
-                                vlm_status = "error";
-                                let msg = format!("VLM 检测失败: {err}");
-                                log::warn!(
-                                    "[vlm] 报警确认失败，继续报警 source={} error={}",
-                                    s.id,
-                                    err
-                                );
-                                vlm_error_msg = Some(msg.clone());
-                            }
+                            let _ = app.emit(
+                                "ecoalert://algorithm_schedule",
+                                serde_json::json!({
+                                    "source_id": s.id,
+                                    "action": "run_vlm",
+                                    "reason": if vlm_result.has_person { "vlm_person_detected" } else { "vlm_no_person" },
+                                    "latency_ms": latency,
+                                    "ts": now,
+                                }),
+                            );
+                        }
+                        Ok(Err(err)) => {
+                            vlm_status = "error";
+                            vlm_error_msg = Some(format!("VLM 检测失败: {err}"));
+                            alarm_transition = Some(true);
+                            alarm_status = "alarm_active";
+                            log::warn!(
+                                "[vlm] 报警确认失败，继续报警 source={} error={}",
+                                s.id,
+                                err
+                            );
+                        }
+                        Err(err) => {
+                            vlm_status = "error";
+                            vlm_error_msg = Some(format!("VLM 检测任务异常: {err}"));
+                            alarm_transition = Some(true);
+                            alarm_status = "alarm_active";
                         }
                     }
+                } else if pending_vlm_jobs.contains_key(&s.id) {
+                    alarm_transition = None;
+                    alarm_status = "vlm_checking";
+                    vlm_status = "checking";
+                }
 
+                // 首次进入正式报警时只启动后台确认，不阻塞其他视频源和下一轮检测。
+                if alarm_transition == Some(true)
+                    && !vlm_confirmation_completed
+                    && decision_effective_config.vlm_enabled
+                    && vlm_under_limit
+                    && !light_off_skip
+                {
+                    let config = decision_effective_config.clone();
+                    let vlm_frame = frame.clone();
+                    let started = chrono::Utc::now().timestamp_millis();
+                    let job =
+                        tokio::spawn(async move { vlm::analyze_person(&config, &vlm_frame).await });
+                    pending_vlm_jobs.insert(s.id.clone(), (started, job));
+                    alarm_transition = None;
+                    alarm_status = "vlm_checking";
+                    vlm_status = "checking";
+                }
+
+                if let Some(alarm_active) = alarm_transition {
                     if !alarm_cancelled_by_vlm {
                         // 通知任务会读取 current_state；先写入本轮最终检测结果，
                         // 避免异步通知拿到上一帧状态。

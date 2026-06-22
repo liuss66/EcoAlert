@@ -2469,7 +2469,11 @@ $('#btn-test-vlm-vision')?.addEventListener('click', async () => {
   }
   if (btn) btn.disabled = true;
   try {
-    const payload = { ...algorithmPayloadFromForm(), sourceId };
+    const previewVideo = document.getElementById(`vw-${sourceId}`)?.querySelector('video');
+    const seekSeconds = Number.isFinite(previewVideo?.currentTime)
+      ? previewVideo.currentTime
+      : null;
+    const payload = { ...algorithmPayloadFromForm(), sourceId, seekSeconds };
     const result = await testVlmVision(payload);
     renderVlmTestResult(result, `图片识别测试（${escapeHtml(sourceName)}）`);
   } catch (err) {

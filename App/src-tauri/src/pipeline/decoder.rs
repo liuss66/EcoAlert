@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// 解码出的单帧（最小可用结构，具体像素格式后续定）
+#[derive(Clone)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
