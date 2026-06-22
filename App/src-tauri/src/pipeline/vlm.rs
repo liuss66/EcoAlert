@@ -155,7 +155,7 @@ pub async fn analyze_person(
     let text = String::from_utf8_lossy(&raw_bytes).into_owned();
     let is_stream_response = content_type.contains("event-stream")
         || content_type.contains("text/event-stream")
-        || text.contains("data:");
+        || looks_like_sse_response(&text);
     if is_stream_response || should_retry_as_stream(status, &text, &body) {
         // 如果已经是流式响应（Content-Type: event-stream），直接解析，不用再重试
         let stream_text = if is_stream_response && !text.is_empty() {
@@ -297,7 +297,7 @@ async fn call_chat_completion(
     let text = String::from_utf8_lossy(&raw_bytes).into_owned();
     let is_stream_response = content_type.contains("event-stream")
         || content_type.contains("text/event-stream")
-        || text.contains("data:");
+        || looks_like_sse_response(&text);
     if is_stream_response || should_retry_as_stream(status, &text, &request_body) {
         let stream_text = if is_stream_response && !text.is_empty() {
             text.clone()
@@ -363,6 +363,15 @@ async fn call_chat_completion(
         format!("VLM 响应不是 OpenAI-compatible JSON (model={model}), 原始响应: {snippet}")
     })?;
     Ok((parsed, request_url, request_body))
+}
+
+/// 判断响应体是否是 SSE（Server-Sent Events）流式格式。
+///
+/// 必须逐行检查 `data:` 是否出现在行首，而不是用 `text.contains("data:")` 做全文模糊匹配。
+/// 后者会在普通 JSON 响应包含 `data:` 子串时（如 data URL、base64 数据、模型回复文本）
+/// 产生误判，导致代码错误地进入流式重试分支，进而触发"流式响应体为空"。
+fn looks_like_sse_response(text: &str) -> bool {
+    text.lines().any(|line| line.trim_start().starts_with("data:"))
 }
 
 fn should_retry_as_stream(
@@ -753,5 +762,37 @@ mod tests {
         );
         assert_eq!(parse_streaming_chat_content(text).unwrap(), "Hello world");
         assert_eq!(parse_streaming_chat_usage(text).unwrap().total_tokens, 3);
+    }
+
+    #[test]
+    fn looks_like_sse_detects_real_sse() {
+        assert!(looks_like_sse_response(
+            "data: {\"choices\":[]}\n\ndata: [DONE]\n\n"
+        ));
+        assert!(looks_like_sse_response(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}"
+        ));
+        // 行首有空白也算 SSE
+        assert!(looks_like_sse_response(
+            "  data: {\"choices\":[]}\n\n"
+        ));
+    }
+
+    #[test]
+    fn looks_like_sse_rejects_json_with_data_substring() {
+        // 普通 JSON 响应，内容中包含 "data:" 子串 —— 不应被误判为 SSE
+        assert!(!looks_like_sse_response(
+            r#"{"choices":[{"message":{"content":"see data: image"}}]}"#
+        ));
+        // JSON 中包含 data URL 也不应被误判
+        assert!(!looks_like_sse_response(
+            r#"{"choices":[{"message":{"content":"url is data:image/jpeg;base64,abc"}}]}"#
+        ));
+        // 纯 JSON 响应，没有任何 SSE 行
+        assert!(!looks_like_sse_response(
+            r#"{"id":"chatcmpl-1","choices":[{"message":{"content":"ok"}}]}"#
+        ));
+        // 空响应
+        assert!(!looks_like_sse_response(""));
     }
 }

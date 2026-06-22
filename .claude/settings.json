@@ -13,7 +13,9 @@
       "Bash(cat \"C:/Users/jinsheng.liu1/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/manifest-rust-std-x86_64-pc-windows-msvc\" 2>&1 | head -20)",
       "Bash(ls \"C:/Users/jinsheng.liu1/.rustup/toolchains/\" 2>&1)",
       "Read(//c/Users/jinsheng.liu1/.rustup/toolchains/**)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(cargo test *)",
+      "Bash(cargo check *)"
     ]
   }
 }
