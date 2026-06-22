@@ -898,11 +898,9 @@ pub async fn test_vlm_vision(
         .ok_or_else(|| format!("未找到视频源 {}", payload.source_id))?;
     let url = source.url.clone();
     let frame = tokio::task::spawn_blocking(move || {
-        crate::pipeline::decoder::extract_gray_frame_from_url_at(
+        crate::pipeline::decoder::extract_original_frame_from_url_at(
             &url,
-            320,
-            240,
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             None,
         )
     })

@@ -4,6 +4,7 @@
 //! 后续如果算法频率提高，再替换为常驻 ffmpeg / ffmpeg-next 解码管线。
 
 use crate::pipeline::PipelineConfig;
+use anyhow::Context;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
@@ -93,12 +94,7 @@ pub fn extract_gray_frame_from_url_at(
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     // 限制流探测时间，默认 5 秒太长，是每次抽帧的固定开销。
     // 500ms 足以识别绝大多数摄像头 / MP4 的编码格式。
-    command.args([
-        "-analyzeduration",
-        "500000",
-        "-probesize",
-        "5000000",
-    ]);
+    command.args(["-analyzeduration", "500000", "-probesize", "5000000"]);
 
     // RTSP 流强制使用 TCP 传输，避免 UDP 丢包导致花屏或抽帧失败
     if is_rtsp {
@@ -158,6 +154,84 @@ pub fn extract_gray_frame_from_url_at(
     }
     let data = rgb_to_gray(&rgb);
 
+    Ok(DecodedFrame {
+        width,
+        height,
+        pts_ms: chrono::Utc::now().timestamp_millis(),
+        data,
+        rgb,
+    })
+}
+
+/// 按视频源原始分辨率抽取一帧。ffmpeg 先输出无损 PNG，再解码为 RGB，
+/// 避免 VLM 链路在抽帧阶段发生缩放或有损压缩。
+pub fn extract_original_frame_from_url_at(
+    url: &str,
+    timeout: Duration,
+    seek_secs: Option<f64>,
+) -> anyhow::Result<DecodedFrame> {
+    let output = std::env::temp_dir().join(format!(
+        "ecoalert_frame_{}_{}.png",
+        std::process::id(),
+        Uuid::new_v4().simple()
+    ));
+    let is_rtsp = url.starts_with("rtsp://") || url.starts_with("rtsps://");
+    let mut command = Command::new(resolve_media_tool("ffmpeg"));
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-analyzeduration",
+        "500000",
+        "-probesize",
+        "5000000",
+    ]);
+    if is_rtsp {
+        command.args(["-rtsp_transport", "tcp"]);
+    }
+    command.args(["-i", url]);
+    if let Some(seek) = seek_secs {
+        command.args(["-ss", &format!("{:.3}", seek.max(0.0))]);
+    }
+    command.args(["-frames:v", "1", "-c:v", "png"]);
+    command.arg(&output);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| media_tool_spawn_error("ffmpeg", err))?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(&output);
+            anyhow::bail!("ffmpeg 原始分辨率抽帧超时");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    if !status.success() {
+        let _ = fs::remove_file(&output);
+        anyhow::bail!("ffmpeg 原始分辨率抽帧失败，退出码: {status}");
+    }
+
+    let image_result = image::open(&output)
+        .with_context(|| format!("读取原始分辨率抽帧失败: {}", output.display()));
+    let _ = fs::remove_file(&output);
+    let image = image_result?;
+    let rgb_image = image.to_rgb8();
+    let (width, height) = rgb_image.dimensions();
+    let rgb = rgb_image.into_raw();
+    let data = rgb_to_gray(&rgb);
     Ok(DecodedFrame {
         width,
         height,
