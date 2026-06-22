@@ -1,11 +1,24 @@
 use crate::pipeline::decoder::DecodedFrame;
 use crate::store::AlgorithmConfig;
 use anyhow::{anyhow, Context};
-use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use std::io::Cursor;
+use std::sync::OnceLock;
 use std::time::Duration;
+
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn shared_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent("node")
+            .build()
+            .expect("初始化 VLM HTTP Client 失败")
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct VlmDetection {
@@ -127,10 +140,7 @@ pub async fn analyze_person(
     let image_url = frame_to_lossless_png_data_url(frame)?;
     let body = build_vision_request_body(config, model, image_url);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("node")
-        .build()?;
+    let client = shared_client();
     let url = chat_completions_url(api_base);
     let response = client
         .post(&url)
@@ -225,7 +235,8 @@ pub async fn test_connection(config: &AlgorithmConfig) -> anyhow::Result<VlmTest
         "messages": [{ "role": "user", "content": "Hi" }],
         "max_tokens": 16,
     });
-    let (parsed, request_url, request_body) = call_chat_completion(config, body).await?;
+    let (parsed, request_url, mut request_body) = call_chat_completion(config, body).await?;
+    redact_image_data_urls(&mut request_body);
     let content = parsed
         .choices
         .first()
@@ -237,6 +248,25 @@ pub async fn test_connection(config: &AlgorithmConfig) -> anyhow::Result<VlmTest
         request_url,
         request_body,
     })
+}
+
+fn redact_image_data_urls(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if text.starts_with("data:image/") => {
+            *text = format!("[原图 Base64 已省略，共 {} 字符]", text.len());
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_image_data_urls(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                redact_image_data_urls(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 用当前配置对一帧画面做真实人员检测测试，用于在前端验证 VLM 图片识别是否正常。
@@ -272,10 +302,7 @@ async fn call_chat_completion(
         anyhow::bail!("VLM API 地址、API Key、模型名称不能为空");
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("node")
-        .build()?;
+    let client = shared_client();
     // 明确声明非流式，避免部分兼容网关在省略 stream 时默认返回空 SSE。
     let body = with_stream_disabled(&body);
     let url = chat_completions_url(api_base);
@@ -488,7 +515,7 @@ fn parse_streaming_chat_usage(text: &str) -> Option<RawUsage> {
         .ok()?
         .into_iter()
         .filter_map(|chunk| chunk.usage)
-        .last()
+        .next_back()
 }
 
 fn parse_streaming_chat_chunks(text: &str) -> anyhow::Result<Vec<ChatCompletionChunk>> {
@@ -592,16 +619,19 @@ impl From<RawUsage> for VlmUsage {
 }
 
 fn frame_to_lossless_png_data_url(frame: &DecodedFrame) -> anyhow::Result<String> {
-    let img =
-        ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(frame.width, frame.height, frame.rgb.clone())
-            .ok_or_else(|| anyhow!("RGB 帧大小异常"))?;
-    let dyn_img = DynamicImage::ImageRgb8(img);
-    let mut encoded = Cursor::new(Vec::new());
-    dyn_img.write_to(&mut encoded, ImageFormat::Png)?;
-    Ok(format!(
-        "data:image/png;base64,{}",
-        base64_encode(encoded.get_ref())
-    ))
+    let expected = frame.width as usize * frame.height as usize * 3;
+    if frame.rgb.len() != expected {
+        anyhow::bail!("RGB 帧大小异常: {}, expected {expected}", frame.rgb.len());
+    }
+    let mut encoded = Vec::new();
+    PngEncoder::new_with_quality(&mut encoded, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(
+            &frame.rgb,
+            frame.width,
+            frame.height,
+            ExtendedColorType::Rgb8,
+        )?;
+    Ok(format!("data:image/png;base64,{}", base64_encode(&encoded)))
 }
 
 fn message_content_to_string(content: &serde_json::Value) -> String {
@@ -780,6 +810,20 @@ mod tests {
             build_vision_request_body(&cfg, "generic-vision", "data:image/png;base64,x".into());
         assert_eq!(body["max_tokens"], 512);
         assert!(body.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn redacts_image_data_before_returning_debug_request() {
+        let mut body = serde_json::json!({
+            "image_url": {"url": "data:image/png;base64,abcdef"},
+            "prompt": "keep me",
+        });
+        redact_image_data_urls(&mut body);
+        assert_eq!(body["prompt"], "keep me");
+        assert!(body["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("Base64 已省略"));
     }
 
     #[test]
