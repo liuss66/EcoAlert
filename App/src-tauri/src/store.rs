@@ -889,6 +889,15 @@ pub fn save_json<T: Serialize>(path: &Path, data: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 高频历史数据使用紧凑 JSON，减少序列化 CPU、临时文件体积和磁盘写入量。
+pub fn save_json_compact<T: Serialize>(path: &Path, data: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_temp_then_replace(path, serde_json::to_string(data)?)?;
+    Ok(())
+}
+
 /// 给一组 VideoSource 补上默认 group_id（向前兼容旧数据）
 pub fn backfill_groups(data: &mut DataFile) {
     let default_grp_id = "grp-default".to_string();

@@ -11,10 +11,11 @@ use crate::pipeline::{
 };
 use crate::store::{
     backfill_groups, load, load_history, load_json, migrate_local_hls_demo_names, save,
-    save_history, save_json, AlarmRecord, AlarmRecordFile, AlgorithmConfig, AlgorithmConfigFile,
-    ChannelRuntimeStatus, DataFile, DetectionHistoryFile, DetectionSampleRecord, HistoryFile,
-    NotificationConfigFile, NotificationHistoryFile, NotificationRecord, RoiConfigFile, SceneState,
-    SecurityConfig, SourceGroup, StateRecord, VideoSource,
+    save_history, save_json, save_json_compact, AlarmRecord, AlarmRecordFile, AlgorithmConfig,
+    AlgorithmConfigFile, ChannelRuntimeStatus, DataFile, DetectionHistoryFile,
+    DetectionSampleRecord, HistoryFile, NotificationConfigFile, NotificationHistoryFile,
+    NotificationRecord, RoiConfigFile, SceneState, SecurityConfig, SourceGroup, StateRecord,
+    VideoSource,
 };
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -227,8 +228,7 @@ impl AppState {
         save_history(&self.history_file, &h)
     }
 
-    /// 详细检测采样落盘：开发者诊断曲线使用，每个源最多保留 2000 条，总量 20000 条。
-    pub fn record_detection_sample(&self, rec: DetectionSampleRecord) -> anyhow::Result<()> {
+    fn push_detection_sample(&self, rec: DetectionSampleRecord) {
         let source_id = rec.source_id.clone();
         let mut h = self.detection_history.lock();
         h.records.push_back(rec);
@@ -253,7 +253,22 @@ impl AppState {
         while h.records.len() > 20000 {
             h.records.pop_front();
         }
-        save_json(&self.detection_history_file, &*h)
+    }
+
+    /// 命令入口使用：追加后立即持久化。
+    pub fn record_detection_sample(&self, rec: DetectionSampleRecord) -> anyhow::Result<()> {
+        self.push_detection_sample(rec);
+        self.persist_detection_history()
+    }
+
+    /// 高频检测循环使用：只追加到内存，由循环定时批量持久化。
+    fn buffer_detection_sample(&self, rec: DetectionSampleRecord) {
+        self.push_detection_sample(rec);
+    }
+
+    fn persist_detection_history(&self) -> anyhow::Result<()> {
+        let snapshot = self.detection_history.lock().clone();
+        save_json_compact(&self.detection_history_file, &snapshot)
     }
 
     pub fn runtime_status_snapshot(&self) -> Vec<ChannelRuntimeStatus> {
@@ -477,6 +492,8 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
             ),
         > = HashMap::new();
         let mut media_durations: HashMap<String, Option<f64>> = HashMap::new();
+        let mut last_detection_history_flush = 0_i64;
+        let mut detection_history_dirty = false;
         // YOLO 检测：每源一个 WebSocket 客户端 + 熔断器
         // WS 长连接复用，避免每帧建连/拆连的开销
         let mut yolo_clients: HashMap<String, Arc<yolo_detector::YoloClient>> = HashMap::new();
@@ -1203,13 +1220,23 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "ts": now,
                 });
                 let _ = app.emit("ecoalert://scene_state", scene_payload);
-                if let Err(e) = state.record_detection_sample(DetectionSampleRecord::from_scene(
-                    &s.id,
-                    &new_state,
-                    alarm_status,
-                    now,
-                )) {
-                    log::warn!("详细检测历史落库失败: {e}");
+                if decision_effective_config.developer_mode {
+                    state.buffer_detection_sample(DetectionSampleRecord::from_scene(
+                        &s.id,
+                        &new_state,
+                        alarm_status,
+                        now,
+                    ));
+                    detection_history_dirty = true;
+                }
+            }
+            if detection_history_dirty && now.saturating_sub(last_detection_history_flush) >= 30_000
+            {
+                if let Err(e) = state.persist_detection_history() {
+                    log::warn!("详细检测历史批量落库失败: {e}");
+                } else {
+                    last_detection_history_flush = now;
+                    detection_history_dirty = false;
                 }
             }
             let tick_ms = tick_start.elapsed().as_millis();
