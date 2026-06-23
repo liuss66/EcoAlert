@@ -1,63 +1,21 @@
-PolyForm Noncommercial License 1.0.0
+MIT License
 
 Copyright (c) 2026 jinsheng.liu1
 
-## Acceptance
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-In order to get any license under these terms, you must agree
-to all of the following terms:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-- You can use, modify, and distribute the software for any
-  non-commercial purpose.
-- You can also use, modify, and distribute the software for any
-  purpose that is not commercial, as long as the software is not
-  used to generate revenue or has any commercial advantage.
-- You may not use, modify, or distribute the software for any
-  commercial purpose. A commercial purpose is one intended for
-  commercial advantage or monetary compensation.
-
-## Commercial Purpose
-
-A "commercial purpose" means any use of the software, in whole or in
-part, that is primarily intended for commercial advantage or monetary
-compensation. Examples of commercial use include, but are not limited
-to:
-
-- Selling the software, in whole or in part, or any product that
-  includes the software.
-- Using the software to provide services to third parties for a fee.
-- Using the software in a product or service that is sold, licensed,
-  or otherwise made available for a fee.
-- Using the software in the operation of a business, including but
-  not limited to research, development, marketing, sales, or support
-  of a commercial product or service.
-
-## Non-Commercial Use
-
-You may use, modify, and distribute the software for any
-non-commercial purpose, including but not limited to:
-
-- Personal use, education, and research.
-- Use within an organization that does not use the software for
-  commercial advantage or monetary compensation.
-- Use by a non-commercial entity, such as a non-profit organization,
-  educational institution, or government agency.
-
-## No Warranty
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-## Full License
-
-The full text of this license is available at:
-https://polyformproject.org/licenses/noncommercial/1.0.0
-
-For the official canonical text, see the link above. This file
-summarizes the terms for convenience; in case of any conflict, the
-official PolyForm Noncommercial License 1.0.0 text prevails.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

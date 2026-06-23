@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "EcoAlert 视频监控（Tauri + Web）",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -3,6 +3,7 @@ name = "EcoAlert"
 version = "1.0.0"
 description = "EcoAlert 视频监控"
 authors = ["liuss"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.77"
 
