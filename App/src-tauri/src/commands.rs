@@ -192,6 +192,7 @@ pub fn delete_source(
         Some(sources.remove(idx))
     };
     if let Some(r) = removed {
+        state.playback_positions.lock().remove(&r.id);
         state.persist_sources().map_err(|e| e.to_string())?;
         log_event(&app, "info", format!("删除视频源: {}", r.name));
     }
@@ -518,6 +519,30 @@ pub fn reorder(
 }
 
 /* -------------------- 状态记录（算法输出） -------------------- */
+
+/// 同步前端本地视频播放器的真实进度，供 ffmpeg 抽取同一时间点的画面。
+#[tauri::command]
+pub fn report_playback_position(
+    state: State<Arc<AppState>>,
+    source_id: String,
+    position_sec: f64,
+    playing: bool,
+) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
+    if !position_sec.is_finite() || position_sec < 0.0 {
+        return Err("播放器进度不合法".into());
+    }
+    let exists = state
+        .sources
+        .lock()
+        .iter()
+        .any(|source| source.id == source_id && source.source_type == "mp4");
+    if !exists {
+        return Err("本地视频源不存在".into());
+    }
+    state.update_playback_position(source_id, position_sec, playing);
+    Ok(serde_json::json!({ "ok": true }))
+}
 
 /// 接收算法真实输出（生产中由 pipeline::Pipeline 调用）
 /// 这里同时 emit 给前端 + 落库
@@ -1374,6 +1399,7 @@ pub fn reset_all_app_data(
         *state.notification_history.lock() = NotificationHistoryFile::default();
         state.current_state.lock().clear();
         state.runtime_status.lock().clear();
+        state.playback_positions.lock().clear();
     }
 
     crate::store::save(&state.data_file, &*state.data.lock()).map_err(|e| e.to_string())?;

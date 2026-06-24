@@ -39,6 +39,13 @@ pub struct ChannelStatus {
     pub ts: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PlaybackPosition {
+    pub position_sec: f64,
+    pub playing: bool,
+    pub updated_at: i64,
+}
+
 pub struct AppState {
     pub data_dir: PathBuf,
     pub data_file: PathBuf,
@@ -67,6 +74,7 @@ pub struct AppState {
     /// 每个源当前最近一次 SceneState（用于去重 / 比较）
     pub current_state: Mutex<HashMap<String, SceneState>>,
     pub runtime_status: Mutex<HashMap<String, ChannelRuntimeStatus>>,
+    pub playback_positions: Mutex<HashMap<String, PlaybackPosition>>,
 }
 
 impl AppState {
@@ -173,7 +181,24 @@ impl AppState {
             notification_history: Mutex::new(notification_history),
             current_state: Mutex::new(HashMap::new()),
             runtime_status: Mutex::new(HashMap::new()),
+            playback_positions: Mutex::new(HashMap::new()),
         }))
+    }
+
+    pub fn update_playback_position(&self, source_id: String, position_sec: f64, playing: bool) {
+        self.playback_positions.lock().insert(
+            source_id,
+            PlaybackPosition {
+                position_sec,
+                playing,
+                updated_at: chrono::Utc::now().timestamp_millis(),
+            },
+        );
+    }
+
+    fn current_playback_position(&self, source_id: &str, now: i64) -> Option<f64> {
+        let position = self.playback_positions.lock().get(source_id).copied()?;
+        extrapolate_playback_position(position, now)
     }
 
     pub fn data_dir_str(&self) -> String {
@@ -347,6 +372,21 @@ impl AppState {
         }
         save_json(&self.notification_history_file, &*file)
     }
+}
+
+fn extrapolate_playback_position(position: PlaybackPosition, now: i64) -> Option<f64> {
+    let age_ms = now.saturating_sub(position.updated_at);
+    if age_ms > 15_000 {
+        return None;
+    }
+    Some(
+        position.position_sec
+            + if position.playing {
+                age_ms as f64 / 1000.0
+            } else {
+                0.0
+            },
+    )
 }
 
 fn migrate_legacy_default_algorithm_window(config: &mut AlgorithmConfigFile) {
@@ -609,8 +649,11 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     };
                     // 检测每 N 秒运行一次，本地视频也必须前进 N 秒。旧逻辑每轮只
                     // 前进 1 秒，运行 5 分钟后检测帧会比播放器画面落后数分钟。
-                    let base = current_counter.saturating_sub(1) as f64
+                    let estimated = current_counter.saturating_sub(1) as f64
                         * decision.effective_config.simple_interval_sec.max(1) as f64;
+                    let base = state
+                        .current_playback_position(&s.id, now)
+                        .unwrap_or(estimated);
                     Some(match duration {
                         Some(duration) if duration > 0.5 => base % duration,
                         _ => base,
@@ -879,6 +922,9 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                 let simple_person_confidence = new_state.person_confidence;
                 let mut vlm_person: Option<bool> = None;
                 let mut vlm_person_confidence: Option<f32> = None;
+                let mut vlm_detections: Option<Vec<vlm::VlmDetectionBox>> = None;
+                let mut vlm_frame_width: Option<u32> = None;
+                let mut vlm_frame_height: Option<u32> = None;
                 let mut vlm_status = "none";
                 if simple_person {
                     tracker.mark_person_seen(now);
@@ -1018,6 +1064,9 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                             usage_entry.1 = usage_entry.1.saturating_add(1);
                             vlm_person = Some(vlm_result.has_person);
                             vlm_person_confidence = Some(vlm_result.confidence);
+                            vlm_detections = Some(vlm_result.detections.clone());
+                            vlm_frame_width = Some(vlm_result.image_width);
+                            vlm_frame_height = Some(vlm_result.image_height);
                             new_state.model_latency_ms = Some(latency as u32);
                             if vlm_result.has_person {
                                 vlm_status = "person_alarm_cancelled";
@@ -1054,6 +1103,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         }
                         Ok(Err(err)) => {
                             vlm_status = "error";
+                            vlm_detections = Some(Vec::new());
                             vlm_error_msg = Some(format!("VLM 检测失败: {err}"));
                             alarm_transition = Some(true);
                             alarm_status = "alarm_active";
@@ -1065,6 +1115,7 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                         }
                         Err(err) => {
                             vlm_status = "error";
+                            vlm_detections = Some(Vec::new());
                             vlm_error_msg = Some(format!("VLM 检测任务异常: {err}"));
                             alarm_transition = Some(true);
                             alarm_status = "alarm_active";
@@ -1201,6 +1252,9 @@ pub fn spawn_scene_state_ticker(app: AppHandle) {
                     "simple_person_confidence": simple_person_confidence,
                     "vlm_person": vlm_person,
                     "vlm_person_confidence": vlm_person_confidence,
+                    "vlm_detections": vlm_detections,
+                    "vlm_frame_width": vlm_frame_width,
+                    "vlm_frame_height": vlm_frame_height,
                     "vlm_status": vlm_status,
                     "yolo_error": yolo_error_msg,
                     "person_confidence": new_state.person_confidence,
@@ -1468,7 +1522,8 @@ pub fn log_event(app: &AppHandle, level: &str, text: impl Into<String>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_formal_alarm_status, migrate_algorithm_default_tuning, should_recover_alarm, AlarmTimer,
+        extrapolate_playback_position, is_formal_alarm_status, migrate_algorithm_default_tuning,
+        should_recover_alarm, AlarmTimer, PlaybackPosition,
     };
     use crate::store::AlgorithmConfigFile;
 
@@ -1518,6 +1573,23 @@ mod tests {
         assert!(!is_formal_alarm_status("suspected"));
         assert!(!is_formal_alarm_status("vlm_checking"));
         assert!(!is_formal_alarm_status("resolved"));
+    }
+
+    #[test]
+    fn playback_position_tracks_playing_paused_and_stale_video() {
+        let playing = PlaybackPosition {
+            position_sec: 42.0,
+            playing: true,
+            updated_at: 1_000,
+        };
+        assert_eq!(extrapolate_playback_position(playing, 3_500), Some(44.5));
+
+        let paused = PlaybackPosition {
+            playing: false,
+            ..playing
+        };
+        assert_eq!(extrapolate_playback_position(paused, 3_500), Some(42.0));
+        assert_eq!(extrapolate_playback_position(playing, 17_001), None);
     }
 
     #[test]

@@ -24,7 +24,17 @@ fn shared_client() -> &'static reqwest::Client {
 pub struct VlmDetection {
     pub has_person: bool,
     pub confidence: f32,
+    pub detections: Vec<VlmDetectionBox>,
+    pub image_width: u32,
+    pub image_height: u32,
     pub raw: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VlmDetectionBox {
+    pub confidence: f32,
+    /// [x1, y1, x2, y2]，归一化到 0..1。
+    pub bbox: [f32; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -124,6 +134,8 @@ struct ModelDetectionResult {
 struct ModelDetection {
     #[serde(default)]
     confidence: f32,
+    #[serde(default)]
+    bbox: [f32; 4],
 }
 
 pub async fn analyze_person(
@@ -211,7 +223,7 @@ pub async fn analyze_person(
                 anyhow::bail!("VLM 流式响应解析失败 (model={model}): {e}");
             }
         };
-        return parse_detection_content(&content);
+        return parse_detection_content(&content, frame.width, frame.height);
     }
     if !status.is_success() {
         anyhow::bail!("{}", format_vlm_http_error(status, &text, &url, &body));
@@ -226,7 +238,7 @@ pub async fn analyze_person(
         .first()
         .map(|choice| message_content_to_string(&choice.message.content))
         .ok_or_else(|| anyhow!("VLM 响应缺少 choices[0].message.content"))?;
-    parse_detection_content(&content)
+    parse_detection_content(&content, frame.width, frame.height)
 }
 
 pub async fn test_connection(config: &AlgorithmConfig) -> anyhow::Result<VlmTestResult> {
@@ -407,7 +419,8 @@ async fn call_chat_completion(
 /// 后者会在普通 JSON 响应包含 `data:` 子串时（如 data URL、base64 数据、模型回复文本）
 /// 产生误判，导致代码错误地进入流式重试分支，进而触发"流式响应体为空"。
 fn looks_like_sse_response(text: &str) -> bool {
-    text.lines().any(|line| line.trim_start().starts_with("data:"))
+    text.lines()
+        .any(|line| line.trim_start().starts_with("data:"))
 }
 
 fn should_retry_as_stream(
@@ -668,7 +681,11 @@ fn stream_delta_content_to_string(content: &serde_json::Value) -> String {
     }
 }
 
-fn parse_detection_content(content: &str) -> anyhow::Result<VlmDetection> {
+fn parse_detection_content(
+    content: &str,
+    image_width: u32,
+    image_height: u32,
+) -> anyhow::Result<VlmDetection> {
     let result = parse_detection_json(content)
         .or_else(|| extract_code_block(content).and_then(|text| parse_detection_json(&text)))
         .or_else(|| extract_braced_json(content).and_then(|text| parse_detection_json(&text)))
@@ -684,10 +701,37 @@ fn parse_detection_content(content: &str) -> anyhow::Result<VlmDetection> {
         .map(|det| det.confidence)
         .fold(if result.has_person { 0.7 } else { 0.0 }, f32::max)
         .clamp(0.0, 1.0);
+    let detections = result
+        .detections
+        .into_iter()
+        .filter_map(normalize_vlm_detection)
+        .collect();
     Ok(VlmDetection {
         has_person: result.has_person,
         confidence,
+        detections,
+        image_width,
+        image_height,
         raw: content.to_string(),
+    })
+}
+
+fn normalize_vlm_detection(detection: ModelDetection) -> Option<VlmDetectionBox> {
+    if !detection.bbox.iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let scale = if detection.bbox.iter().copied().fold(0.0_f32, f32::max) > 1.0 {
+        1000.0
+    } else {
+        1.0
+    };
+    let [x1, y1, x2, y2] = detection.bbox.map(|value| (value / scale).clamp(0.0, 1.0));
+    if x2 <= x1 || y2 <= y1 {
+        return None;
+    }
+    Some(VlmDetectionBox {
+        confidence: detection.confidence.clamp(0.0, 1.0),
+        bbox: [x1, y1, x2, y2],
     })
 }
 
@@ -749,23 +793,29 @@ mod tests {
     #[test]
     fn parses_json_code_block() {
         let parsed = parse_detection_content(
-            "```json\n{\"has_person\":true,\"detections\":[{\"confidence\":0.88}]}\n```",
+            "```json\n{\"has_person\":true,\"detections\":[{\"confidence\":0.88,\"bbox\":[100,200,700,900]}]}\n```",
+            1920,
+            1080,
         )
         .unwrap();
         assert!(parsed.has_person);
         assert_eq!(parsed.confidence, 0.88);
+        assert_eq!(parsed.detections[0].bbox, [0.1, 0.2, 0.7, 0.9]);
+        assert_eq!(parsed.image_width, 1920);
+        assert_eq!(parsed.image_height, 1080);
     }
 
     #[test]
     fn parses_plain_negative_json() {
-        let parsed = parse_detection_content("{\"has_person\":false,\"detections\":[]}").unwrap();
+        let parsed =
+            parse_detection_content("{\"has_person\":false,\"detections\":[]}", 1280, 720).unwrap();
         assert!(!parsed.has_person);
         assert_eq!(parsed.confidence, 0.0);
     }
 
     #[test]
     fn negative_chinese_prose_is_not_misclassified_as_person() {
-        let error = parse_detection_content("画面中没有人").unwrap_err();
+        let error = parse_detection_content("画面中没有人", 1280, 720).unwrap_err();
         assert!(error.to_string().contains("未返回约定的检测 JSON"));
     }
 
@@ -866,9 +916,7 @@ mod tests {
             "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}"
         ));
         // 行首有空白也算 SSE
-        assert!(looks_like_sse_response(
-            "  data: {\"choices\":[]}\n\n"
-        ));
+        assert!(looks_like_sse_response("  data: {\"choices\":[]}\n\n"));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 # ADR-0005 引入报警生命周期状态机
 
+> 状态：报警生命周期仍有效；VLM 进入时机和确认次数已由 [`0009-current-person-detection-and-vlm-confirmation.md`](./0009-current-person-detection-and-vlm-confirmation.md) 更新。
+
 ## 状态
 
 已接受

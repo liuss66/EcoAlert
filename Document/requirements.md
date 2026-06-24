@@ -1,8 +1,25 @@
 # EcoAlert 视频监控 · 需求规格说明书
 
-> 版本：v1.10
-> 日期：2026-06-13  
-> 状态：实现中（前端 + Tauri 后端骨架完成，算法调度 / 报警闭环 / 通知发送骨架已接入；灯光检测已切换到彩色 / 红外黑白模式特征，人员检测仍为运动代理）
+> 版本：v1.12
+> 日期：2026-06-24
+> 状态：实现中（桌面端、报警闭环、通知、YOLO WebSocket 人员检测与 OpenAI 兼容 VLM 已接入；YOLO 未启用时人员检测回退为运动代理）
+
+---
+
+## 目录
+
+- [1. 项目概述](#1-项目概述)
+- [2. 用户角色](#2-用户角色)
+- [3. 功能需求](#3-功能需求)
+- [4. 数据模型](#4-数据模型)
+- [5. 接口契约](#5-接口契约tauri-commands--events)
+- [6. UI 规范](#6-ui-规范)
+- [7. 数据流](#7-数据流)
+- [8. 部署与运行](#8-部署与运行)
+- [9. 验收用例](#9-验收用例)
+- [10. 项目优化建议](#10-项目优化建议)
+- [11. 未来工作](#11-未来工作)
+- [12. 变更记录](#12-变更记录)
 
 ---
 
@@ -42,8 +59,8 @@
 | MVP-1 | App 本体可用 | 登录、视频源 / 分组管理、MP4 / HLS 播放、状态历史、基础 UI |
 | MVP-2 | 配置与运行状态 | 字段命名统一、配置文件框架、`ChannelRuntimeStatus`、算法调度器骨架 |
 | MVP-3 | 报警闭环 | 报警状态机、确认 / 恢复、通知配置和通知历史骨架 |
-| MVP-4 | 简单算法 | ROI 灯光规则、轻量人员检测接口、VLM mock provider |
-| 后续 | 推流和真实模型 | 本地测试视频已支持文件夹导入；ffmpeg 推流器保留为可选 HLS 验证工具；RTSP 转码、真实 ONNX / VLM 接入待实现 |
+| MVP-4 | 检测算法 | ROI 灯光规则、运动代理、YOLO WebSocket 人员检测、OpenAI 兼容 VLM 复核 |
+| 后续 | 流媒体与工程化 | 本地测试视频已支持文件夹导入；ffmpeg 推流器保留为可选 HLS 验证工具；RTSP 转码、常驻解码、模型服务打包待实现 |
 
 当前目录结构也按这个边界收敛：`App/` 是主产品，`Video/` 是平铺测试素材，`Tools/` 是开发辅助工具；测试视频优先通过 App 调试页选择文件夹导入，HLS 推流器仅作为可选联调工具。
 
@@ -113,6 +130,8 @@
 | F-LIVE-5 | 后端每 3 秒推送一次码率 / FPS / 观众模拟数据 | ✅ |
 | F-LIVE-6 | 后端每 4 秒推送一次算法场景状态（person / light） | ✅ |
 | F-LIVE-7 | 算法真实接入时，替换 `state::spawn_scene_state_ticker` 即可 | ✅ 已接入 ffmpeg 单帧抽样，后续优化为常驻解码 |
+| F-LIVE-8 | 本地 MP4 播放器进度与后端 ffmpeg 抽帧时间点保持同步 | ✅ 前端每秒及播放状态变化时上报，15 秒过期后回退估算 |
+| F-LIVE-9 | 实时画面叠加 YOLO / VLM 人员检测框，并支持保留覆盖层的容器全屏 | ✅ |
 
 ### 3.5 状态图标（算法输出可视化）
 
@@ -171,12 +190,14 @@
 | F-AI-3 | 算法通过 `state.record_state_change(...)` 落库 | ✅ |
 | F-AI-4 | 状态变化时记录一条 `StateRecord`（含派生 alarm 字段） | ✅ |
 | F-AI-5 | `spawn_scene_state_ticker` 驱动开发期后台检测链路，后续可替换为常驻解码管线 | ✅ 已从合成帧推进到 ffmpeg 真实视频帧抽样 |
-| F-AI-6 | 真实算法接入位置：`src-tauri/src/pipeline/detector.rs` 替换帧差法 | ⚠️ 灯光检测可用；人员仍是运动代理，轻量人形模型 / 常驻解码待实现 |
+| F-AI-6 | 人员检测支持运动代理与可选 YOLO 服务，VLM 用于报警前复核 | ✅ YOLO / VLM 已接入；常驻解码待实现 |
 
 当前检测状态：
 
 - 灯光：已接真实 RGB 抽帧，优先利用摄像头模式特征判断：开灯为彩色画面，关灯切红外后为黑白画面；算法计算 ROI 或全帧的亮度加权 `color_score`，忽略暗部彩噪，并做 EMA 平滑后与单一色彩阈值比较，输出 `light=true/false` 和 `light_state=on/off`。RGB 不可用时才回退到亮度阈值（亮度仍保留磁滞）。
-- 人员：尚未接入人形检测模型，`person` 由低分辨率帧差运动分数临时代理；适合观察“画面有明显变化”，不适合作为生产人员存在结论。
+- 人员：YOLO 未启用时，`person` 由低分辨率帧差运动分数代理；启用 YOLO 后改用 WebSocket 服务返回的人形检测结果。
+- YOLO：可连接 `Algo/YOLO` WebSocket 服务；启用后 `person` 使用 YOLO 结果，并向前端输出归一化人员框。服务故障会抑制新报警并产生 `yolo_error`。
+- VLM：已支持 OpenAI Chat Completions 兼容视觉接口。无人亮灯达到报警保持时间后可异步复核；检测到人员取消报警，确认无人或请求失败则继续报警。
 - 输出链路：Tauri 后端每次检测完成都会推送 `ecoalert://scene_state`；历史记录仍只在 `person / light` 变化时落库。
 - 默认调度：全局 `activeWindows` 为空，表示全天运行；旧版内置的“工作日 18:30-08:30”默认窗口会在启动时迁移为空，避免演示视频长期停留在“等待结果”。
 - 开发者模式：`developer_mode = true` 时忽略生效 / 例外时段，并且前端只在开发者模式下显示 `scene-readout` 检测读数。
@@ -212,17 +233,17 @@
 | F-AIS-2 | 每路视频可配置算法启用时段，默认仅在下班后启用，例如 `18:30-08:30` | ✅ 全局 / 通道级时段 UI 已接入 |
 | F-AIS-3 | 支持工作日 / 周末 / 节假日三类时段配置；第一版至少支持按星期配置 | ✅ 按星期配置已接入，跨天窗口按起始日归属 |
 | F-AIS-4 | 简单模型高频执行，默认周期 1 秒，可按通道配置 | ✅ `simpleIntervalSec` 已接入后端真实抽帧周期 |
-| F-AIS-5 | VLM 低频执行，默认周期 2-10 分钟，可按通道配置 | ⚠️ 全局 / 通道级 VLM 配置 UI 已接入，真实 VLM provider 待实现 |
-| F-AIS-6 | 当简单模型识别到“有人”时，当前周期不得调用 VLM | ⚠️ 配置项已接入，真实 VLM 调度待实现 |
-| F-AIS-7 | 当简单模型识别为“无人 + 亮灯”但置信度不足、状态刚变化、或持续时间达到复核阈值时，允许调用 VLM 复核 | ⏳ 待实现 |
-| F-AIS-8 | VLM 主要用于修补简单模型漏检：确认是否有人、是否亮灯、是否存在遮挡 / 反光 / 日光干扰 | ⏳ 待实现 |
-| F-AIS-9 | 简单模型与 VLM 输出需要保留来源字段，便于排查是 simple 还是 vlm 给出的结论 | ⏳ 待实现 |
-| F-AIS-10 | 算法需支持冷却和并发限制，避免多路视频同时调用 VLM | ⏳ 待实现 |
+| F-AIS-5 | VLM 低频执行并可按通道配置 | ⚠️ VLM 已真实接入并由报警保持时间触发；`vlmIntervalSec` 独立周期尚未生效 |
+| F-AIS-6 | 当常规模型识别到“有人”时不得调用 VLM | ✅ 有人状态不会形成无人亮灯正式报警转换 |
+| F-AIS-7 | 无人 + 亮灯持续达到复核阈值时允许调用 VLM | ✅ 当前以 `alarmHoldSec` 达到作为触发点 |
+| F-AIS-8 | VLM 用于确认画面是否有人并返回人员框 | ✅ 已实现人员结论、置信度和边界框；灯光仍由本地规则判断 |
+| F-AIS-9 | 简单模型、YOLO 与 VLM 输出保留来源字段 | ✅ 已输出 `source / reason / simple_person / vlm_person / yolo_detections` |
+| F-AIS-10 | 算法需支持并发限制和小时上限，避免多路同时调用 VLM | ⚠️ 原图 ffmpeg 抽帧并发限制为 1，每通道小时上限已实现；独立冷却待完善 |
 | F-AIS-11 | 算法禁用时段内，不产生新报警、不调用模型；已存在报警可按配置自动恢复或保持展示 | ⏳ 待实现 |
-| F-AIS-12 | 提供算法调度日志：跳过原因、模型耗时、置信度、VLM 调用次数 | ⚠️ 已推送跳过原因和调度事件，VLM 次数待接 |
-| F-AIS-13 | 算法调度逻辑由独立 scheduler 模块负责，不放入 detector / analyzer | ⏳ 待实现 |
-| F-AIS-14 | 配置支持继承：系统默认 < 全局配置 < 分组配置 < 通道配置 | ⚠️ 后端有效配置已支持；UI 已支持全局和通道级，分组级待接 |
-| F-AIS-15 | UI 需要展示每项配置的来源层级，并支持恢复为继承值 | ⚠️ 已展示全局 / 通道 / 继承状态，并支持通道恢复全局继承 |
+| F-AIS-12 | 提供算法调度日志：跳过原因、模型耗时、置信度、VLM 调用结果 | ✅ 通过日志和 `ecoalert://algorithm_schedule` 推送 |
+| F-AIS-13 | 算法调度逻辑由独立 scheduler 模块负责，不放入 detector / analyzer | ⚠️ 时段与继承已在 scheduler；VLM 异步任务与小时限流仍在 state |
+| F-AIS-14 | 配置支持继承：系统默认 < 全局配置 < 分组配置 < 通道配置 | ⚠️ 后端按 source > group > global 选择整份配置；UI 已支持全局和通道级，分组级与逐字段合并待接 |
+| F-AIS-15 | UI 需要展示配置来源层级，并支持恢复为继承值 | ⚠️ 已展示全局 / 通道 / 继承状态，并支持通道恢复；逐字段来源未实现 |
 
 #### 3.11.4 推荐判定流程
 
@@ -246,13 +267,16 @@
         [灯亮?] --否--> [输出 normal；不调用 VLM]
               │ 是
               ▼
-        [是否满足 VLM 复核条件?] --否--> [输出疑似/报警，等待持续时间]
+        [无人亮灯是否达到 alarmHoldSec?] --否--> [保持 suspected 并显示倒计时]
               │ 是
               ▼
-        [VLM 复核]
+        [VLM 已启用?] --否--> [正式报警]
+              │ 是
+              ▼
+        [异步执行一次 VLM 人员复核]
               │
               ▼
-        [融合结果 + 冷却判断 + 通知]
+        [有人则取消；无人或失败则正式报警 + 通知]
 ```
 
 #### 3.11.5 输出字段扩展
@@ -378,6 +402,7 @@ resolved
 | 人员误检控制 | 有人时不触发正式报警，可进入 suspected | 有人时不进入正式报警，suspected 自动恢复 |
 | VLM 调用抑制 | 简单模型识别到有人时，VLM 调用次数为 0 | 同 MVP |
 | VLM 调用上限 | 每通道每小时不超过 12 次 | 每通道每小时不超过 6 次 |
+| 检测框对齐 | 普通窗口、容器全屏和本地 MP4 跳转后框与画面保持对齐 | 同 MVP |
 | 报警通知延迟 | 正式报警后 30 秒内发起通知 | 正式报警后 10 秒内发起通知 |
 | 通知失败隔离 | 通知失败不阻塞本地报警 | 同 MVP，并记录可重发历史 |
 | 状态抖动控制 | 60 秒内不重复触发正式报警 | 可按通道调节抖动窗口 |
@@ -396,7 +421,7 @@ resolved
 
 | 编号 | 需求 | 状态 |
 | --- | --- | --- |
-| F-SEC-1 | VLM 可配置本地模型或外部 API；外部 API 默认关闭 | ⏳ 待实现 |
+| F-SEC-1 | VLM 可配置 OpenAI 兼容外部 API；默认关闭 | ✅ |
 | F-SEC-2 | 启用外部 VLM 前必须明确提示“截图可能发送到第三方服务” | ⏳ 待实现 |
 | F-SEC-3 | VLM 截图默认不落盘；如开启保存，必须配置保留天数 | ⏳ 待实现 |
 | F-SEC-4 | 通知 payload 默认不包含图片，仅包含结构化状态 | ⏳ 待实现 |
@@ -680,6 +705,9 @@ pub struct ChannelRuntimeStatus {
 | `delete_group` | `id` | `{ ok }` | ✓ |
 | `reorder` | `items: OrderItem[]` | `{ ok }` | ✓ |
 | `report_scene_state` | `source_id, person, light` | `{ ok }` | ✓ |
+| `report_playback_position` | `source_id, position_sec, playing` | `{ ok }` | ✓ |
+| `test_vlm_config` / `test_vlm_vision` | VLM 配置 / 视频源 | 模型回复、usage、费用、请求信息 | ✓ |
+| `test_yolo_connection` | `api_base` | 连接和最小帧检测结果 | ✓ |
 | `get_state_history` | `source_id?, limit?` | `{ ok, records, by_source }` | ✓ |
 | `get_algorithm_config` | `source_id?` | `AlgorithmConfig` | ✓ |
 | `update_algorithm_config` | `source_id?, payload` | `AlgorithmConfig` | ✓ |
@@ -718,7 +746,7 @@ pub struct ChannelRuntimeStatus {
 | `ecoalert://status` | `ChannelStatus[]` | 3s |
 | `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 3s 或状态变化时 |
 | `ecoalert://sources` | `VideoSource[]` | 源变更时 |
-| `ecoalert://scene_state` | `{ source_id, person, light, light_state, alarm, alarm_status, light_confidence, color_score, motion_score, ts }` | 每次检测完成 |
+| `ecoalert://scene_state` | 人、灯、报警、YOLO / VLM 结果与边界框、检测读数 | 每次检测完成 |
 | `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化时 |
 | `ecoalert://notification` | `{ target_id, event, ok, status, error, ts }` | 通知发送后 |
 | `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度时 |
@@ -903,9 +931,9 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 
 | 优先级 | 任务 |
 | --- | --- |
-| 高 | 真实人员识别接入：轻量人形检测 + VLM 低频复核 |
+| ~~高~~ ✅ | 真实人员识别接入：YOLO WebSocket + VLM 报警前复核 |
 | 高 | ROI 标定增强：真实画面框选、多 ROI、排除区、基线采样和版本管理 |
-| 高 | 算法配置增强：分组级覆盖、VLM 调度策略、并发限制和调用上限落地 |
+| 高 | 算法配置增强：分组级 UI、逐字段继承、VLM 独立周期 / 冷却和调度职责收敛 |
 | 高 | 报警生命周期增强：确认态策略、静默、例外时段、离线事件隔离 |
 | 高 | 通知配置完善：全局启停、敏感字段脱敏、模板变量预览 |
 | 高 | 通知历史、失败重发和通知模板变量预览 |
@@ -937,4 +965,5 @@ npm run tauri:build   # 打包 .msi / .exe / .dmg
 | 2026-06-13 | 1.7 | 根据当前代码同步通知渠道能力：补充 `webhook / feishu / wechat_work / qqbot` 渠道类型、平台 API 凭证字段、access token 缓存、飞书 OAuth 扫码绑定和凭证校验 commands；修正未注册的 `mute_source / export_config / import_config` 状态 |
 | 2026-06-13 | 1.8 | 根据当前代码同步真实抽帧与报警状态机进展：后台检测改为 ffmpeg 单帧抽样，浏览器预览停止伪造算法结果，`scene_state` 增加 `alarm / alarm_status`，`simpleIntervalSec / alarmHoldSec / alarmRecoverSec / recoverPolicy` 已接入后端运行链路；Tools 推流器和测试可视化视频生成已补齐 |
 | 2026-06-13 | 1.9 | 同步灯光检测策略变更：开灯优先按彩色画面、关灯按红外黑白画面判断；ROI 阈值改为开 / 关灯色彩阈值，亮度阈值仅作无 RGB 数据兜底；`scene_state` 和 ROI 测试输出补充 `light_state / lightState` 便于 UI 直接展示开关状态 |
+| 2026-06-24 | 1.12 | 同步 YOLO / VLM 真实接入、人员检测框、容器全屏、本地 MP4 播放进度同步和当前单次 VLM 报警复核流程；修正已过期的“两次 VLM 后再倒计时”等描述 |
 | 2026-06-13 | 1.10 | 优化开灯检测算法：`color_score` 改为亮度加权色度分数，暗像素和红外近黑区域降权，避免暗部压缩彩噪误判开灯；补充暗部彩噪和高亮近灰红外场景单元测试 |

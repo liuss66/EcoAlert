@@ -1,8 +1,21 @@
 # EcoAlert 架构设计
 
-> 版本：v1.3
-> 日期：2026-06-14
+> 版本：v1.5
+> 日期：2026-06-24
 > 对应需求：[`requirements.md`](./requirements.md)
+
+---
+
+## 目录
+
+- [1. 架构目标](#1-架构目标)
+- [2. 总体架构](#2-总体架构)
+- [3. 模块划分](#3-模块划分)
+- [4. 运行时数据流](#4-运行时数据流)
+- [5. 核心设计](#5-核心设计)
+- [6. 持久化设计](#6-持久化设计)
+- [7. 关键技术决策](#7-关键技术决策)
+- [8. 风险与约束](#8-风险与约束)
 
 ---
 
@@ -30,7 +43,10 @@ flowchart LR
     Camera["摄像头 / RTSP / HLS / MP4"] --> Stream
     Stream --> Scheduler["pipeline/scheduler"]
     Scheduler --> Decoder["pipeline/decoder"]
+    WebUI -- MP4 playback position --> Commands
     Decoder --> Detector["pipeline/detector"]
+    Detector --> YOLO["YOLO WebSocket service"]
+    Detector --> VLM["OpenAI-compatible VLM"]
     Detector --> Analyzer["pipeline/analyzer"]
     Analyzer --> Alerts["pipeline/alerts"]
     Alerts --> State["state.rs"]
@@ -55,8 +71,9 @@ flowchart LR
 | 应用状态 | `App/src-tauri/src/state.rs` | 全局状态、后台 ticker、事件推送、历史落库、报警保持 / 恢复计时 | 已接 ffmpeg 单帧抽样状态 |
 | 数据模型 | `App/src-tauri/src/store.rs` | 视频源、分组、状态历史、JSON 持久化 | 已实现基础模型 |
 | 视频输入 | `App/src-tauri/src/stream/` / `pipeline/decoder.rs` | HLS / MP4 单帧抽样，后续扩展常驻解码 | 已接 ffmpeg 抽帧 |
-| 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` | 启用时段、周期、VLM 队列、并发限制、跳过原因 | 已接简单模型周期和跳过原因 |
-| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、检测、VLM 兜底、告警 | 已接真实 RGB 抽样 + 彩色 / 红外灯光检测；办公室固定摄像头场景下以 ROI 运动检测代理人员检测，并用 VLM 做无人兜底确认 |
+| 算法调度 | `App/src-tauri/src/pipeline/scheduler.rs` / `state.rs` | 启用时段、简单模型周期、VLM 小时上限与异步任务 | 时段 / 继承在 scheduler；VLM 队列与限流目前仍在 state |
+| 处理流水线 | `App/src-tauri/src/pipeline/` | 解码、灯光 / 运动检测、YOLO、VLM 复核、告警 | 已接真实 RGB 抽样、YOLO WebSocket 人员检测和 OpenAI 兼容 VLM |
+| 播放进度同步 | `webui/src/main.js` / `commands.rs` / `state.rs` | 把 MP4 播放器真实时间同步给 ffmpeg 抽帧 | 已实现，15 秒无更新后回退估算 |
 | 测试视频导入 | `commands.rs` / `webui/src/main.js` | 选择视频文件夹，批量导入为循环播放的 MP4 视频源 | 已实现 |
 | 推流工具 | `Tools/push_streamer/` | 可选：用本地视频模拟实时 HLS 源，供 HLS 链路验证 | 已实现 ffmpeg + HLS |
 | 文档 | `Document/` | 需求、架构、接口、部署、ADR、变更日志 | 本文档集 |
@@ -102,8 +119,10 @@ sequenceDiagram
     State->>File: state_history.json
 ```
 
-当前 `ecoalert://scene_state` 每次检测完成都会推送，前端实时卡片展示常规模型人员判断、VLM 最近一次人员判断、灯光状态、色彩分数、运动分数、耗时和帧序号。`state_history.json` 只记录 `person / light` 变化，避免稳定画面持续写盘；开发者模式下额外写入 `detection_history.json` 供曲线诊断。
+当前 `ecoalert://scene_state` 每次检测完成都会推送，前端实时卡片展示常规模型 / YOLO 人员判断、VLM 结果、YOLO 与 VLM 边界框、灯光状态、色彩分数、运动分数、耗时和帧序号。`state_history.json` 只记录 `person / light` 变化，避免稳定画面持续写盘；开发者模式下额外写入 `detection_history.json` 供曲线诊断。
 其中 `light` 是最终开关状态，事件 payload 同时给出 `light_state=on/off`；`color_score` 是彩色 / 红外黑白判定依据，不等同于“关灯概率”。
+
+本地 MP4 的前端播放器通过 `report_playback_position` 上报 `currentTime` 和播放状态。后端会在抽帧时外推正在播放的视频时间，并对循环视频按媒体时长取模，从而让检测框与用户看到的画面保持同步。
 
 ### 4.2 目标算法路径
 
@@ -139,16 +158,18 @@ sequenceDiagram
 | 层级 | 频率 | 作用 | 输出 |
 | --- | --- | --- | --- |
 | 彩色 / 红外灯光规则 | 5-15 秒 | 判断灯亮 / 灯灭 | `light`, `light_confidence`, `color_score` |
-| ROI 运动检测 | 5-15 秒 | 办公室固定摄像头下代理人员检测 | `simple_person`, `simple_person_confidence`, `motion_score` |
-| VLM 复核 | 条件触发 | 常规模型 5 分钟无人才做兜底确认 | `vlm_person`, `vlm_person_confidence`, `vlm_status` |
+| ROI 运动检测 | 按 `simpleIntervalSec` | YOLO 未启用时代理人员检测 | `simple_person`, `simple_person_confidence`, `motion_score` |
+| YOLO 人员检测 | 按 `simpleIntervalSec` | 可选人员检测主路径，输出人员框 | `person`, `yolo_detections`, `yolo_error` |
+| VLM 复核 | 报警保持时间达到后 | 可选异步单次人员复核，输出人员框 | `vlm_person`, `vlm_detections`, `vlm_status` |
 | 融合 / 状态机 | 每次状态变化 | 报警生命周期、冷却、恢复 | `AlarmRecord` |
 
 关键规则：
 
-- 一帧常规模型检测到有人，即将人员存在状态保持 5 分钟；保持期内不报警。
-- 常规模型连续 5 分钟未检测到人后，触发 VLM 兜底确认。
-- VLM 检测到人后同样保持 5 分钟；5 分钟后若常规模型仍无人，再次触发 VLM。
-- VLM 连续两次确认无人，且灯亮，才进入报警触发条件。
+- 一帧常规模型或 YOLO 检测到有人，即将人员存在状态保持 5 分钟；保持期内不报警。
+- 无人 + 灯亮持续达到 `alarmHoldSec` 后，未启用 VLM 时直接进入正式报警。
+- 启用 VLM 时，达到保持时间后进入 `vlm_checking`，后台执行一次视觉复核；检测到人则取消报警，确认无人则正式报警。
+- VLM 请求失败或任务异常时采用保守策略继续报警，并记录错误。
+- YOLO 启用但服务故障时抑制新报警，并发送一次 `yolo_error` 系统事件，避免故障被解释为无人。
 - 灯光规则优先使用 ROI 内亮度加权色度分数，默认色彩阈值 `0.015`；暗像素降权以降低红外近黑区域和压缩彩噪干扰，无 RGB 数据时才使用亮度兜底阈值。
 - 运动检测尊重人员 ROI，ROI 外运动不会计入人员判断；小面积紧凑闪烁会被过滤。
 - 算法启用时段外不产生新报警。
@@ -161,9 +182,9 @@ sequenceDiagram
 | 职责 | 说明 |
 | --- | --- |
 | 时段判断 | 判断当前通道是否处于算法启用时段或例外时段 |
-| 周期控制 | 分别控制简单模型周期和 VLM 周期 |
+| 周期控制 | 当前控制简单模型 / YOLO 周期；`vlmIntervalSec` 已存储但 VLM 由报警状态触发 |
 | 配置合并 | 计算系统默认、全局、分组、通道四层配置后的有效配置 |
-| VLM 队列 | 控制 VLM 并发、冷却、每小时调用上限 |
+| VLM 队列 | `state.rs` 当前限制原图 ffmpeg 抽帧并发为 1，并按通道统计每小时调用上限 |
 | 跳过原因 | 记录 `schedule_disabled / source_offline / simple_hit_person / cooldown / concurrency_limit` |
 | 运行状态 | 更新 `algorithm_status`、`last_algorithm_at`、`last_error` |
 
@@ -195,15 +216,17 @@ stateDiagram-v2
     [*] --> normal
 normal --> vlm_checking: 常规模型5分钟无人 + 亮灯
 vlm_checking --> normal: VLM检测到人 / 灯灭
-vlm_checking --> suspected: VLM连续两次无人，进入报警倒计时
-suspected --> alarm_active: 倒计时达到 alarm_hold_sec
+normal --> suspected: 无人 + 亮灯，开始 alarm_hold_sec
+suspected --> vlm_checking: 倒计时达到且启用 VLM
+suspected --> alarm_active: 倒计时达到且未启用 VLM
+vlm_checking --> alarm_active: VLM确认无人或复核失败
 alarm_active --> acknowledged: 管理员确认
     alarm_active --> resolved: 达到恢复条件
     acknowledged --> resolved: 达到恢复条件
     resolved --> normal: 归档
 ```
 
-实时卡片报警图标通过两层进度环展示确认过程：外层粉色表示 VLM 无人确认进度（0/2、1/2、2/2），内层红色表示 VLM 两次无人后的报警倒计时；进入正式报警后图标闪烁。
+实时卡片报警图标使用倒计时进度环展示 `alarmHoldSec` 进度；VLM 执行期间显示 `VLM确认中`。进入正式报警后图标闪烁。视频画面使用两个独立 SVG 覆盖层：红色为 YOLO，青色为 VLM；容器全屏会同时放大视频和覆盖层。
 
 ### 5.5 通知发送
 

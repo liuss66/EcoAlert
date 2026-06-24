@@ -12,7 +12,7 @@ import {
   login, logout, checkAuth,
   listSources, listGroups, createGroup, updateGroup, deleteGroup, reorder,
   createSource, updateSource, deleteSource, importTestSourcesFromFolder, setTestSourcesEnabled, TEST_SOURCE_IDS,
-  reportSceneState, getStateHistory, listDetectionHistory,
+  reportSceneState, reportPlaybackPosition, getStateHistory, listDetectionHistory,
   listAlarms, ackAlarm, resolveAlarm,
   getAlgorithmConfig, listAlgorithmConfigSources, updateAlgorithmConfig, deleteAlgorithmConfig,
   testVlmConfig, testVlmVision,
@@ -56,6 +56,8 @@ const ICONS = {
   qr: '<rect width="6" height="6" x="3" y="3" rx="1"/><rect width="6" height="6" x="15" y="3" rx="1"/><rect width="6" height="6" x="3" y="15" rx="1"/><path d="M15 15h2v2h-2zM19 15h2M15 19h2M19 19h2v2h-2z"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
+  fullscreen: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/>',
+  'fullscreen-exit': '<path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5"/>',
 };
 
 const icon = (name, extraClass = '') =>
@@ -66,6 +68,18 @@ const hydrateIcons = () => {
     el.innerHTML = icon(el.dataset.icon);
   });
 };
+
+const syncVideoFullscreenButtons = () => {
+  const activeElement = document.fullscreenElement || document.webkitFullscreenElement;
+  $$('.video-fullscreen-btn').forEach((button) => {
+    const active = activeElement === button.closest('.video-wrap');
+    button.innerHTML = icon(active ? 'fullscreen-exit' : 'fullscreen');
+    button.title = active ? '退出全屏' : '全屏播放（保留检测框）';
+    button.setAttribute('aria-label', active ? '退出全屏' : '全屏播放');
+  });
+};
+document.addEventListener('fullscreenchange', syncVideoFullscreenButtons);
+document.addEventListener('webkitfullscreenchange', syncVideoFullscreenButtons);
 
 const stateMarker = (on, label) =>
   `<span class="state-marker ${on ? 'on' : 'off'}">${icon(on ? 'check' : 'alert')}<span>${label}</span></span>`;
@@ -1046,6 +1060,8 @@ function applyStateIcons() {
 function updateLiveState(payload) {
   if (!payload || !payload.sourceId) return;
   const alarmStatus = payload.alarmStatus || payload.alarm_status || 'normal';
+  const previous = sceneStates.get(payload.sourceId);
+  const incomingVlmDetections = payload.vlmDetections ?? payload.vlm_detections;
   const next = {
     person: !!payload.person,
     light: !!payload.light,
@@ -1055,6 +1071,11 @@ function updateLiveState(payload) {
     vlmPerson: payload.vlmPerson ?? payload.vlm_person ?? null,
     vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
     vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
+    vlmDetections: Array.isArray(incomingVlmDetections)
+      ? incomingVlmDetections
+      : (previous?.vlmDetections || []),
+    vlmFrameWidth: payload.vlmFrameWidth ?? payload.vlm_frame_width ?? previous?.vlmFrameWidth ?? 1280,
+    vlmFrameHeight: payload.vlmFrameHeight ?? payload.vlm_frame_height ?? previous?.vlmFrameHeight ?? 720,
     alarm: !!payload.alarm || ['alarm_active', 'acknowledged', 'recovering'].includes(alarmStatus),
     alarmStatus,
     alarmRecordActive: !!(payload.alarmRecordActive ?? payload.alarm_record_active),
@@ -1080,50 +1101,105 @@ function updateLiveState(payload) {
   if (vlmState) vlmStates.set(payload.sourceId, vlmState);
   applyStateIcons();
   updateAlarmBanner();
-  renderDetectionBoxes(payload.sourceId, next.yoloDetections);
+  renderDetectionBoxes(
+    payload.sourceId,
+    next.yoloDetections,
+    next.vlmDetections,
+    next.vlmFrameWidth,
+    next.vlmFrameHeight,
+  );
 }
 
-function renderDetectionBoxes(sourceId, detections) {
+function renderDetectionBoxes(sourceId, yoloDetections, vlmDetections, vlmWidth, vlmHeight) {
   const wrap = document.getElementById(`vw-${sourceId}`);
   if (!wrap) return;
-  // 移除旧 overlay
-  wrap.querySelectorAll('.yolo-overlay').forEach((el) => el.remove());
-  if (!detections?.length) return;
-  // YOLO 检测使用 1280x720 (16:9)，SVG viewBox 用同样比例
-  // preserveAspectRatio='xMidYMid meet' 与 video 的 object-fit: contain 行为一致
-  // 这样无论容器怎么缩放，检测框都能和视频实际显示区域对齐
+  wrap.querySelectorAll('.detection-overlay, .yolo-overlay, .vlm-overlay').forEach((el) => el.remove());
+
+  const yoloBoxes = (yoloDetections || []).map((det) => {
+    const [cx, cy, width, height] = (det.bbox || []).map(Number);
+    return {
+      x: (cx - width / 2) * 1280,
+      y: (cy - height / 2) * 720,
+      width: width * 1280,
+      height: height * 720,
+      confidence: Number(det.confidence || 0),
+      label: 'YOLO',
+      color: '#ff2020',
+    };
+  });
+  appendDetectionOverlay(wrap, 'yolo-overlay', 1280, 720, yoloBoxes);
+
+  const sourceWidth = Math.max(1, Number(vlmWidth) || 1280);
+  const sourceHeight = Math.max(1, Number(vlmHeight) || 720);
+  const vlmBoxes = (vlmDetections || []).map((det) => {
+    const [x1, y1, x2, y2] = (det.bbox || []).map(Number);
+    return {
+      x: x1 * sourceWidth,
+      y: y1 * sourceHeight,
+      width: (x2 - x1) * sourceWidth,
+      height: (y2 - y1) * sourceHeight,
+      confidence: Number(det.confidence || 0),
+      label: 'VLM',
+      color: '#00e5ff',
+    };
+  });
+  appendDetectionOverlay(wrap, 'vlm-overlay', sourceWidth, sourceHeight, vlmBoxes);
+}
+
+function appendDetectionOverlay(wrap, className, viewWidth, viewHeight, boxes) {
+  const validBoxes = boxes.filter((box) =>
+    [box.x, box.y, box.width, box.height].every(Number.isFinite)
+      && box.width > 0 && box.height > 0
+  );
+  if (!validBoxes.length) return;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.classList.add('yolo-overlay');
-  svg.setAttribute('viewBox', '0 0 1280 720');
+  svg.classList.add('detection-overlay', className);
+  svg.setAttribute('viewBox', `0 0 ${viewWidth} ${viewHeight}`);
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
   svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
-  for (const det of detections) {
-    const [cx, cy, w, h] = det.bbox;
-    const x = (cx - w / 2) * 1280;
-    const y = (cy - h / 2) * 720;
-    const bw = w * 1280;
-    const bh = h * 720;
+  for (const box of validBoxes) {
+    const x = Math.max(0, box.x);
+    const y = Math.max(0, box.y);
+    const width = Math.min(box.width, viewWidth - x);
+    const height = Math.min(box.height, viewHeight - y);
+
+    // 黑色外描边确保红色 YOLO 框在亮色、暗色画面上都清晰。
+    const outline = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    outline.setAttribute('x', x);
+    outline.setAttribute('y', y);
+    outline.setAttribute('width', Math.max(width, 2));
+    outline.setAttribute('height', Math.max(height, 2));
+    outline.setAttribute('fill', 'none');
+    outline.setAttribute('stroke', 'rgba(0,0,0,0.85)');
+    outline.setAttribute('vector-effect', 'non-scaling-stroke');
+    outline.setAttribute('stroke-width', '5');
+    outline.setAttribute('rx', '3');
+    svg.appendChild(outline);
+
     const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     r.setAttribute('x', x);
     r.setAttribute('y', y);
-    r.setAttribute('width', Math.max(bw, 2));
-    r.setAttribute('height', Math.max(bh, 2));
+    r.setAttribute('width', Math.max(width, 2));
+    r.setAttribute('height', Math.max(height, 2));
     r.setAttribute('fill', 'none');
-    const hue = Math.round(det.confidence * 120); // 0=红, 120=绿
-    r.setAttribute('stroke', `hsl(${hue}, 90%, 55%)`);
+    r.setAttribute('stroke', box.color);
     r.setAttribute('vector-effect', 'non-scaling-stroke');
-    r.setAttribute('stroke-width', '2');
+    r.setAttribute('stroke-width', '3');
     r.setAttribute('rx', '3');
     svg.appendChild(r);
-    // 置信度标签
+
     const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     text.setAttribute('x', x);
     text.setAttribute('y', Math.max(y - 6, 16));
-    text.setAttribute('fill', `hsl(${hue}, 90%, 55%)`);
+    text.setAttribute('fill', box.color);
+    text.setAttribute('stroke', '#000');
+    text.setAttribute('stroke-width', '3');
+    text.setAttribute('paint-order', 'stroke');
     text.setAttribute('font-size', '14');
+    text.setAttribute('font-weight', '700');
     text.setAttribute('font-family', 'system-ui, sans-serif');
     text.setAttribute('vector-effect', 'non-scaling-stroke');
-    text.textContent = `${(det.confidence * 100).toFixed(0)}%`;
+    text.textContent = `${box.label} ${(box.confidence * 100).toFixed(0)}%`;
     svg.appendChild(text);
   }
   wrap.appendChild(svg);
@@ -1236,6 +1312,9 @@ const mountVideo = (src) => {
   wrap.dataset.mounted = '1';
   const video = document.createElement('video');
   video.controls = true;
+  // 原生全屏只会放大 video 本身，无法包含同级的检测框覆盖层。
+  // 隐藏原生全屏入口，改由下方的容器全屏按钮处理。
+  video.controlsList?.add('nofullscreen');
   video.muted = true;
   video.defaultMuted = true;
   video.playsInline = true;
@@ -1244,6 +1323,15 @@ const mountVideo = (src) => {
   const mountedAt = Date.now();
   let userInteracted = false;
   let playRetryTimer = null;
+  let lastPlaybackSyncAt = 0;
+  const syncPlaybackPosition = (force = false) => {
+    if (src.type !== 'mp4' || !Number.isFinite(video.currentTime)) return;
+    const now = Date.now();
+    if (!force && now - lastPlaybackSyncAt < 1000) return;
+    lastPlaybackSyncAt = now;
+    reportPlaybackPosition(src.id, video.currentTime, !video.paused && !video.ended)
+      .catch(() => {});
+  };
   const requestAutoPlay = (delay = 0) => {
     if (userInteracted || document.hidden) return;
     clearTimeout(playRetryTimer);
@@ -1256,6 +1344,11 @@ const mountVideo = (src) => {
   video.addEventListener('keydown', () => { userInteracted = true; });
   video.addEventListener('canplay', () => requestAutoPlay());
   video.addEventListener('loadedmetadata', () => requestAutoPlay());
+  video.addEventListener('loadedmetadata', () => syncPlaybackPosition(true));
+  video.addEventListener('timeupdate', () => syncPlaybackPosition());
+  video.addEventListener('seeked', () => syncPlaybackPosition(true));
+  video.addEventListener('playing', () => syncPlaybackPosition(true));
+  video.addEventListener('pause', () => syncPlaybackPosition(true));
   video.addEventListener('pause', () => {
     if (Date.now() - mountedAt < 12000 && !userInteracted) {
       requestAutoPlay(300);
@@ -1274,6 +1367,31 @@ const mountVideo = (src) => {
   const ph = wrap.querySelector('.placeholder');
   if (ph && src.type !== 'webcam' && src.type !== 'rtsp') ph.remove();
   wrap.insertBefore(video, wrap.firstChild);
+
+  const fullscreenButton = document.createElement('button');
+  fullscreenButton.type = 'button';
+  fullscreenButton.className = 'video-fullscreen-btn';
+  fullscreenButton.title = '全屏播放（保留检测框）';
+  fullscreenButton.setAttribute('aria-label', '全屏播放');
+  fullscreenButton.innerHTML = icon('fullscreen');
+  const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+  fullscreenButton.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      if (fullscreenElement() === wrap) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else document.webkitExitFullscreen?.();
+      } else if (wrap.requestFullscreen) {
+        await wrap.requestFullscreen();
+      } else {
+        wrap.webkitRequestFullscreen?.();
+      }
+    } catch (error) {
+      addLog('warn', `切换视频全屏失败：${error?.message || error}`);
+    }
+  });
+  wrap.appendChild(fullscreenButton);
 
   try {
     if (src.type === 'hls') {

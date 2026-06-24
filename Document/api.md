@@ -1,8 +1,21 @@
 # EcoAlert 接口契约
 
-> 版本：v1.3  
-> 日期：2026-06-13  
+> 版本：v1.5
+> 日期：2026-06-24
 > 范围：Tauri commands、Tauri events、通知 Payload
+
+---
+
+## 目录
+
+- [1. 通用约定](#1-通用约定)
+- [2. 已实现 Commands](#2-已实现-commands)
+- [3. 配置 / 运行 Commands](#3-配置--运行-commands)
+- [4. Events](#4-events)
+- [5. 数据对象](#5-数据对象)
+- [6. 通知 Payload](#6-通知-payload)
+- [7. 配置导入冲突策略](#7-配置导入冲突策略)
+- [8. 兼容性要求](#8-兼容性要求)
 
 ---
 
@@ -90,8 +103,12 @@
 
 | Command | 参数 | 返回 |
 | --- | --- | --- |
+| `report_playback_position` | `{ sourceId, positionSec, playing }` | `{ ok }` |
 | `report_scene_state` | `{ sourceId, person, light }` | `{ ok }` |
+| `list_detection_history` | `{ sourceId?, limit? }` | `DetectionSampleRecord[]` |
 | `get_state_history` | `{ sourceId?, limit? }` | `{ ok, records, bySource }` |
+
+`report_playback_position` 仅接受已存在的 `mp4` 视频源和非负有限秒数。状态保存在内存中，不落盘；15 秒未更新后视为过期。播放中时后端按上报时间差外推位置，暂停时保持原位置。
 
 ### 2.5 系统
 
@@ -113,6 +130,11 @@
 | `get_algorithm_config` | `{ sourceId? }` | `AlgorithmConfig` |
 | `update_algorithm_config` | `{ sourceId?, payload }` | `AlgorithmConfig` |
 | `delete_algorithm_config` | `{ sourceId }` | `{ ok }` |
+| `test_vlm_config` | `{ payload }` | `{ ok, reply, usage, costEnabled, cost, requestUrl, requestBody }` |
+| `test_vlm_vision` | `{ payload: { ...AlgorithmConfig, sourceId, seekSeconds? } }` | `{ ok, reply, usage, costEnabled, cost, requestUrl, requestBody }` |
+| `test_yolo_connection` | `{ apiBase }` | `{ ok, url, count, processMs, raw }` |
+
+VLM 使用 OpenAI Chat Completions 兼容接口。`test_vlm_vision` 会从指定视频源抽取原图并发起真实视觉请求。YOLO 测试会连接 `/ws`、发送最小 JPEG 并等待 JSON 响应。
 | `get_effective_algorithm_config` | `{ sourceId }` | `{ config, scope }` |
 
 ### 3.2 ROI（配置读写与真实帧测试已实现）
@@ -184,7 +206,7 @@
 | `ecoalert://event` | `{ level, text, ts }` | 不定 |
 | `ecoalert://status` | `ChannelStatus[]` | 3s |
 | `ecoalert://runtime_status` | `ChannelRuntimeStatus[]` | 3s 或状态变化 |
-| `ecoalert://scene_state` | `{ source_id, person, light, light_state, alarm, alarm_status, light_confidence, color_score, motion_score, ts }` | 每次检测完成 |
+| `ecoalert://scene_state` | `{ source_id, person, light, light_state, alarm, alarm_status, simple_person, vlm_person, vlm_status, yolo_detections, vlm_detections, vlm_frame_width, vlm_frame_height, ... }` | 每次检测完成 |
 | `ecoalert://alarm` | `{ alarm_id, source_id, status, event, ts }` | 报警状态变化 |
 | `ecoalert://notification` | `{ record_id, target_id, event, ok, status, error, ts }` | 通知发送完成 |
 | `ecoalert://algorithm_schedule` | `{ source_id, action, reason, latency_ms, ts }` | 算法调度；`action` 包含 `run_simple`、`skip`、`frame_error` |
@@ -232,6 +254,17 @@
   "lightConfidence": 0.96,
   "reason": "vlm_recheck",
   "modelLatencyMs": 180,
+  "simplePerson": false,
+  "simplePersonConfidence": 0.21,
+  "vlmPerson": false,
+  "vlmPersonConfidence": 0.88,
+  "vlmStatus": "no_person_alarm_confirmed",
+  "vlmDetections": [],
+  "vlmFrameWidth": 1920,
+  "vlmFrameHeight": 1080,
+  "yoloDetections": [
+    { "confidence": 0.91, "bbox": [0.5, 0.5, 0.2, 0.6] }
+  ],
   "lightBrightness": 213.4,
   "colorScore": 0.087,
   "motionScore": 0.018,
@@ -242,6 +275,8 @@
 `SceneState` 本体只表达画面事实；事件 payload 额外携带 `alarm / alarmStatus` 供前端展示。通知仍只由 `AlarmRecord` 状态变化触发。
 
 当前 `source = simple` 时，`light` 是最终开关灯布尔结果，`lightState` / `light_state` 是便于 UI 直读的 `on/off` 字符串。该结果优先来自 `colorScore`：开灯时摄像头输出彩色图，关灯红外模式输出黑白图；`colorScore` 使用亮度加权色度，暗部彩噪不会像正常彩色亮区一样贡献权重；RGB 不可用时才回退到亮度阈值。`lightConfidence` 是当前开关状态判断置信度，不是单纯“关灯概率”。`person` 仍是帧差运动代理结果，不等同于真实人形检测。前端实时卡片会展示开关状态、`colorScore / motionScore / processMs`，用于判断是算法阈值问题还是事件链路问题。
+
+启用 YOLO 后，`source = yolo`，`person` 取 YOLO 结果；`yoloDetections[].bbox` 使用归一化 `[中心 x, 中心 y, 宽, 高]`。VLM 返回的边界框在后端统一为归一化 `[x1, y1, x2, y2]`，原始 `0..1000` 坐标也会自动转换；前端结合 `vlmFrameWidth / vlmFrameHeight` 绘制青色覆盖框。
 
 ### 5.3 AlarmRecord
 
@@ -348,7 +383,21 @@ API 凭证模式示例：
   "alarmRecoverSec": 60,
   "recoverPolicy": "either",
   "vlmHourlyLimit": 12,
-  "roiVersion": "roi-v1"
+  "roiVersion": "roi-v1",
+  "vlmApiBase": "https://example.com/v1",
+  "vlmApiKey": "sk-***",
+  "vlmModel": "vision-model",
+  "vlmPrompt": "仅输出约定 JSON",
+  "vlmTemperature": 0.1,
+  "vlmMaxTokens": 2048,
+  "vlmCostEnabled": false,
+  "vlmPriceInput": 0,
+  "vlmPriceInputCache": 0,
+  "vlmPriceOutput": 0,
+  "vlmPriceOutputCache": 0,
+  "yoloEnabled": true,
+  "yoloApiBase": "ws://localhost:8090",
+  "yoloConfidence": 0.45
 }
 ```
 
@@ -361,6 +410,8 @@ system < global < group < source
 `get_effective_algorithm_config` 返回合并后的配置，并在 `sources` 中标明每个字段来自哪个层级。
 
 `developerMode = true` 时，后端调度忽略 `activeWindows / exceptionWindows`，前端实时视频卡片显示 `scene-readout` 检测读数；关闭时隐藏检测读数。
+
+当前 `simpleIntervalSec` 同时控制规则检测和 YOLO 周期。`vlmIntervalSec` 已持久化，但运行链路中的 VLM 由报警保持时间达到后触发，并受 `vlmHourlyLimit` 限制。
 
 ### 5.6 ChannelRuntimeStatus
 

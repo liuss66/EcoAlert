@@ -37,6 +37,7 @@ pub fn run() {
             commands::update_group,
             commands::delete_group,
             commands::reorder,
+            commands::report_playback_position,
             commands::report_scene_state,
             commands::list_detection_history,
             commands::get_state_history,

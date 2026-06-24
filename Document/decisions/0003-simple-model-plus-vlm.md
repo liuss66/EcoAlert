@@ -1,5 +1,7 @@
 # ADR-0003 采用简单模型高频巡检 + VLM 低频补漏
 
+> 状态：部分被 [`0009-current-person-detection-and-vlm-confirmation.md`](./0009-current-person-detection-and-vlm-confirmation.md) 取代。本文保留 2026-06-14 时的决策背景；当前实现不再使用“连续两次 VLM 确认无人”的流程。
+
 ## 状态
 
 已接受

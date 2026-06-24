@@ -489,7 +489,7 @@
   <!-- ==================== Hero ==================== -->
   <header class="hero">
     <div class="hero-inner">
-      <span class="eyebrow"><span class="dot"></span>EcoAlert 1.0.0 · 本地桌面视频监控 · 忘关灯报警</span>
+      <span class="eyebrow"><span class="dot"></span>EcoAlert 1.0.0 · 2026-06-24 文档版 · 本地桌面视频监控</span>
       <h1>让<span class="accent">忘关灯</span>这类小事<br/>不再悄悄消耗一整晚的电</h1>
       <p class="lead">EcoAlert 是面向办公室、实验室、机房和值守区域的本地视频监控软件。它把视频管理、灯光识别、人员检测、报警处理和多渠道通知集中到一个桌面应用中，专注于「无人但灯仍开启」这一明确场景。所有配置与历史保存在本机，数据不出内网。</p>
       <div class="hero-meta">
@@ -518,7 +518,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 12-8 12 8 12 8-4 8-12 8-12-8-12-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
           <strong>智能分层检测</strong>
-          <span>灯光识别 + 人员运动检测 + AI 复核，分层调度，过程透明可调。</span>
+          <span>灯光规则 + 可选 YOLO 人员检测 + VLM 复核，结果与检测框可视化。</span>
         </div>
         <div class="hero-card">
           <div class="ico">
@@ -560,7 +560,7 @@
         <div class="feature panel t-cyan">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
           <b>智能检测</b>
-          <p>灯光识别与人员运动检测自动巡检，AI 仅在必要时低频复核，兼顾准确性与运行成本。</p>
+          <p>灯光规则持续巡检，可选 YOLO 提供人员检测，VLM 在报警前异步复核，兼顾准确性与运行成本。</p>
         </div>
         <div class="feature panel t-red">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
@@ -605,7 +605,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 12-8 12 8 12 8-4 8-12 8-12-8-12-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
           <h3>智能检测</h3>
-          <p>自动识别灯光开关与人员活动，AI 仅在必要时复核确认，兼顾准确与低成本</p>
+          <p>自动识别灯光开关；可选 YOLO 检测人员，VLM 在报警前复核并返回人员框</p>
         </div>
         <div class="how-node h-red">
           <div class="how-ico">
@@ -624,11 +624,11 @@
         </div>
         <div class="principle">
           <h4><span class="dot-indicator" style="background: var(--green);"></span>人员检测</h4>
-          <p>通过画面中的运动变化判断是否有人在场。检测到人后保持一段时间，避免短暂动作遗漏。有人时自动跳过报警流程。</p>
+          <p>默认通过画面运动变化代理人员状态；启用 YOLO 服务后使用目标检测结果，并在画面显示红色人员框。检测到人后保持一段时间，避免短暂遗漏。</p>
         </div>
         <div class="principle">
           <h4><span class="dot-indicator" style="background: var(--purple);"></span>AI 兜底确认</h4>
-          <p>常规检测持续无人时，自动调用 AI 模型进行二次确认。每通道每小时有调用上限，有人时自动跳过，有效控制成本。</p>
+          <p>无人亮灯达到报警保持时间后，可调用 OpenAI 兼容视觉模型复核一次。检测到人会取消报警；确认无人或复核失败则继续报警，并受每小时上限约束。</p>
         </div>
       </div>
     </div>
@@ -645,7 +645,7 @@
         <div class="wf-step"><span class="wf-num">3</span><h3>添加视频源</h3><p>在「视频管理」中录入视频地址，或直接选择本地视频文件；调试页保留测试视频源开关，开启时选择文件夹批量导入测试视频。</p></div>
         <div class="wf-step"><span class="wf-num">4</span><h3>分组整理</h3><p>按楼层或区域创建分组，将视频拖入对应分组，灯光互相干扰的区域可开启域检测。</p></div>
         <div class="wf-step"><span class="wf-num">5</span><h3>检查画面</h3><p>在「实时监控」中确认每路视频画面可正常播放，如有问题使用诊断功能检查。</p></div>
-        <div class="wf-step"><span class="wf-num">6</span><h3>配置检测</h3><p>在「检测配置」中设置算法启用时段、检测周期和报警参数。</p></div>
+        <div class="wf-step"><span class="wf-num">6</span><h3>配置检测</h3><p>在「检测配置」中设置启用时段、检测周期和报警参数；需要人员目标框时启用并测试 YOLO，需要外部复核时配置 VLM。</p></div>
         <div class="wf-step"><span class="wf-num">7</span><h3>标定检测区域</h3><p>在「ROI 标定」中框选每路视频的检测区域，调整灯光灵敏度。</p></div>
         <div class="wf-step"><span class="wf-num">8</span><h3>测试上线</h3><p>在开灯/关灯/有人/无人场景下测试效果，配置通知渠道并发送测试后即可启用。</p></div>
       </div>
@@ -667,9 +667,9 @@
         <div class="state-machine">
           <div class="state s-normal"><b>正常</b><span>无人或关灯</span></div>
           <div class="arrow">›</div>
-          <div class="state s-checking"><b>AI 确认中</b><span>智能复核</span></div>
-          <div class="arrow">›</div>
           <div class="state s-suspected"><b>倒计时</b><span>报警预备</span></div>
+          <div class="arrow">›</div>
+          <div class="state s-checking"><b>AI 确认中</b><span>可选单次复核</span></div>
           <div class="arrow">›</div>
           <div class="state s-active"><b>报警中</b><span>发送通知</span></div>
           <div class="arrow">›</div>
@@ -678,18 +678,18 @@
           <div class="state s-resolved"><b>已恢复</b><span>条件满足</span></div>
         </div>
         <p style="margin: 12px 0 0; color: var(--muted); font-size: 14.5px; line-height: 1.75;">
-          当常规检测持续 5 分钟无人且灯亮时，系统进入 AI 确认阶段。AI 连续两次确认无人后开始报警倒计时；倒计时结束后正式报警并发送通知。管理员确认后，待恢复条件满足（如灯关闭或有人出现）自动标记为已恢复。
+          当系统持续判断为无人且灯亮时，先按配置的报警保持时间倒计时。倒计时结束后，未启用 VLM 则直接正式报警；启用 VLM 时先执行一次异步人员复核，检测到人会取消报警，确认无人或复核失败则正式报警并发送通知。管理员确认后，待恢复条件持续满足再自动标记为已恢复。
         </p>
       </div>
 
       <div class="info-row">
         <div class="info-card" style="border-left: 4px solid #818cf8;">
-          <h4 style="color: #6366f1;">AI 确认进度</h4>
-          <p>报警图标外层环形展示确认进度，从 0/2 逐步到 2/2</p>
+          <h4 style="color: #6366f1;">AI 确认状态</h4>
+          <p>启用 VLM 时，保持时间达到后显示「VLM 确认中」，模型返回后再决定是否正式报警</p>
         </div>
         <div class="info-card" style="border-left: 4px solid var(--red);">
           <h4 style="color: var(--red);">报警倒计时</h4>
-          <p>内层红色环展示倒计时进度，到时自动发送通知</p>
+          <p>红色环展示无人亮灯保持时间进度；达到阈值后进入 VLM 复核或直接报警</p>
         </div>
         <div class="info-card" style="border-left: 4px solid var(--green);">
           <h4 style="color: var(--green);">自动恢复</h4>
@@ -720,12 +720,12 @@
         <div class="feature panel">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
           <b>实时监控与报警</b>
-          <p>多路视频分组展示，报警通道自动聚合。视频卡直接呈现人员、灯光和报警状态，异常一眼可见。支持一键诊断视频连接问题。</p>
+          <p>多路视频分组展示，报警通道自动聚合。视频卡呈现人员、灯光和报警状态，并叠加红色 YOLO / 青色 VLM 检测框；容器全屏时检测框仍保留。</p>
         </div>
         <div class="feature panel t-cyan">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M2 10h20M6 14h4"/></svg></div>
           <b>视频源管理</b>
-          <p>支持 HLS、本地视频文件、摄像头等多种类型。本地视频可选择文件导入并循环播放，位置信息会自动进入报警上下文。</p>
+          <p>支持 HLS、本地视频文件、摄像头等多种类型。本地视频可选择文件导入并循环播放，播放器进度会同步给后端抽帧，减少检测结果与画面错位。</p>
         </div>
         <div class="feature panel t-green">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
@@ -764,7 +764,7 @@
         </div>
         <div class="highlight t-amber">
           <h2>分层检测，成本可控</h2>
-          <p>简单规则高频巡检承担主要判断，AI 模型仅在必要时低频复核。有人时自动跳过 AI 调用，每通道每小时有上限，大幅降低运行成本。</p>
+          <p>灯光规则承担高频巡检，YOLO 可作为人员检测主路径，VLM 仅在报警保持时间达到后复核。每通道设置小时上限，控制外部调用成本。</p>
         </div>
       </div>
 
@@ -795,7 +795,7 @@
           </tr>
           <tr>
             <td><b>低成本检测</b></td>
-            <td>简单规则高频巡检，AI 仅低频兜底；有人时自动跳过。</td>
+            <td>灯光规则高频巡检，可选 YOLO 人员检测；VLM 仅在报警前复核。</td>
             <td>降低算力、网络和外部 API 成本。</td>
           </tr>
           <tr>
@@ -820,12 +820,12 @@
           </tr>
           <tr>
             <td><b>可解释性</b></td>
-            <td>实时展示检测数据和置信度，检测历史用曲线回溯。</td>
+            <td>实时展示检测数据、置信度和 YOLO / VLM 人员框，检测历史用曲线回溯。</td>
             <td>管理员可直接理解检测逻辑，快速定位问题。</td>
           </tr>
           <tr>
             <td><b>隐私安全</b></td>
-            <td>AI 模型默认关闭，敏感信息脱敏显示，通知不包含图片。</td>
+            <td>VLM 默认关闭，通知默认不包含图片；启用外部 VLM 时需明确评估原始截图外发风险。</td>
             <td>满足内网部署和隐私合规要求。</td>
           </tr>
         </tbody>
@@ -837,7 +837,7 @@
   <section id="deploy">
     <div class="wrap">
       <h2 class="section-title"><span class="num-tag">07</span>系统要求</h2>
-      <p class="section-lead">EcoAlert 安装包开箱即用，仅需 Windows 系统，不需要额外安装数据库或云服务。</p>
+      <p class="section-lead">EcoAlert 不需要额外数据库。基础检测需要 ffmpeg；只有启用独立 YOLO 人员检测服务时才需要 Python、模型权重和本地 WebSocket 服务。</p>
 
       <table>
         <thead><tr><th style="width:20%">项目</th><th>要求</th><th>说明</th></tr></thead>
@@ -845,13 +845,14 @@
           <tr><td><b>操作系统</b></td><td>Windows 10 / 11</td><td>桌面应用运行环境</td></tr>
           <tr><td><b>系统组件</b></td><td>WebView2</td><td>通常系统已自带，用于界面渲染</td></tr>
           <tr><td><b>视频处理</b></td><td>ffmpeg</td><td>需要加入系统路径，用于视频分析</td></tr>
+          <tr><td><b>YOLO（可选）</b></td><td>Python 3.10+ + 模型权重</td><td>默认连接 ws://localhost:8090，可在检测配置中测试</td></tr>
           <tr><td><b>数据存储</b></td><td>本机自动管理</td><td>配置、历史和报警记录自动保存在本机</td></tr>
         </tbody>
       </table>
 
       <div class="highlight t-slate" style="margin-top: 24px;">
         <h2>数据隐私</h2>
-        <p>所有视频配置、报警记录和检测历史均保存在您的电脑本机。数据不经过任何外部服务器，AI 模型默认关闭，通知消息不包含视频截图。满足内网部署和隐私合规要求。</p>
+        <p>视频配置、报警记录和检测历史保存在本机，通知默认不包含视频截图。VLM 默认关闭；一旦启用外部 VLM，系统会把当前原始视频帧发送到您配置的 API，因此必须单独评估服务端、网络和截图内容的合规性。</p>
       </div>
     </div>
   </section>
@@ -872,6 +873,9 @@
           <li>灯光互相干扰的区域已开启域检测</li>
           <li>重点通道已完成检测区域标定</li>
           <li>开灯、关灯、有人、无人四类场景已测试</li>
+          <li>启用 YOLO 时已通过健康检查和 App 内连接测试</li>
+          <li>启用 VLM 时已通过连接与视频视觉测试</li>
+          <li>普通窗口、全屏和本地视频跳转后检测框仍与画面对齐</li>
           <li>算法启用时段符合现场值守规则</li>
           <li>报警保持和恢复时间已确认</li>
           <li>恢复策略已选择合适的类型</li>
@@ -899,7 +903,7 @@
         </div>
         <div class="timeline-item">
           <h3>报警不触发</h3>
-          <p>检查算法是否已启用且当前处于工作时段；确认视频源已启用且在线；确认检测区域覆盖了目标范围；检查灯光亮度是否达到触发条件；确认报警保持时间是否已满足。</p>
+          <p>检查算法是否已启用且当前处于工作时段；确认视频源已启用且在线；确认检测区域覆盖目标范围；确认报警保持时间是否已满足。若启用了 YOLO，服务失效会抑制新报警；若启用了 VLM，还需确认是否正在复核或模型判断画面有人。</p>
         </div>
         <div class="timeline-item">
           <h3>通知发送失败</h3>
@@ -911,7 +915,7 @@
         </div>
         <div class="timeline-item">
           <h3>当前版本限制</h3>
-          <p>人员检测基于运动检测，不等同于人形识别。暂不支持录像存储、多用户权限分级和时间轴回放功能。如需更多功能请关注后续版本更新。</p>
+          <p>YOLO 未启用时，人员检测仍基于运动代理；VLM 依赖外部 OpenAI 兼容视觉 API，当前在报警保持时间达到后执行单次复核。RTSP 转码、录像存储、多用户权限分级和时间轴回放暂未完成。</p>
         </div>
       </div>
     </div>
@@ -920,7 +924,7 @@
   <!-- ==================== Footer ==================== -->
   <footer>
     <div class="wrap">
-      <div>EcoAlert 1.0.0 · 发布日期 2026-06-14 · 本页面可离线打开，用于交付说明、培训和上线检查。</div>
+      <div>EcoAlert 1.0.0 · 文档更新 2026-06-24 · 本页面可离线打开，用于交付说明、培训和上线检查。</div>
       <div class="links">
         <a href="#overview">产品概览</a>
         <a href="#how">工作原理</a>

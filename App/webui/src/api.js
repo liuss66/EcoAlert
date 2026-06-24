@@ -83,6 +83,9 @@ function normalizeSceneState(payload) {
     vlmPerson: payload.vlmPerson ?? payload.vlm_person ?? null,
     vlmPersonConfidence: payload.vlmPersonConfidence ?? payload.vlm_person_confidence ?? null,
     vlmStatus: payload.vlmStatus ?? payload.vlm_status ?? 'none',
+    vlmDetections: payload.vlmDetections ?? payload.vlm_detections ?? null,
+    vlmFrameWidth: payload.vlmFrameWidth ?? payload.vlm_frame_width ?? null,
+    vlmFrameHeight: payload.vlmFrameHeight ?? payload.vlm_frame_height ?? null,
     alarm: !!payload.alarm || ['alarm_active', 'acknowledged', 'recovering'].includes(alarmStatus),
     alarmStatus,
     alarmRecordActive: !!alarmRecordActive,
@@ -552,6 +555,13 @@ export async function setTestSourcesEnabled(enabled) {
 export async function reportSceneState(sourceId, person, light) {
   if (isTauri) return invoke('report_scene_state', { sourceId, person, light });
   // mock 模式下不做任何事
+  return { ok: true };
+}
+
+export async function reportPlaybackPosition(sourceId, positionSec, playing) {
+  if (isTauri) {
+    return invoke('report_playback_position', { sourceId, positionSec, playing });
+  }
   return { ok: true };
 }
 
